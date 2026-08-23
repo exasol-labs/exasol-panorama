@@ -1,4 +1,4 @@
-import type { ColumnDataType } from './data-types.js';
+import type { ColumnDataType, ForeignKeyReference } from './data-types.js';
 import type { ConnectionId, EntityId } from './ids.js';
 
 /**
@@ -28,6 +28,12 @@ export interface TableColumnView {
   readonly sourceColumn: {
     readonly name: string;
     readonly type: ColumnDataType;
+    /**
+     * Present for single-column foreign keys. It makes the column's cells
+     * followable: the renderer marks them as links and a click opens the rows
+     * they point at.
+     */
+    readonly foreignKey?: ForeignKeyReference;
   };
   readonly width: number;
   readonly visible: boolean;

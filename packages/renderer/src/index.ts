@@ -10,6 +10,7 @@ export * from './input/hit-test.js';
 export * from './input/interaction.js';
 export * from './input/wheel.js';
 export * from './instrumentation/frame-stats.js';
+export * from './table/connector.js';
 export * from './table/draw-list.js';
 export * from './table/halo.js';
 export * from './table/lod.js';

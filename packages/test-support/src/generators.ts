@@ -97,17 +97,49 @@ export const wideRelation = (columnCount = 5_000): RelationShape => ({
   columns: generateColumns(columnCount),
 });
 
-/** A representative analytical fact table. */
+/**
+ * A representative analytical fact table.
+ *
+ * `COUNTRY` declares a foreign key so the follow-a-key behaviour can be
+ * exercised — and looked at — with no database attached.
+ */
 export const factRelation = (rowCount = 2_830_000_000): RelationShape => ({
   schema: 'PANORAMA_TEST',
   table: 'SALES',
   rowCount,
   columns: [
     { name: 'ORDER_ID', type: dataType('decimal', 'DECIMAL(18,0)', { precision: 18, scale: 0 }) },
-    { name: 'COUNTRY', type: dataType('varchar', 'VARCHAR(64)', { size: 64 }) },
+    {
+      name: 'COUNTRY',
+      type: dataType('varchar', 'VARCHAR(64)', { size: 64 }),
+      foreignKey: {
+        schema: 'PANORAMA_TEST',
+        table: 'COUNTRIES',
+        column: 'NAME',
+        constraint: 'FK_SALES_COUNTRY',
+      },
+    },
     { name: 'ORDER_DATE', type: dataType('date', 'DATE') },
     { name: 'REVENUE', type: dataType('decimal', 'DECIMAL(18,2)', { precision: 18, scale: 2 }) },
   ],
+});
+
+/** The dimension `factRelation.COUNTRY` points at. */
+export const countryRelation = (): RelationShape => ({
+  schema: 'PANORAMA_TEST',
+  table: 'COUNTRIES',
+  rowCount: COUNTRIES.length,
+  columns: [
+    { name: 'NAME', type: dataType('varchar', 'VARCHAR(64)', { size: 64 }) },
+    { name: 'CODE', type: dataType('char', 'CHAR(3)', { size: 3 }) },
+    { name: 'REGION', type: dataType('varchar', 'VARCHAR(32)', { size: 32 }) },
+  ],
+  valueFor: (_type, column, row) => {
+    const name = COUNTRIES[row % COUNTRIES.length] as string;
+    if (column === 0) return name;
+    if (column === 1) return name.slice(0, 3).toUpperCase();
+    return name === 'Germany' || name === 'France' || name === 'Poland' ? 'Continental' : 'Nordic';
+  },
 });
 
 /** Long VARCHAR values, which stress text layout and clipping. */

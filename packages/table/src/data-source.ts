@@ -1,4 +1,5 @@
-import type { ResultChunk } from './result-chunk.js';
+import type { ColumnDataType } from '@panorama/core';
+import type { CellValue, ResultChunk } from './result-chunk.js';
 import type { TableSchema } from './schema.js';
 
 /**
@@ -9,6 +10,24 @@ import type { TableSchema } from './schema.js';
  * are interchangeable, which is what makes deterministic interaction and cache
  * testing possible.
  */
+
+/**
+ * An equality predicate on one column.
+ *
+ * Stage 1 has no filtering UI and does not want one; this exists so a cell can
+ * be *followed* to the rows a foreign key points at, which is a navigation act
+ * rather than a query-building one.
+ */
+export interface RowFilter {
+  readonly column: string;
+  readonly value: CellValue;
+  /**
+   * Type of the column being compared, so the literal is formed correctly. A
+   * foreign key column and its referent are type-compatible by definition, so
+   * the source column's type is the right one to pass.
+   */
+  readonly type?: ColumnDataType;
+}
 
 export interface FetchRequest {
   /** Zero-based position within the result set. */

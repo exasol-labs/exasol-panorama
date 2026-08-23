@@ -140,6 +140,37 @@ describe('QuadBatch', () => {
     expect(batch.mesh.isEnabled()).toBe(false);
   });
 
+  it('adds a quad from explicit corners, for diagonals and arrowheads', () => {
+    const batch = new QuadBatch({ name: 'q', scene });
+    batch.begin();
+    batch.pushCorners([0, 0, 10, 5, 8, 9, -2, 4], -1, red);
+    batch.commit();
+
+    const positions = batch.mesh.getVerticesData(VertexBuffer.PositionKind);
+    expect(Array.from(positions?.slice(0, 12) ?? [])).toEqual([
+      0, 0, -1, 10, 5, -1, 8, 9, -1, -2, 4, -1,
+    ]);
+    expect(batch.quadCount).toBe(1);
+  });
+
+  it('gives corner quads full texture coordinates in a textured batch', () => {
+    const batch = new QuadBatch({ name: 'q', scene, textured: true });
+    batch.begin();
+    batch.pushCorners([0, 0, 1, 0, 1, 1, 0, 1], 0, red);
+    batch.commit();
+    expect(Array.from(batch.mesh.getVerticesData(VertexBuffer.UVKind)?.slice(0, 8) ?? [])).toEqual([
+      0, 0, 1, 0, 1, 1, 0, 1,
+    ]);
+  });
+
+  it('grows for corner quads too', () => {
+    const batch = new QuadBatch({ name: 'q', scene, initialCapacity: 16 });
+    batch.begin();
+    for (let quad = 0; quad < 40; quad += 1) batch.pushCorners([0, 0, 1, 0, 1, 1, 0, 1], 0, red);
+    batch.commit();
+    expect(batch.capacity).toBeGreaterThanOrEqual(40);
+  });
+
   it('accepts a material and disposes cleanly', () => {
     const batch = new QuadBatch({ name: 'q', scene });
     const material = new StandardMaterial('m', scene);

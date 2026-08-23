@@ -32,6 +32,14 @@ export interface ColumnDataType {
   readonly fraction?: number;
 }
 
+/** Where a foreign key column points. Database-neutral, like the types. */
+export interface ForeignKeyReference {
+  readonly schema: string;
+  readonly table: string;
+  readonly column: string;
+  readonly constraint: string;
+}
+
 export type CellAlignment = 'left' | 'right' | 'center';
 
 const RIGHT_ALIGNED: ReadonlySet<DataTypeKind> = new Set<DataTypeKind>(['decimal', 'double']);

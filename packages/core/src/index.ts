@@ -1,4 +1,5 @@
 export * from './apply.js';
+export * from './bindings.js';
 export * from './commands.js';
 export * from './constraints.js';
 export * from './data-types.js';

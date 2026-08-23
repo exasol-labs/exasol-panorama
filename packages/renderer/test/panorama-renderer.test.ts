@@ -404,3 +404,114 @@ describe('the action halo across several tables', () => {
     expect(harness.renderer.stats.tables).toBe(2);
   });
 });
+
+describe('connectors', () => {
+  const bound = (): { harness: Harness; second: TableEntity } => {
+    const harness = setup();
+    const ids = testIds(11);
+    const second = makeTable(ids, {
+      position: { x: 800, y: 0, z: 0 },
+      size: { width: 600, height: 400 },
+    });
+    harness.core.dispatch({ type: 'CreateTableEntity', entity: second });
+    harness.core.dispatch({
+      type: 'CreateBinding',
+      binding: {
+        id: ids.binding(),
+        kind: 'connector',
+        fromId: harness.table.id,
+        toId: second.id,
+        from: { mode: 'auto' },
+        to: { mode: 'auto' },
+        directed: true,
+        label: 'COUNTRY = Germany',
+      },
+    });
+    harness.renderer.camera.moveTo(700, 200);
+    harness.renderer.camera.setScale(0.7);
+    return { harness, second };
+  };
+
+  it('draws the line and counts it', () => {
+    const { harness } = bound();
+    harness.renderer.renderFrame();
+    expect(harness.renderer.stats.connectors).toBe(1);
+    expect(harness.renderer.stats.tables).toBe(2);
+  });
+
+  it('adds no connector work when there are no bindings', () => {
+    const harness = setup();
+    harness.renderer.renderFrame();
+    expect(harness.renderer.stats.connectors).toBe(0);
+  });
+
+  it('follows a table that is being dragged, before anything is committed', () => {
+    const { harness, second } = bound();
+    harness.renderer.renderFrame();
+
+    harness.core.dispatchSession({
+      type: 'BeginDrag',
+      drag: {
+        kind: 'move-entity',
+        entityId: second.id,
+        pointerStart: { x: 0, y: 0, z: 0 },
+        entityStart: { x: 800, y: 0, z: 0 },
+      },
+    });
+    harness.core.dispatchSession({
+      type: 'SetPointer',
+      pointer: { world: { x: 200, y: 600, z: 0 }, screenX: 0, screenY: 0 },
+    });
+    harness.renderer.renderFrame();
+
+    // Still exactly one connector, re-routed, with the document untouched.
+    expect(harness.renderer.stats.connectors).toBe(1);
+    expect(harness.core.world.entities.get(second.id)?.transform.x).toBe(800);
+  });
+
+  it('draws the marker compactly, and its label only once revealed', () => {
+    const { harness } = bound();
+    harness.renderer.renderFrame();
+    const compactGlyphs = harness.renderer.stats.glyphs;
+
+    const bindingId = [...harness.core.world.bindings.keys()][0];
+    if (bindingId === undefined) throw new Error('expected a binding');
+    harness.core.dispatchSession({ type: 'SetHoveredBinding', id: bindingId });
+    harness.renderer.renderFrame();
+
+    // Revealing spells the predicate out, so more glyphs are drawn.
+    expect(harness.renderer.stats.glyphs).toBeGreaterThan(compactGlyphs);
+    expect(harness.renderer.stats.connectors).toBe(1);
+  });
+
+  it('culls a connector whose line is off screen', () => {
+    const { harness } = bound();
+    harness.renderer.camera.moveTo(500_000, 500_000);
+    harness.renderer.renderFrame();
+    expect(harness.renderer.stats.connectors).toBe(0);
+  });
+
+  it('skips a binding whose entities coincide', () => {
+    const harness = setup();
+    const ids = testIds(12);
+    const stacked = makeTable(ids, {
+      position: { x: 0, y: 0, z: 0 },
+      size: { width: 600, height: 400 },
+    });
+    harness.core.dispatch({ type: 'CreateTableEntity', entity: stacked });
+    harness.core.dispatch({
+      type: 'CreateBinding',
+      binding: {
+        id: ids.binding(),
+        kind: 'connector',
+        fromId: harness.table.id,
+        toId: stacked.id,
+        from: { mode: 'auto' },
+        to: { mode: 'auto' },
+        directed: true,
+      },
+    });
+    harness.renderer.renderFrame();
+    expect(harness.renderer.stats.connectors).toBe(0);
+  });
+});

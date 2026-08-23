@@ -1,6 +1,7 @@
 import type { TableSchema } from '@panorama/table';
 import type { RelationShape } from '@panorama/test-support';
 import {
+  countryRelation,
   factRelation,
   largeStringRelation,
   nullHeavyRelation,
@@ -26,6 +27,7 @@ const SMALL_FACT = { ...factRelation(100), table: 'SAMPLE_100' } satisfies Relat
 
 export const DEMO_RELATIONS: Readonly<Record<string, RelationShape>> = Object.freeze({
   SAMPLE_100: SMALL_FACT,
+  COUNTRIES: countryRelation(),
   SALES: factRelation(2_830_000_000),
   VERY_TALL: tallRelation(10_000_000_000),
   VERY_WIDE: wideRelation(5_000),
@@ -51,5 +53,18 @@ export const demoRelation = (table: string): RelationShape | undefined => DEMO_R
 
 export const demoSchema = (table: string): TableSchema | undefined => {
   const shape = demoRelation(table);
-  return shape === undefined ? undefined : { ...relationSchema(shape), schema: DEMO_SCHEMA, table };
+  if (shape === undefined) return undefined;
+  const base = relationSchema(shape);
+  return {
+    ...base,
+    schema: DEMO_SCHEMA,
+    table,
+    // The generators declare their keys against their own schema name; point
+    // them at the demo schema so following one resolves inside the registry.
+    columns: base.columns.map((column) =>
+      column.foreignKey === undefined
+        ? column
+        : { ...column, foreignKey: { ...column.foreignKey, schema: DEMO_SCHEMA } },
+    ),
+  };
 };

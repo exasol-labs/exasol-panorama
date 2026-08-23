@@ -1,6 +1,7 @@
 import { DataWorkerClient, createInProcessEndpointPair } from '@panorama/worker';
 import type { WorkerEndpoint } from '@panorama/worker';
 import { Workspace } from './panorama/workspace.js';
+import { DEMO_SCHEMA, demoSchema } from './panorama/demo.js';
 import { startDataWorker } from './panorama/start-data-worker.js';
 
 /**
@@ -33,7 +34,10 @@ export const createWorkerEndpoint = (options: BootstrapOptions = {}): WorkerEndp
 };
 
 export const createWorkspace = (options: BootstrapOptions = {}): Workspace =>
-  new Workspace({ client: new DataWorkerClient(createWorkerEndpoint(options)) });
+  new Workspace({
+    client: new DataWorkerClient(createWorkerEndpoint(options)),
+    resolveSchema: (schema, table) => (schema === DEMO_SCHEMA ? demoSchema(table) : undefined),
+  });
 
 /**
  * Reads `?backend=webgl|webgpu` from the URL.

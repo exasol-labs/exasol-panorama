@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { backendOverride, createWorkerEndpoint, createWorkspace } from '../src/bootstrap.js';
 import { startDataWorker } from '../src/panorama/start-data-worker.js';
+import { DEMO_SCHEMA } from '../src/panorama/demo.js';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -79,6 +80,14 @@ describe('createWorkspace', () => {
     const workspace = createWorkspace({ useWorker: false });
     expect(workspace.openTableCount).toBe(0);
     expect(workspace.core.world.entities.size).toBe(0);
+  });
+
+  it('resolves demo schemas without a database', async () => {
+    const workspace = createWorkspace({ useWorker: false, demoLatencyMs: 0 });
+    // No connection: this only works because the demo schema is resolved locally.
+    const id = await workspace.openTable({ schema: DEMO_SCHEMA, table: 'SAMPLE_100' });
+    expect(workspace.core.world.entities.get(id)?.source.table).toBe('SAMPLE_100');
+    await expect(workspace.openTable({ schema: 'SOMEWHERE_ELSE', table: 'X' })).rejects.toThrow();
   });
 });
 

@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import type { EntityId, SessionState } from '@panorama/core';
+import type { BindingId, EntityId, SessionState } from '@panorama/core';
 import {
   applySessionCommand,
   emptySession,
   activatedEntity,
   isActionHovered,
+  isBindingRevealed,
   isActionPressed,
   isDragging,
   isEntityActivated,
@@ -25,6 +26,8 @@ describe('session state', () => {
       pointer: null,
       hoveredAction: null,
       pressedAction: null,
+      hoveredBinding: null,
+      pressedBinding: null,
     });
     expect(isDragging(state)).toBe(false);
     expect(isSelected(state, a)).toBe(false);
@@ -190,5 +193,37 @@ describe('activation', () => {
     const many = applySessionCommand(emptySession(), { type: 'SetSelection', ids: [a, b] });
     expect(many.focusedTable).toBeNull();
     expect(activatedEntity(many)).toBeNull();
+  });
+});
+
+describe('binding markers', () => {
+  const first = 'binding:1' as BindingId;
+  const second = 'binding:2' as BindingId;
+
+  it('reveals a binding on hover and on press', () => {
+    const hovered = applySessionCommand(emptySession(), {
+      type: 'SetHoveredBinding',
+      id: first,
+    });
+    expect(isBindingRevealed(hovered, first)).toBe(true);
+    expect(isBindingRevealed(hovered, second)).toBe(false);
+
+    // Press reveals too, which is how a touch shows what a hover would.
+    const pressed = applySessionCommand(emptySession(), {
+      type: 'SetPressedBinding',
+      id: first,
+    });
+    expect(isBindingRevealed(pressed, first)).toBe(true);
+    expect(isBindingRevealed(emptySession(), first)).toBe(false);
+  });
+
+  it('returns the same object when nothing changed', () => {
+    const state = applySessionCommand(emptySession(), { type: 'SetHoveredBinding', id: first });
+    expect(applySessionCommand(state, { type: 'SetHoveredBinding', id: first })).toBe(state);
+    expect(applySessionCommand(state, { type: 'SetHoveredBinding', id: null })).not.toBe(state);
+
+    const pressed = applySessionCommand(emptySession(), { type: 'SetPressedBinding', id: first });
+    expect(applySessionCommand(pressed, { type: 'SetPressedBinding', id: first })).toBe(pressed);
+    expect(applySessionCommand(pressed, { type: 'SetPressedBinding', id: null })).not.toBe(pressed);
   });
 });

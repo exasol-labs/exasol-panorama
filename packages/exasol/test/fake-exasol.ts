@@ -82,6 +82,17 @@ export interface FakeServerOptions {
     string,
     ReadonlyArray<{ name: string; kind: string; comment: string | null }>
   >;
+  /** Single-column foreign keys, keyed by the table that declares them. */
+  readonly foreignKeys?: Record<
+    string,
+    ReadonlyArray<{
+      readonly column: string;
+      readonly referencedSchema: string;
+      readonly referencedTable: string;
+      readonly referencedColumn: string;
+      readonly constraint: string;
+    }>
+  >;
 }
 
 /** 2048-bit-shaped modulus; the tests never decrypt, only check the envelope. */
@@ -214,6 +225,28 @@ export class FakeExasolServer {
 
   #relationFor(sqlText: string): FakeRelation | null {
     this.executed.push(sqlText);
+    // Catalogue queries first: a relation name can appear inside one.
+    if (sqlText.includes('EXA_ALL_CONSTRAINT_COLUMNS')) {
+      const table = /CONSTRAINT_TABLE = '([^']*)'/.exec(sqlText)?.[1] ?? '';
+      const keys = this.#options.foreignKeys?.[table] ?? [];
+      return {
+        columns: [
+          { name: 'COLUMN_NAME', dataType: { type: 'VARCHAR', size: 128 } },
+          { name: 'REFERENCED_SCHEMA', dataType: { type: 'VARCHAR', size: 128 } },
+          { name: 'REFERENCED_TABLE', dataType: { type: 'VARCHAR', size: 128 } },
+          { name: 'REFERENCED_COLUMN', dataType: { type: 'VARCHAR', size: 128 } },
+          { name: 'CONSTRAINT_NAME', dataType: { type: 'VARCHAR', size: 128 } },
+        ],
+        rowCount: keys.length,
+        data: [
+          keys.map((key) => key.column),
+          keys.map((key) => key.referencedSchema),
+          keys.map((key) => key.referencedTable),
+          keys.map((key) => key.referencedColumn),
+          keys.map((key) => key.constraint),
+        ],
+      };
+    }
     const relations = this.#options.relations ?? {};
     for (const [pattern, relation] of Object.entries(relations)) {
       if (sqlText.includes(pattern)) return relation;

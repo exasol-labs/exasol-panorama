@@ -4,7 +4,7 @@ import { columnAtOffset, columnEdgeAtOffset } from '@panorama/table';
 import type { TableTheme } from '../theme.js';
 import { tableMetrics } from '../table/table-draw.js';
 import type { HaloButton } from '../table/halo.js';
-import { computeHalo, haloButtonAt } from '../table/halo.js';
+import { computeHalo, haloButtonAt, withinHalo } from '../table/halo.js';
 
 /**
  * Hit testing.
@@ -57,8 +57,9 @@ export interface ScrollbarHit extends TableHitBase {
 
 export interface HaloHit extends TableHitBase {
   readonly kind: 'halo';
-  readonly action: EntityActionId;
-  readonly button: HaloButton;
+  /** Null when the point is in the halo's band but not on a button. */
+  readonly action: EntityActionId | null;
+  readonly button: HaloButton | null;
 }
 
 export type TableHit =
@@ -136,9 +137,15 @@ export const hitTestTable = (
   // The halo sits outside the table's own rectangle, so it is tested before the
   // bounds check rather than after it.
   if (input.showHalo === true) {
-    const button = haloButtonAt(computeHalo(metrics, theme, input.scale ?? 1), localX, localY);
+    const halo = computeHalo(metrics, theme, input.scale ?? 1);
+    const button = haloButtonAt(halo, localX, localY);
     if (button !== null) {
       return { kind: 'halo', action: button.action, button, tableId, cursor: 'pointer' };
+    }
+    // Still in the band: report a hit so the table stays activated while the
+    // pointer crosses the gap towards a button.
+    if (withinHalo(halo, localX, localY)) {
+      return { kind: 'halo', action: null, button: null, tableId, cursor: 'default' };
     }
   }
 

@@ -1,5 +1,5 @@
 import type { EntityId } from '@panorama/core';
-import type { ResultChunk, TableDataSession, TableDataSource } from '@panorama/table';
+import type { ResultChunk, RowFilter, TableDataSession, TableDataSource } from '@panorama/table';
 import {
   DEFAULT_BLOCK_SIZE,
   FetchScheduler,
@@ -29,6 +29,7 @@ export interface TableSourceRequest {
   readonly tableId: EntityId;
   readonly schema: string;
   readonly table: string;
+  readonly filter?: RowFilter;
 }
 
 export interface ConnectionFactoryOptions {
@@ -177,6 +178,7 @@ export class DataWorker {
       connection: this.#requireConnection(),
       schema: request.schema,
       table: request.table,
+      ...(request.filter === undefined ? {} : { filter: request.filter }),
     });
   }
 

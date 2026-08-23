@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { cellValue } from '@panorama/table';
 import {
+  MAX_FILTER_SCAN,
   ManualScheduler,
   MockTableDataSource,
+  countryRelation,
   factRelation,
   immediateScheduler,
   nullHeavyRelation,
@@ -200,5 +202,71 @@ describe('MockTableDataSource', () => {
     await expect(session.fetch({ startPosition: 0, maxRows: 2 })).resolves.toMatchObject({
       rowCount: 2,
     });
+  });
+});
+
+describe('filtering', () => {
+  it('exposes only the matching rows, renumbered from zero', async () => {
+    const source = new MockTableDataSource({
+      relation: countryRelation(),
+      scheduler: immediateScheduler,
+      filter: { column: 'NAME', value: 'Denmark' },
+    });
+    const session = await source.open();
+    expect(session.rowCount).toBe(1);
+
+    const chunk = await session.fetch({ startPosition: 0, maxRows: 10 });
+    expect(chunk.rowCount).toBe(1);
+    expect(cellValue(chunk.columns[0] as never, 0)).toBe('Denmark');
+    expect(cellValue(chunk.columns[1] as never, 0)).toBe('DEN');
+  });
+
+  it('reports no rows when nothing matches', async () => {
+    const source = new MockTableDataSource({
+      relation: countryRelation(),
+      scheduler: immediateScheduler,
+      filter: { column: 'NAME', value: 'Atlantis' },
+    });
+    expect((await source.open()).rowCount).toBe(0);
+  });
+
+  it('refuses to scan a relation too large to filter honestly', async () => {
+    const source = new MockTableDataSource({
+      relation: factRelation(MAX_FILTER_SCAN + 1),
+      filter: { column: 'COUNTRY', value: 'Germany' },
+    });
+    await expect(source.open()).rejects.toThrow(/will not scan/);
+  });
+
+  it('rejects a filter on a column that does not exist', async () => {
+    const source = new MockTableDataSource({
+      relation: countryRelation(),
+      filter: { column: 'NOPE', value: 'x' },
+    });
+    await expect(source.open()).rejects.toMatchObject({ code: 'not-found' });
+  });
+
+  it('leaves an unfiltered session numbering rows as the relation does', async () => {
+    const source = new MockTableDataSource({
+      relation: countryRelation(),
+      scheduler: immediateScheduler,
+    });
+    const session = await source.open();
+    expect(session.rowCount).toBe(5);
+    const chunk = await session.fetch({ startPosition: 1, maxRows: 1 });
+    expect(cellValue(chunk.columns[0] as never, 0)).toBe('Denmark');
+  });
+});
+
+describe('foreign keys in generated relations', () => {
+  it('declares the key that makes the demo followable', async () => {
+    const source = new MockTableDataSource({
+      relation: factRelation(10),
+      scheduler: immediateScheduler,
+    });
+    const country = (await source.open()).schema.columns.find(
+      (column) => column.name === 'COUNTRY',
+    );
+    expect(country?.foreignKey).toMatchObject({ table: 'COUNTRIES', column: 'NAME' });
   });
 });

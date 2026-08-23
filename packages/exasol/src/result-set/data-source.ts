@@ -1,6 +1,7 @@
 import type {
   FetchRequest,
   ResultChunk,
+  RowFilter,
   TableDataSession,
   TableDataSource,
   TableSchema,
@@ -8,7 +9,7 @@ import type {
 import { TableDataError, buildVector, createResultChunk } from '@panorama/table';
 import type { ExasolValue } from '../protocol/messages.js';
 import { toColumnDataType } from '../protocol/data-types.js';
-import { selectAll } from '../protocol/sql.js';
+import { selectAll, selectWhere } from '../protocol/sql.js';
 import type { ExasolConnection, ExasolResultSetHandle } from '../connection/connection.js';
 
 /**
@@ -25,6 +26,8 @@ export interface ExasolTableDataSourceOptions {
   readonly table: string;
   /** Byte budget per protocol fetch. */
   readonly fetchBytes?: number;
+  /** Restricts the result set to matching rows; used to follow a foreign key. */
+  readonly filter?: RowFilter;
 }
 
 class ExasolTableDataSession implements TableDataSession {
@@ -120,8 +123,10 @@ export class ExasolTableDataSource implements TableDataSource {
   /** Opens a fresh result set, replacing any previous one. */
   async open(): Promise<TableDataSession> {
     await this.close();
-    const { connection, schema, table } = this.#options;
-    const resultSet = await connection.openResultSet(selectAll(schema, table));
+    const { connection, schema, table, filter } = this.#options;
+    const resultSet = await connection.openResultSet(
+      filter === undefined ? selectAll(schema, table) : selectWhere(schema, table, filter),
+    );
     const tableSchema: TableSchema = {
       schema,
       table,

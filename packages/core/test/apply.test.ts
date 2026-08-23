@@ -420,6 +420,7 @@ describe('entity type checks', () => {
     const world: WorldState = {
       entities: new Map([[table.id, { ...table, type: 'sticky' } as unknown as TableEntity]]),
       order: [table.id],
+      bindings: new Map(),
     };
     expectError(
       world,

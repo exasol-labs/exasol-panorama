@@ -1,5 +1,5 @@
 import type { Vec3 } from './geometry.js';
-import type { EntityId } from './ids.js';
+import type { BindingId, EntityId } from './ids.js';
 
 /**
  * Session state is temporary but semantically accessible: an agent should be
@@ -75,6 +75,9 @@ export interface SessionState {
   readonly pointer: PointerState | null;
   readonly hoveredAction: EntityActionTarget | null;
   readonly pressedAction: EntityActionTarget | null;
+  /** Binding whose marker is under the pointer; its detail is revealed. */
+  readonly hoveredBinding: BindingId | null;
+  readonly pressedBinding: BindingId | null;
 }
 
 export const emptySession = (): SessionState => ({
@@ -85,6 +88,8 @@ export const emptySession = (): SessionState => ({
   pointer: null,
   hoveredAction: null,
   pressedAction: null,
+  hoveredBinding: null,
+  pressedBinding: null,
 });
 
 export interface SetSelectionCommand {
@@ -126,7 +131,19 @@ export interface SetPressedActionCommand {
   readonly target: EntityActionTarget | null;
 }
 
+export interface SetHoveredBindingCommand {
+  readonly type: 'SetHoveredBinding';
+  readonly id: BindingId | null;
+}
+
+export interface SetPressedBindingCommand {
+  readonly type: 'SetPressedBinding';
+  readonly id: BindingId | null;
+}
+
 export type SessionCommand =
+  | SetHoveredBindingCommand
+  | SetPressedBindingCommand
   | SetHoveredActionCommand
   | SetPressedActionCommand
   | SetSelectionCommand
@@ -173,8 +190,20 @@ export const applySessionCommand = (state: SessionState, command: SessionCommand
       return sameTarget(state.pressedAction, command.target)
         ? state
         : { ...state, pressedAction: command.target };
+    case 'SetHoveredBinding':
+      return state.hoveredBinding === command.id ? state : { ...state, hoveredBinding: command.id };
+    case 'SetPressedBinding':
+      return state.pressedBinding === command.id ? state : { ...state, pressedBinding: command.id };
   }
 };
+
+/**
+ * True when a binding's detail should be shown. The marker is compact by
+ * default — a line's business is the connection, not its predicate — and only
+ * spells the predicate out when asked, by pointer or by press.
+ */
+export const isBindingRevealed = (state: SessionState, id: BindingId): boolean =>
+  state.hoveredBinding === id || state.pressedBinding === id;
 
 /**
  * The single activated entity, or `null`.

@@ -1,5 +1,5 @@
 import { ExasolConnection, ExasolTableDataSource } from '@panorama/exasol';
-import type { TableDataSource } from '@panorama/table';
+import type { RowFilter, TableDataSource } from '@panorama/table';
 import type { WorkerEndpoint } from '@panorama/worker';
 import { DataWorker } from '@panorama/worker';
 import { MockTableDataSource } from '@panorama/test-support';
@@ -22,7 +22,7 @@ export interface StartDataWorkerOptions {
  * built-in schema, otherwise a live Exasol result set.
  */
 export const createTableSource = (
-  request: { schema: string; table: string },
+  request: { schema: string; table: string; filter?: RowFilter },
   connection: ExasolConnection | null,
   options: StartDataWorkerOptions = {},
 ): TableDataSource => {
@@ -30,7 +30,11 @@ export const createTableSource = (
   // profiled — with no database at all.
   const relation = request.schema === DEMO_SCHEMA ? demoRelation(request.table) : undefined;
   if (relation !== undefined) {
-    return new MockTableDataSource({ relation, latency: options.demoLatencyMs ?? 45 });
+    return new MockTableDataSource({
+      relation,
+      latency: options.demoLatencyMs ?? 45,
+      ...(request.filter === undefined ? {} : { filter: request.filter }),
+    });
   }
   if (connection === null) {
     throw new Error(`No connection for ${request.schema}.${request.table}`);

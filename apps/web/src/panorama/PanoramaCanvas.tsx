@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import type { EntityActionId, EntityId } from '@panorama/core';
-import type { CreateEngineOptions, PanoramaEngine } from '@panorama/renderer';
+import type { CreateEngineOptions, ForeignKeyFollow, PanoramaEngine } from '@panorama/renderer';
 import {
   DEFAULT_TABLE_THEME,
   InteractionController,
@@ -30,6 +30,8 @@ export interface PanoramaCanvasProps {
   readonly onError?: (message: string) => void;
   /** Performs a halo action; the canvas only reports the intent. */
   readonly onAction?: (entityId: EntityId, action: EntityActionId) => void;
+  /** Follows a clicked foreign key cell. */
+  readonly onFollowForeignKey?: (follow: ForeignKeyFollow) => void;
 }
 
 export const PanoramaCanvas = ({
@@ -39,6 +41,7 @@ export const PanoramaCanvas = ({
   engineOptions,
   onError,
   onAction,
+  onFollowForeignKey,
 }: PanoramaCanvasProps): React.JSX.Element => {
   const hostRef = useRef<HTMLDivElement | null>(null);
 
@@ -90,6 +93,7 @@ export const PanoramaCanvas = ({
             host: workspace,
             theme: DEFAULT_TABLE_THEME,
             ...(onAction === undefined ? {} : { onAction }),
+            ...(onFollowForeignKey === undefined ? {} : { onFollowForeignKey }),
           });
           // One frame up front: a backend that cannot draw fails here, not
           // silently on every animation frame afterwards.
@@ -227,7 +231,7 @@ export const PanoramaCanvas = ({
       disposed = true;
       cleanup?.();
     };
-  }, [workspace, onReady, statsRef, engineOptions, onError, onAction]);
+  }, [workspace, onReady, statsRef, engineOptions, onError, onAction, onFollowForeignKey]);
 
   return <div ref={hostRef} className="pn-canvas-host" />;
 };

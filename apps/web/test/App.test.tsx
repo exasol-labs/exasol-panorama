@@ -9,17 +9,21 @@ import { createAppHarness } from './harness.js';
  * and the instrumentation overlay.
  */
 let lastAction: ((entityId: string, action: string) => void) | null = null;
+let lastFollow: ((follow: unknown) => void) | null = null;
 
 vi.mock('../src/panorama/PanoramaCanvas.js', () => ({
   PanoramaCanvas: ({
     onReady,
     onAction,
+    onFollowForeignKey,
   }: {
     onReady?: (renderer: unknown, backend: string) => void;
     onAction?: (entityId: string, action: string) => void;
+    onFollowForeignKey?: (follow: unknown) => void;
   }) => {
     onReady?.({ enterXR: async (): Promise<null> => null, revealEntity: (): void => {} }, 'null');
     lastAction = onAction ?? null;
+    lastFollow = onFollowForeignKey ?? null;
     return <div data-testid="canvas" />;
   },
 }));
@@ -190,6 +194,47 @@ describe('App', () => {
       lastAction?.('table:x', 'close');
     });
     await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('cannot close'));
+  });
+
+  it('follows a foreign key reported by the canvas', async () => {
+    const harness = createAppHarness();
+    render(<App workspace={harness.workspace} />);
+
+    fireEvent.click(
+      within(screen.getByRole('list', { name: 'Sample tables' })).getByText('SAMPLE_100'),
+    );
+    await waitFor(() => expect(harness.workspace.openTableCount).toBe(1));
+
+    const source = harness.workspace.core.world.order[0];
+    const entity = harness.workspace.core.world.entities.get(source as never);
+    const column = entity?.columns.find((entry) => entry.sourceColumn.name === 'COUNTRY');
+    if (column === undefined || lastFollow === null) throw new Error('expected a linked column');
+
+    act(() => {
+      lastFollow?.({
+        tableId: source,
+        columnId: column.id,
+        row: 0,
+        sourceColumn: 'COUNTRY',
+        reference: column.sourceColumn.foreignKey,
+        value: 'Germany',
+      });
+    });
+
+    await waitFor(() => expect(harness.workspace.openTableCount).toBe(2));
+    expect(harness.workspace.core.world.bindings.size).toBe(1);
+  });
+
+  it('reports a foreign key that cannot be followed', async () => {
+    const harness = createAppHarness();
+    vi.spyOn(harness.workspace, 'followForeignKey').mockRejectedValue(new Error('no such table'));
+    render(<App workspace={harness.workspace} />);
+    if (lastFollow === null) throw new Error('expected a follow handler');
+
+    act(() => {
+      lastFollow?.({ tableId: 'table:x', columnId: 'column:y', row: 0 });
+    });
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('no such table'));
   });
 
   it('accepts a default database URL', () => {

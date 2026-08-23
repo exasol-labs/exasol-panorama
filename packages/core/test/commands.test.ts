@@ -39,3 +39,31 @@ describe('commandError', () => {
     });
   });
 });
+
+describe('describeCommand for bindings', () => {
+  const binding = {
+    id: 'binding:1' as never,
+    kind: 'connector' as const,
+    fromId: table.id,
+    toId: table.id,
+    from: { mode: 'auto' } as const,
+    to: { mode: 'auto' } as const,
+    directed: true,
+  };
+
+  it('describes creating and removing bindings', () => {
+    expect(describeCommand({ type: 'CreateBinding', binding })).toBe('Connect entities');
+    expect(
+      describeCommand({ type: 'CreateBinding', binding: { ...binding, label: 'A → B' } }),
+    ).toBe('Connect entities (A → B)');
+    expect(describeCommand({ type: 'RemoveBindings', ids: ['binding:1' as never] })).toBe(
+      'Disconnect 1 binding',
+    );
+    expect(
+      describeCommand({
+        type: 'RemoveBindings',
+        ids: ['binding:1' as never, 'binding:2' as never],
+      }),
+    ).toBe('Disconnect 2 bindings');
+  });
+});

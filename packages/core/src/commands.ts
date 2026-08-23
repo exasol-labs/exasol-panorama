@@ -1,6 +1,7 @@
+import type { Binding } from './bindings.js';
 import type { TableEntity } from './entities.js';
 import type { Vec3 } from './geometry.js';
-import type { EntityId } from './ids.js';
+import type { BindingId, EntityId } from './ids.js';
 
 /**
  * Semantic document commands.
@@ -58,6 +59,17 @@ export interface RemoveEntitiesCommand {
   readonly ids: readonly EntityId[];
 }
 
+/** Connects two entities so the relationship survives either of them moving. */
+export interface CreateBindingCommand {
+  readonly type: 'CreateBinding';
+  readonly binding: Binding;
+}
+
+export interface RemoveBindingsCommand {
+  readonly type: 'RemoveBindings';
+  readonly ids: readonly BindingId[];
+}
+
 export type Command =
   | CreateTableEntityCommand
   | MoveEntitiesCommand
@@ -65,7 +77,9 @@ export type Command =
   | ResizeColumnCommand
   | ReorderColumnsCommand
   | SetColumnVisibilityCommand
-  | RemoveEntitiesCommand;
+  | RemoveEntitiesCommand
+  | CreateBindingCommand
+  | RemoveBindingsCommand;
 
 export type CommandType = Command['type'];
 
@@ -74,6 +88,8 @@ export type CommandErrorCode =
   | 'duplicate-entity'
   | 'wrong-entity-type'
   | 'column-not-found'
+  | 'binding-not-found'
+  | 'duplicate-binding'
   | 'invalid-argument';
 
 export interface CommandError {
@@ -103,5 +119,11 @@ export const describeCommand = (command: Command): string => {
       return command.visible ? 'Show column' : 'Hide column';
     case 'RemoveEntities':
       return `Remove ${command.ids.length} entit${command.ids.length === 1 ? 'y' : 'ies'}`;
+    case 'CreateBinding':
+      return command.binding.label === undefined
+        ? 'Connect entities'
+        : `Connect entities (${command.binding.label})`;
+    case 'RemoveBindings':
+      return `Disconnect ${command.ids.length} binding${command.ids.length === 1 ? '' : 's'}`;
   }
 };

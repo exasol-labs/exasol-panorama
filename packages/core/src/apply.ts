@@ -8,7 +8,7 @@ import type { EntityId } from './ids.js';
 import type { Result } from './result.js';
 import { err, ok } from './result.js';
 import type { WorldState } from './world.js';
-import { bringToFront, withEntity, withoutEntity } from './world.js';
+import { bringToFront, withBinding, withEntity, withoutBinding, withoutEntity } from './world.js';
 
 const isFinitePositive = (value: number): boolean => Number.isFinite(value) && value > 0;
 
@@ -221,7 +221,54 @@ export const applyCommand = (
         if (!next.entities.has(id)) {
           return err(commandError('entity-not-found', `No entity with id ${id}`));
         }
+        // Removal cascades to bindings; a binding to a missing entity would be
+        // a dangling reference.
         next = withoutEntity(next, id);
+      }
+      return ok(next);
+    }
+
+    case 'CreateBinding': {
+      const { binding } = command;
+      if (world.bindings.has(binding.id)) {
+        return err(commandError('duplicate-binding', `Binding ${binding.id} already exists`));
+      }
+      if (binding.fromId === binding.toId) {
+        return err(commandError('invalid-argument', 'A binding needs two different entities'));
+      }
+      for (const id of [binding.fromId, binding.toId]) {
+        if (!world.entities.has(id)) {
+          return err(commandError('entity-not-found', `No entity with id ${id}`));
+        }
+      }
+      for (const anchor of [binding.from, binding.to]) {
+        if (anchor.mode !== 'fixed') continue;
+        if (
+          !Number.isFinite(anchor.x) ||
+          !Number.isFinite(anchor.y) ||
+          anchor.x < 0 ||
+          anchor.x > 1 ||
+          anchor.y < 0 ||
+          anchor.y > 1
+        ) {
+          return err(
+            commandError('invalid-argument', 'A fixed anchor must be normalised within 0..1'),
+          );
+        }
+      }
+      return ok(withBinding(world, binding));
+    }
+
+    case 'RemoveBindings': {
+      if (command.ids.length === 0) {
+        return err(commandError('invalid-argument', 'RemoveBindings requires at least one id'));
+      }
+      let next = world;
+      for (const id of command.ids) {
+        if (!next.bindings.has(id)) {
+          return err(commandError('binding-not-found', `No binding with id ${id}`));
+        }
+        next = withoutBinding(next, id);
       }
       return ok(next);
     }

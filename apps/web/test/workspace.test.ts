@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { EntityId } from '@panorama/core';
-import { dataType, tableDisplayName } from '@panorama/core';
+import { dataType, resolveBinding, tableDisplayName } from '@panorama/core';
 import { createAppHarness, firstTableId } from './harness.js';
 import { blockSizeForColumns } from '../src/panorama/workspace.js';
+import { DEMO_SCHEMA } from '../src/panorama/demo.js';
 
 describe('Workspace connection', () => {
   it('connects, adopts the connection id and lists metadata', async () => {
@@ -168,6 +169,17 @@ describe('Workspace as a renderer and interaction host', () => {
     expect(harness.workspace.viewFor(entity)?.data.cell(0, 0)).toBe(0);
   });
 
+  it('reads cells for the interaction controller', async () => {
+    const harness = createAppHarness();
+    await harness.workspace.connect({ url: 'wss://x', credentials: { kind: 'token', token: 't' } });
+    const id = await harness.workspace.openTable({ schema: 'PANORAMA_TEST', table: 'SALES' });
+    harness.workspace.update(16);
+    await harness.settle();
+
+    expect(harness.workspace.cellAt(id, 0, 0)).toBe(0);
+    expect(harness.workspace.cellAt('table:none' as never, 0, 0)).toBeUndefined();
+  });
+
   it('scrolls and ignores scroll for unknown tables', async () => {
     const harness = createAppHarness();
     await harness.workspace.connect({ url: 'wss://x', credentials: { kind: 'token', token: 't' } });
@@ -313,5 +325,191 @@ describe('halo actions', () => {
     expect(harness.workspace.core.undo()).toBe(true);
     expect(harness.workspace.core.world.entities.has(id)).toBe(true);
     expect(harness.workspace.viewOfTable(id)).toBeUndefined();
+  });
+});
+
+describe('following a foreign key', () => {
+  const openSales = async (): Promise<{
+    harness: ReturnType<typeof createAppHarness>;
+    sourceId: EntityId;
+  }> => {
+    const harness = createAppHarness();
+    const sourceId = await harness.workspace.openTable({
+      schema: DEMO_SCHEMA,
+      table: 'SAMPLE_100',
+    });
+    return { harness, sourceId };
+  };
+
+  const followFrom = async (
+    harness: ReturnType<typeof createAppHarness>,
+    sourceId: EntityId,
+    value: string,
+  ) => {
+    const source = harness.workspace.core.world.entities.get(sourceId);
+    if (source === undefined) throw new Error('expected the source table');
+    const column = source.columns.find((entry) => entry.sourceColumn.name === 'COUNTRY');
+    if (column === undefined) throw new Error('expected a COUNTRY column');
+    return harness.workspace.followForeignKey({
+      tableId: sourceId,
+      columnId: column.id,
+      row: 0,
+      sourceColumn: 'COUNTRY',
+      reference: column.sourceColumn.foreignKey as never,
+      value,
+    });
+  };
+
+  it('opens the referenced table showing only the matching rows', async () => {
+    const { harness, sourceId } = await openSales();
+    const { tableId } = await followFrom(harness, sourceId, 'Denmark');
+
+    const opened = harness.workspace.core.world.entities.get(tableId);
+    expect(opened?.source.table).toBe('COUNTRIES');
+    // COUNTRIES holds one row per country, so the filter leaves exactly one.
+    expect(harness.workspace.viewOfTable(tableId)?.rowCount).toBe(1);
+
+    harness.workspace.update(16);
+    await harness.settle();
+    expect(harness.workspace.viewOfTable(tableId)?.cell(0, 0)).toBe('Denmark');
+  });
+
+  it('binds the two tables with a directed, labelled connector', async () => {
+    const { harness, sourceId } = await openSales();
+    const { tableId, bindingId } = await followFrom(harness, sourceId, 'France');
+
+    const binding = harness.workspace.core.world.bindings.get(bindingId);
+    expect(binding).toMatchObject({
+      kind: 'connector',
+      fromId: sourceId,
+      toId: tableId,
+      directed: true,
+      label: 'COUNTRY = France',
+    });
+    expect(binding?.meta).toMatchObject({
+      kind: 'foreign-key',
+      column: 'COUNTRY',
+      referencedTable: 'COUNTRIES',
+      referencedColumn: 'NAME',
+    });
+  });
+
+  it('places the new table beside the one it came from', async () => {
+    const { harness, sourceId } = await openSales();
+    const { tableId } = await followFrom(harness, sourceId, 'Poland');
+    const source = harness.workspace.core.world.entities.get(sourceId);
+    const opened = harness.workspace.core.world.entities.get(tableId);
+    expect(opened?.transform.x).toBeGreaterThan(
+      (source?.transform.x ?? 0) + (source?.transform.width ?? 0),
+    );
+    expect(opened?.transform.y).toBe(source?.transform.y);
+  });
+
+  it('keeps the connection through moves, and resolves it live', async () => {
+    const { harness, sourceId } = await openSales();
+    const { tableId, bindingId } = await followFrom(harness, sourceId, 'Sweden');
+    const core = harness.workspace.core;
+    const binding = core.world.bindings.get(bindingId);
+    if (binding === undefined) throw new Error('expected a binding');
+
+    const before = resolveBinding(core.world, binding);
+    core.dispatch({ type: 'MoveEntities', ids: [tableId], position: { x: -4_000, y: 900, z: 0 } });
+    const after = resolveBinding(core.world, binding);
+
+    // The record never changed; only the derived geometry did.
+    expect(core.world.bindings.get(bindingId)).toBe(binding);
+    expect(after?.to).not.toEqual(before?.to);
+    expect(after?.from).not.toEqual(before?.from);
+  });
+
+  it('takes the connector with the table when either end is closed', async () => {
+    const { harness, sourceId } = await openSales();
+    const { tableId } = await followFrom(harness, sourceId, 'Germany');
+    expect(harness.workspace.core.world.bindings.size).toBe(1);
+
+    await harness.workspace.closeTable(tableId);
+    expect(harness.workspace.core.world.bindings.size).toBe(0);
+    expect(harness.workspace.core.world.entities.size).toBe(1);
+  });
+
+  it('rejects a follow from a table or column that is gone', async () => {
+    const { harness, sourceId } = await openSales();
+    const source = harness.workspace.core.world.entities.get(sourceId);
+    const column = source?.columns.find((entry) => entry.sourceColumn.name === 'COUNTRY');
+    if (column === undefined) throw new Error('expected a column');
+
+    await expect(
+      harness.workspace.followForeignKey({
+        tableId: 'table:gone' as EntityId,
+        columnId: column.id,
+        row: 0,
+        sourceColumn: 'COUNTRY',
+        reference: column.sourceColumn.foreignKey as never,
+        value: 'Germany',
+      }),
+    ).rejects.toThrow(/No table/);
+
+    await expect(
+      harness.workspace.followForeignKey({
+        tableId: sourceId,
+        columnId: 'column:gone' as EntityId,
+        row: 0,
+        sourceColumn: 'COUNTRY',
+        reference: column.sourceColumn.foreignKey as never,
+        value: 'Germany',
+      }),
+    ).rejects.toThrow(/No column/);
+  });
+});
+
+describe('sizing a followed table', () => {
+  it('shrinks to the rows the key actually matched', async () => {
+    const harness = createAppHarness();
+    const sourceId = await harness.workspace.openTable({
+      schema: DEMO_SCHEMA,
+      table: 'SAMPLE_100',
+    });
+    const source = harness.workspace.core.world.entities.get(sourceId);
+    const column = source?.columns.find((entry) => entry.sourceColumn.name === 'COUNTRY');
+    if (source === undefined || column === undefined) throw new Error('expected a column');
+
+    const { tableId } = await harness.workspace.followForeignKey({
+      tableId: sourceId,
+      columnId: column.id,
+      row: 0,
+      sourceColumn: 'COUNTRY',
+      reference: column.sourceColumn.foreignKey as never,
+      value: 'Germany',
+    });
+
+    const opened = harness.workspace.core.world.entities.get(tableId);
+    if (opened === undefined) throw new Error('expected the opened table');
+    // One matching row, floored at three so the table still reads as a table.
+    expect(opened.transform.height).toBe(opened.view.headerHeight + 3 * opened.view.rowHeight);
+    expect(opened.transform.height).toBeLessThan(source.transform.height);
+  });
+
+  it('leaves the table at its default size when the row count is unknown', async () => {
+    const harness = createAppHarness({ hideRowCount: true });
+    const sourceId = await harness.workspace.openTable({
+      schema: DEMO_SCHEMA,
+      table: 'SAMPLE_100',
+    });
+    const source = harness.workspace.core.world.entities.get(sourceId);
+    const column = source?.columns.find((entry) => entry.sourceColumn.name === 'COUNTRY');
+    if (source === undefined || column === undefined) throw new Error('expected a column');
+
+    const { tableId } = await harness.workspace.followForeignKey({
+      tableId: sourceId,
+      columnId: column.id,
+      row: 0,
+      sourceColumn: 'COUNTRY',
+      reference: column.sourceColumn.foreignKey as never,
+      value: 'Germany',
+    });
+
+    // Nothing to fit to, so the table keeps the size it was created with.
+    const opened = harness.workspace.core.world.entities.get(tableId);
+    expect(opened?.transform.height).toBe(source.transform.height);
   });
 });

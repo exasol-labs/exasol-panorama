@@ -93,7 +93,8 @@ screenshots to `scripts/shots/` and reports the overlay metrics and any console
 errors. `npm run probe` is a scratch pad for settling graphics-stack questions
 that only a GPU can answer; it is how the material and texture-orientation
 recipes in `packages/renderer/src/babylon` were established. `npm run
-halo-check` and `npm run halo-exclusive` drive the action halo through a real
+halo-check`, `npm run halo-exclusive`, `npm run halo-reach` and `npm run
+binding-check` drive the halo and the foreign-key follow through a real
 pointer — pressing its close button, and confirming that hovering one table
 while another is selected leaves exactly one halo on screen.
 
@@ -214,13 +215,32 @@ value — the hovered entity, or the focused one when nothing is hovered — rat
 than a predicate that several entities could satisfy. That is what keeps one
 action halo on screen instead of a trail of them behind the pointer.
 
+**Bindings connect entities and survive movement.** A binding is its own record
+with `fromId`, `toId` and per-end anchors — the shape tldraw uses — but with one
+deliberate difference. tldraw recomputes bound geometry in lifecycle hooks that
+write back to the shape records; Panorama derives it every frame instead. A
+connector's endpoints are a pure function of the two transforms, so nothing has
+to be kept in sync, moving a table appends no extra commits, and no derived
+geometry leaks into document history. Anchors are either `auto` — tracking the
+border facing the other end, which is what makes a line _mobile_ — or `fixed` at
+a normalised point, which is the _sticky_ attachment the same model will use for
+notes. Removing an entity cascades to every binding that referenced it.
+
+**Following a foreign key is the first thing bindings are for.** A cell in a
+single-column foreign key column renders as a link; clicking it opens the
+referenced table filtered to the matching rows, sized to them, and joins the two
+with a directed, labelled connector. Composite keys are deliberately _not_
+followable: one cell of a multi-column key cannot identify the right rows.
+
 **Entity actions live in the halo.** Activating a table — pointer hover, and
 whatever stands in for it elsewhere: touch, or an XR gaze or controller ray —
 reveals a small row of buttons just above its top edge. They are GPU-drawn like
 everything else, sized in screen pixels so they stay usable when zoomed out, and
-placed outside the table so they never cover data. An activated table also
-claims its halo for picking, so the pointer can travel from the table onto a
-button without the button vanishing under the cursor. `close` is the first
+placed outside the table so they never cover data. Picking runs in two passes — a
+table's own bounds first, topmost down, and only then the halo band above one —
+so the pointer can travel from a table onto a button without the button
+vanishing under the cursor, the band never shadows the table beneath it, and a
+pointer that jumps straight onto a button still lands on it. `close` is the first
 action; the button reports an _intent_ and the composition root performs it,
 because closing a table also has to release its result set.
 
@@ -240,6 +260,10 @@ Delivered and covered by tests:
   tracking, predictive prefetch, block LRU cache with byte-based eviction.
 - An action halo on the activated table, with a working close button that
   releases the result set as well as removing the entity.
+- Bindings: connector records, derived geometry, cascade on delete, and
+  directional lines rendered behind the tables they join.
+- Foreign keys read from `SYS.EXA_ALL_CONSTRAINT_COLUMNS`, followable cells, and
+  the filtered result set behind them — verified against a live instance.
 - Exasol driver: connect, authenticate (password and access token), disconnect,
   list schemas, list tables, describe table, execute, result-set metadata, total
   row count, arbitrary range fetch, explicit result-set close.

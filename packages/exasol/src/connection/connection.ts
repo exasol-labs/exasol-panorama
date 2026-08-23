@@ -1,6 +1,6 @@
 import type { ConnectionId } from '@panorama/core';
 import { createIdFactory } from '@panorama/core';
-import type { SchemaInfo, TableInfo, TableSchema } from '@panorama/table';
+import type { ForeignKeyReference, SchemaInfo, TableInfo, TableSchema } from '@panorama/table';
 import { TableDataError } from '@panorama/table';
 import type {
   ExasolColumn,
@@ -14,7 +14,7 @@ import { DEFAULT_PROTOCOL_VERSION, isResultSet } from '../protocol/messages.js';
 import { toColumnDataType } from '../protocol/data-types.js';
 import type { RsaPublicKey } from '../protocol/rsa.js';
 import { encryptPassword, publicKeyFromHex, publicKeyFromPem } from '../protocol/rsa.js';
-import { describeQuery, quoteLiteral } from '../protocol/sql.js';
+import { describeQuery, foreignKeyQuery, quoteLiteral } from '../protocol/sql.js';
 import { ExasolProtocolClient } from './client.js';
 import type { ExasolClientOptions } from './client.js';
 import type { SocketFactory } from './socket.js';
@@ -299,16 +299,68 @@ export class ExasolConnection {
     });
   }
 
+  /**
+   * Single-column foreign keys on a table, keyed by column name.
+   *
+   * Read from the catalogue: result-set metadata carries types but not
+   * constraints.
+   */
+  async listForeignKeys(
+    schema: string,
+    table: string,
+  ): Promise<ReadonlyMap<string, ForeignKeyReference>> {
+    const result = await this.queryAll(foreignKeyQuery(schema, table));
+    const columns = result.columns[0] ?? [];
+    const references = new Map<string, ForeignKeyReference>();
+    for (let row = 0; row < columns.length; row += 1) {
+      const name = columns[row];
+      const referencedSchema = result.columns[1]?.[row];
+      const referencedTable = result.columns[2]?.[row];
+      const referencedColumn = result.columns[3]?.[row];
+      if (
+        name === null ||
+        name === undefined ||
+        referencedSchema === null ||
+        referencedSchema === undefined ||
+        referencedTable === null ||
+        referencedTable === undefined ||
+        referencedColumn === null ||
+        referencedColumn === undefined
+      ) {
+        continue;
+      }
+      references.set(String(name), {
+        schema: String(referencedSchema),
+        table: String(referencedTable),
+        column: String(referencedColumn),
+        constraint: String(result.columns[4]?.[row] ?? ''),
+      });
+    }
+    return references;
+  }
+
+  /**
+   * Column metadata for a table.
+   *
+   * The projection is the same `SELECT *` the result set will use, so the
+   * entity's columns always line up with the fetched chunks; foreign keys come
+   * from the catalogue alongside it.
+   */
   async describeTable(schema: string, table: string): Promise<TableSchema> {
     const resultSet = await this.openResultSet(describeQuery(schema, table));
     if (resultSet.handle !== null) await this.closeResultSet(resultSet.handle);
+    const foreignKeys = await this.listForeignKeys(schema, table);
     return {
       schema,
       table,
-      columns: resultSet.columns.map((column) => ({
-        name: column.name,
-        type: toColumnDataType(column.dataType),
-      })),
+      columns: resultSet.columns.map((column) => {
+        const reference = foreignKeys.get(column.name);
+        return {
+          name: column.name,
+          type: toColumnDataType(column.dataType),
+          ...(reference === undefined ? {} : { foreignKey: reference }),
+        };
+      }),
     };
   }
 }

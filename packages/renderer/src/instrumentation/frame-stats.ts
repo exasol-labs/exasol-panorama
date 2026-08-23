@@ -14,6 +14,7 @@ export interface FrameCounters {
   readonly textRuns: number;
   readonly placeholderCells: number;
   readonly tables: number;
+  readonly connectors: number;
 }
 
 export interface FrameStats extends FrameCounters {
@@ -35,6 +36,7 @@ export const EMPTY_COUNTERS: FrameCounters = Object.freeze({
   textRuns: 0,
   placeholderCells: 0,
   tables: 0,
+  connectors: 0,
 });
 
 export interface FrameStatsOptions {

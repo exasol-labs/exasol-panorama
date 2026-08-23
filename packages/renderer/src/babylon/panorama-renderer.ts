@@ -1,5 +1,11 @@
 import type { EntityId, PanoramaCore, TableEntity, TableColumnView } from '@panorama/core';
-import { ROW_NUMBER_GUTTER_WIDTH, isEntityActivated, rectsIntersect } from '@panorama/core';
+import {
+  ROW_NUMBER_GUTTER_WIDTH,
+  isBindingRevealed,
+  isEntityActivated,
+  rectsIntersect,
+  resolveBinding,
+} from '@panorama/core';
 import type { ColumnLayout } from '@panorama/table';
 import { computeColumnLayout } from '@panorama/table';
 import type { AbstractEngine } from '@babylonjs/core/Engines/abstractEngine.js';
@@ -9,11 +15,13 @@ import type { LodThresholds } from '../table/lod.js';
 import { lodForScale } from '../table/lod.js';
 import type { TableDataView } from '../table/table-draw.js';
 import { buildTableDrawList } from '../table/table-draw.js';
+import { buildConnectorDrawList } from '../table/connector.js';
 import { previewEntity } from '../input/drag-preview.js';
 import { AtlasTextRenderer } from '../text/text-renderer.js';
 import type { TextSystem, TextSystemFactory } from './text-system.js';
 import { createCanvasTextSystem } from './text-system.js';
-import type { TableTheme } from '../theme.js';
+import type { Rgba, TableTheme } from '../theme.js';
+import type { TextRun } from '../table/draw-list.js';
 import { DEFAULT_TABLE_THEME } from '../theme.js';
 import { PanoramaScene, toBabylonY } from './scene.js';
 import { QuadBatch } from './quad-batch.js';
@@ -158,6 +166,78 @@ export class PanoramaRenderer {
   }
 
   /**
+   * Draws every binding whose line crosses the viewport, and reports how many.
+   *
+   * Endpoints resolve against *drawn* transforms, so a connector follows a
+   * table live while it is being dragged rather than snapping at the end.
+   */
+  #drawConnectors(
+    visibleRect: { x: number; y: number; width: number; height: number },
+    markers: Array<{
+      readonly polygons: readonly { corners: readonly number[]; color: Rgba }[];
+      readonly texts: readonly TextRun[];
+    }>,
+  ): number {
+    const world = this.#core.world;
+    if (world.bindings.size === 0) return 0;
+    const transformOf = (id: EntityId): TableEntity['transform'] | undefined => {
+      const stored = world.entities.get(id);
+      return stored === undefined ? undefined : this.drawnEntity(stored).transform;
+    };
+
+    let drawn = 0;
+    for (const binding of world.bindings.values()) {
+      const resolved = resolveBinding(world, binding, transformOf);
+      if (resolved === null || resolved.degenerate) continue;
+      const list = buildConnectorDrawList({
+        resolved,
+        theme: this.theme,
+        scale: this.camera.scale,
+        highlighted:
+          isEntityActivated(this.#core.session, binding.fromId) ||
+          isEntityActivated(this.#core.session, binding.toId),
+        revealed: isBindingRevealed(this.#core.session, binding.id),
+      });
+      if (!rectsIntersect(list.bounds, visibleRect)) continue;
+
+      for (const polygon of list.polygons) this.#pushWorldPolygon(polygon);
+      markers.push({ polygons: list.markerPolygons, texts: list.texts });
+      drawn += 1;
+    }
+    return drawn;
+  }
+
+  /** Pushes a world-space polygon, converting to Babylon's upward y. */
+  #pushWorldPolygon(polygon: { corners: readonly number[]; color: Rgba }): void {
+    this.#solid.pushCorners(
+      [
+        polygon.corners[0] as number,
+        toBabylonY(polygon.corners[1] as number),
+        polygon.corners[2] as number,
+        toBabylonY(polygon.corners[3] as number),
+        polygon.corners[4] as number,
+        toBabylonY(polygon.corners[5] as number),
+        polygon.corners[6] as number,
+        toBabylonY(polygon.corners[7] as number),
+      ],
+      0,
+      polygon.color,
+    );
+  }
+
+  /** Lays out a world-space text run into the glyph batch. */
+  #pushWorldText(run: TextRun): void {
+    for (const glyph of this.text.layout(run).quads) {
+      this.#glyphs.push(glyph.x, toBabylonY(glyph.y), 0, glyph.width, glyph.height, glyph.color, [
+        glyph.u0,
+        glyph.v0,
+        glyph.u1,
+        glyph.v1,
+      ]);
+    }
+  }
+
+  /**
    * Pans — without zooming — until an entity is fully on screen. Used when a
    * table is opened, so it appears where the user is already looking instead of
    * somewhere off the edge of the canvas.
@@ -198,6 +278,14 @@ export class PanoramaRenderer {
     const lod = lodForScale(this.camera.scale, this.#lodThresholds);
     const session = this.#core.session;
     const selection = new Set(session.selection);
+    // Connector lines are drawn first so they pass behind the tables they join,
+    // emerging from the borders rather than crossing the data. Their markers
+    // are held back and drawn afterwards, in front.
+    const markers: Array<{
+      readonly polygons: readonly { corners: readonly number[]; color: Rgba }[];
+      readonly texts: readonly TextRun[];
+    }> = [];
+    const connectors = this.#drawConnectors(visibleRect, markers);
     let visibleRows = 0;
     let renderedRows = 0;
     let visibleColumns = 0;
@@ -279,6 +367,13 @@ export class PanoramaRenderer {
       placeholderCells += drawList.stats.placeholderCells;
     }
 
+    // Markers last: an expanded one must not disappear behind a table.
+    for (const marker of markers) {
+      for (const polygon of marker.polygons) this.#pushWorldPolygon(polygon);
+      for (const run of marker.texts) this.#pushWorldText(run);
+      textRuns += marker.texts.length;
+    }
+
     this.#solid.commit();
     this.#glyphs.commit();
     if (this.#atlas.version !== this.#atlasVersion) {
@@ -289,6 +384,7 @@ export class PanoramaRenderer {
     this.#stats.endFrame(
       {
         tables,
+        connectors,
         visibleRows,
         renderedRows,
         visibleColumns,

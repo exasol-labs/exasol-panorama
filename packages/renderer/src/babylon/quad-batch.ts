@@ -140,6 +140,34 @@ export class QuadBatch {
   }
 
   /**
+   * Adds a quad from four explicit corners, in Babylon world space and wound
+   * consistently. Repeating a corner expresses a triangle, which is how
+   * arrowheads are drawn. This is what lets connectors — diagonal lines — share
+   * the same batch as the axis-aligned table geometry.
+   */
+  pushCorners(
+    corners: readonly [number, number, number, number, number, number, number, number],
+    z: number,
+    color: Rgba,
+  ): void {
+    if (this.#count + 1 > this.#capacity) this.#grow(this.#count + 1);
+    const quad = this.#count;
+    const position = quad * VERTICES_PER_QUAD * 3;
+    const colorOffset = quad * VERTICES_PER_QUAD * 4;
+
+    for (let vertex = 0; vertex < VERTICES_PER_QUAD; vertex += 1) {
+      this.#positions[position + vertex * 3] = corners[vertex * 2] as number;
+      this.#positions[position + vertex * 3 + 1] = corners[vertex * 2 + 1] as number;
+      this.#positions[position + vertex * 3 + 2] = z;
+      this.#colors.set(color, colorOffset + vertex * 4);
+    }
+    if (this.#textured) {
+      this.#uvs.set([0, 0, 1, 0, 1, 1, 0, 1], quad * VERTICES_PER_QUAD * 2);
+    }
+    this.#count += 1;
+  }
+
+  /**
    * Uploads the frame.
    *
    * The GPU buffers are always the full capacity: a graphics buffer cannot be

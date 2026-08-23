@@ -2,6 +2,7 @@ import type { EntityId } from '@panorama/core';
 import type {
   DesiredBlock,
   ResultChunk,
+  RowFilter,
   SchemaInfo,
   TableInfo,
   TableSchema,
@@ -61,6 +62,8 @@ export interface OpenTableMessage {
   readonly tableId: EntityId;
   readonly schema: string;
   readonly table: string;
+  /** Restricts the result set; set when following a foreign key. */
+  readonly filter?: RowFilter;
 }
 
 export interface CloseTableMessage {

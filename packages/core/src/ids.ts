@@ -17,6 +17,7 @@ export type Brand<TValue, TBrand extends string> = TValue & {
 export type EntityId = Brand<string, 'EntityId'>;
 export type ConnectionId = Brand<string, 'ConnectionId'>;
 export type CommitId = Brand<string, 'CommitId'>;
+export type BindingId = Brand<string, 'BindingId'>;
 
 /** Crockford base32, excluding I, L, O and U. */
 const ENCODING = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
@@ -97,12 +98,13 @@ const incrementBase32 = (value: string): string => {
 };
 
 /** Namespaces used in identifier prefixes. */
-export type IdNamespace = 'table' | 'column' | 'connection' | 'commit';
+export type IdNamespace = 'table' | 'column' | 'connection' | 'commit' | 'binding';
 
 export interface IdFactory {
-  entity(namespace: Exclude<IdNamespace, 'commit' | 'connection'>): EntityId;
+  entity(namespace: Exclude<IdNamespace, 'commit' | 'connection' | 'binding'>): EntityId;
   connection(): ConnectionId;
   commit(): CommitId;
+  binding(): BindingId;
 }
 
 /** Creates namespaced id factories sharing one monotonic ULID source. */
@@ -112,6 +114,7 @@ export const createIdFactory = (options: UlidFactoryOptions = {}): IdFactory => 
     entity: (namespace): EntityId => `${namespace}:${ulid()}` as EntityId,
     connection: (): ConnectionId => `connection:${ulid()}` as ConnectionId,
     commit: (): CommitId => `commit:${ulid()}` as CommitId,
+    binding: (): BindingId => `binding:${ulid()}` as BindingId,
   };
 };
 

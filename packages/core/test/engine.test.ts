@@ -30,7 +30,11 @@ describe('PanoramaCore', () => {
     const table = makeTable(ids);
     const core = new PanoramaCore({
       ids,
-      initialWorld: { entities: new Map([[table.id, table]]), order: [table.id] },
+      initialWorld: {
+        entities: new Map([[table.id, table]]),
+        order: [table.id],
+        bindings: new Map(),
+      },
     });
     expect(core.world.entities.size).toBe(1);
   });

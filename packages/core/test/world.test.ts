@@ -64,6 +64,7 @@ describe('world state', () => {
     const dangling = {
       entities: populated.entities,
       order: [...populated.order, 'table:x' as EntityId],
+      bindings: new Map(),
     };
     expect(entitiesInOrder(dangling)).toEqual([a, b, c]);
   });

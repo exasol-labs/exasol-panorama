@@ -36,6 +36,17 @@ export interface TableTheme {
   readonly haloBorder: Rgba;
   readonly haloIcon: Rgba;
   readonly haloHoverIcon: Rgba;
+  readonly connectorLine: Rgba;
+  readonly connectorHighlight: Rgba;
+  readonly connectorLabelText: Rgba;
+  readonly connectorLabelBackground: Rgba;
+  readonly connectorMarkerBackground: Rgba;
+  readonly connectorMarkerHoverBackground: Rgba;
+  readonly connectorMarkerBorder: Rgba;
+  readonly connectorMarkerIcon: Rgba;
+  readonly connectorMarkerHoverIcon: Rgba;
+  /** Cells that can be followed to the rows their foreign key points at. */
+  readonly linkText: Rgba;
 
   readonly titleHeight: number;
   readonly typeRowHeight: number;
@@ -51,6 +62,16 @@ export interface TableTheme {
   /** Distance from the table's top edge to the halo, in screen pixels. */
   readonly haloOffset: number;
   readonly haloIconFontSize: number;
+  /** Connector metrics, in screen pixels. */
+  readonly connectorWidth: number;
+  readonly connectorGap: number;
+  readonly connectorArrowLength: number;
+  readonly connectorArrowWidth: number;
+  readonly connectorLabelFontSize: number;
+  readonly connectorLabelPaddingX: number;
+  /** Side of the square marker sitting on a connector, in screen pixels. */
+  readonly connectorMarkerSize: number;
+  readonly connectorMarkerIconSize: number;
   readonly fontSize: number;
   readonly headerFontSize: number;
   readonly typeFontSize: number;
@@ -92,6 +113,16 @@ export const DEFAULT_TABLE_THEME: TableTheme = Object.freeze({
   haloBorder: rgb(0xb9_c0_c8),
   haloIcon: rgb(0x3c_44_4d),
   haloHoverIcon: rgb(0xff_ff_ff),
+  connectorLine: rgb(0x6b_7a_8f),
+  connectorHighlight: rgb(0x2f_6f_ed),
+  connectorLabelText: rgb(0x3c_44_4d),
+  connectorLabelBackground: rgb(0xff_ff_ff, 0.97),
+  connectorMarkerBackground: rgb(0xff_ff_ff, 0.97),
+  connectorMarkerHoverBackground: rgb(0x2f_6f_ed),
+  connectorMarkerBorder: rgb(0x9a_a3_ad),
+  connectorMarkerIcon: rgb(0x5c_66_71),
+  connectorMarkerHoverIcon: rgb(0xff_ff_ff),
+  linkText: rgb(0x1c_5b_c4),
 
   titleHeight: 26,
   typeRowHeight: 22,
@@ -105,6 +136,14 @@ export const DEFAULT_TABLE_THEME: TableTheme = Object.freeze({
   haloGap: 6,
   haloOffset: 8,
   haloIconFontSize: 15,
+  connectorWidth: 1.75,
+  connectorGap: 4,
+  connectorArrowLength: 11,
+  connectorArrowWidth: 9,
+  connectorLabelFontSize: 10,
+  connectorLabelPaddingX: 6,
+  connectorMarkerSize: 22,
+  connectorMarkerIconSize: 15,
   fontSize: 12,
   headerFontSize: 12,
   typeFontSize: 10,

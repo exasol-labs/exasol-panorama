@@ -1,4 +1,4 @@
-import type { ColumnDataType } from './data-types.js';
+import type { ColumnDataType, ForeignKeyReference } from './data-types.js';
 import type { TableColumnView, TableEntity, TableSource, TableViewSettings } from './entities.js';
 import { clamp, type Size2, type Vec3 } from './geometry.js';
 import type { IdFactory } from './ids.js';
@@ -57,6 +57,7 @@ export interface TableColumnSpec {
   readonly type: ColumnDataType;
   readonly width?: number;
   readonly visible?: boolean;
+  readonly foreignKey?: ForeignKeyReference;
 }
 
 export interface TableEntitySpec {
@@ -81,7 +82,11 @@ export const buildTableEntity = (ids: IdFactory, spec: TableEntitySpec): TableEn
   const view: TableViewSettings = { ...DEFAULT_TABLE_VIEW, ...spec.view };
   const columns: TableColumnView[] = spec.columns.map((column) => ({
     id: ids.entity('column'),
-    sourceColumn: { name: column.name, type: column.type },
+    sourceColumn: {
+      name: column.name,
+      type: column.type,
+      ...(column.foreignKey === undefined ? {} : { foreignKey: column.foreignKey }),
+    },
     width: column.width ?? estimateColumnWidth(column.name, column.type),
     visible: column.visible ?? true,
   }));

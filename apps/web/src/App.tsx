@@ -7,12 +7,12 @@ import {
   SchemaExplorer,
 } from '@panorama/ui';
 import type { ConnectionRequest, ConnectionStatus, SchemaListing } from '@panorama/ui';
-import type { FrameStats, PanoramaRenderer } from '@panorama/renderer';
+import type { ForeignKeyFollow, FrameStats, PanoramaRenderer } from '@panorama/renderer';
 import type { ConnectionId, EntityActionId, EntityId } from '@panorama/core';
 import type { CreateEngineOptions } from '@panorama/renderer';
 import { PanoramaCanvas } from './panorama/PanoramaCanvas.js';
 import { backendOverride } from './bootstrap.js';
-import { DEMO_SCHEMA, demoSchema, demoTables } from './panorama/demo.js';
+import { DEMO_SCHEMA, demoTables } from './panorama/demo.js';
 import type { Workspace } from './panorama/workspace.js';
 
 /**
@@ -171,15 +171,9 @@ export const App = ({ workspace, defaultUrl, engineOptions }: AppProps): React.J
   const openSample = useCallback(
     (name: string) => {
       setNotice(null);
-      const schema = demoSchema(name);
-      if (schema === undefined) return;
       void (async (): Promise<void> => {
         try {
-          const id = await workspace.openTable({
-            schema: DEMO_SCHEMA,
-            table: name,
-            knownSchema: schema,
-          });
+          const id = await workspace.openTable({ schema: DEMO_SCHEMA, table: name });
           rendererRef.current?.revealEntity(id);
         } catch (error) {
           setNotice(describeError(error));
@@ -196,6 +190,21 @@ export const App = ({ workspace, defaultUrl, engineOptions }: AppProps): React.J
       void (async (): Promise<void> => {
         try {
           await workspace.performAction(entityId, action);
+        } catch (error) {
+          setNotice(describeError(error));
+        }
+      })();
+    },
+    [workspace],
+  );
+
+  const followForeignKey = useCallback(
+    (follow: ForeignKeyFollow) => {
+      setNotice(null);
+      void (async (): Promise<void> => {
+        try {
+          const { tableId } = await workspace.followForeignKey(follow);
+          rendererRef.current?.revealEntity(tableId);
         } catch (error) {
           setNotice(describeError(error));
         }
@@ -286,6 +295,7 @@ export const App = ({ workspace, defaultUrl, engineOptions }: AppProps): React.J
           engineOptions={engine}
           onError={setNotice}
           onAction={performAction}
+          onFollowForeignKey={followForeignKey}
         />
         <PerformanceOverlay metrics={metrics} visible={overlayVisible} onToggle={toggleOverlay} />
       </main>

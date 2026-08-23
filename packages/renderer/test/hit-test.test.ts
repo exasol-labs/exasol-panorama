@@ -161,8 +161,21 @@ describe('the action halo', () => {
     expect(hitTestTable(input({ showHalo: true }), 599, 1)?.kind).toBe('resize');
   });
 
-  it('returns null for the gap between the halo and the table', () => {
-    expect(hitTestTable(input({ showHalo: true }), centre.x, -1)).toBeNull();
+  it('reports the band between the table and its buttons, so hover survives', () => {
+    // Reported as a halo hit with no button: nothing to press, but enough to
+    // keep the table activated while the pointer travels to a button.
+    const gap = hitTestTable(input({ showHalo: true }), centre.x, -1);
+    expect(gap).toMatchObject({ kind: 'halo', action: null, button: null });
+
+    // Anywhere along the table's width, not just above the buttons.
+    expect(hitTestTable(input({ showHalo: true }), 20, -1)?.kind).toBe('halo');
+    expect(hitTestTable(input({ showHalo: true }), 300, -1)?.kind).toBe('halo');
+  });
+
+  it('returns null above the band and inside the table', () => {
+    expect(hitTestTable(input({ showHalo: true }), centre.x, halo.hoverBounds.y - 2)).toBeNull();
+    // Inside the table the ordinary hit testing takes over.
+    expect(hitTestTable(input({ showHalo: true }), 300, 40)?.kind).not.toBe('halo');
   });
 
   it('scales its target area with the camera', () => {

@@ -2,6 +2,7 @@ import type { EntityId } from '@panorama/core';
 import type {
   DesiredBlock,
   ResultChunk,
+  RowFilter,
   SchemaInfo,
   TableInfo,
   TableSchema,
@@ -44,7 +45,12 @@ export interface ConnectionStatusEvent {
 
 /** The narrow surface a table controller needs; keeps controllers testable. */
 export interface TableDataGateway {
-  openTable(tableId: EntityId, schema: string, table: string): Promise<OpenTableResult>;
+  openTable(
+    tableId: EntityId,
+    schema: string,
+    table: string,
+    filter?: RowFilter,
+  ): Promise<OpenTableResult>;
   reopenTable(tableId: EntityId): Promise<OpenTableResult>;
   closeTable(tableId: EntityId): Promise<void>;
   requestBlocks(
@@ -156,13 +162,19 @@ export class DataWorkerClient implements TableDataGateway {
     return this.#request((requestId) => ({ type: 'describeTable', requestId, schema, table }));
   }
 
-  openTable(tableId: EntityId, schema: string, table: string): Promise<OpenTableResult> {
+  openTable(
+    tableId: EntityId,
+    schema: string,
+    table: string,
+    filter?: RowFilter,
+  ): Promise<OpenTableResult> {
     return this.#request((requestId) => ({
       type: 'openTable',
       requestId,
       tableId,
       schema,
       table,
+      ...(filter === undefined ? {} : { filter }),
     }));
   }
 

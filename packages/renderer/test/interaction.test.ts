@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import type { EntityActionId, EntityId, TableEntity } from '@panorama/core';
-import { PanoramaCore } from '@panorama/core';
+import type { BindingId, EntityActionId, EntityId, TableEntity } from '@panorama/core';
+import { PanoramaCore, resolveBinding } from '@panorama/core';
 import { computeColumnLayout } from '@panorama/table';
-import type { InteractionHost, TableViewState } from '@panorama/renderer';
+import type { CellValue } from '@panorama/table';
+import type { ForeignKeyFollow, InteractionHost } from '@panorama/renderer';
 import {
   CameraController,
   DEFAULT_TABLE_THEME,
@@ -27,6 +28,8 @@ const setup = (
     rowCount?: number | null;
     width?: number;
     onAction?: (entityId: EntityId, action: EntityActionId) => void;
+    onFollowForeignKey?: (follow: ForeignKeyFollow) => void;
+    cells?: (row: number, columnIndex: number) => CellValue | undefined;
   } = {},
 ): Harness => {
   const ids = testIds();
@@ -44,14 +47,21 @@ const setup = (
 
   const scrolls: Harness['scrolls'] = [];
   const fractions: Harness['fractions'] = [];
-  const view: TableViewState = {
-    layout: computeColumnLayout(stored.columns),
-    scrollTop: 0,
-    scrollLeft: 0,
-    rowCount: options.rowCount === undefined ? 1_000_000 : options.rowCount,
-  };
   const host: InteractionHost = {
-    viewOf: () => view,
+    // Derived from the live entity, as the real workspace does, so a column
+    // added or changed after setup is reflected in hit testing.
+    viewOf: (id) => {
+      const entity = core.world.entities.get(id);
+      return entity === undefined
+        ? null
+        : {
+            layout: computeColumnLayout(entity.columns),
+            scrollTop: 0,
+            scrollLeft: 0,
+            rowCount: options.rowCount === undefined ? 1_000_000 : options.rowCount,
+          };
+    },
+    cellAt: (_tableId, row, columnIndex) => options.cells?.(row, columnIndex),
     scrollBy: (tableId, deltaX, deltaY) => scrolls.push({ tableId, deltaX, deltaY }),
     scrollToFraction: (_tableId, axis, fraction) => fractions.push({ axis, fraction }),
   };
@@ -62,6 +72,9 @@ const setup = (
     host,
     theme: DEFAULT_TABLE_THEME,
     ...(options.onAction === undefined ? {} : { onAction: options.onAction }),
+    ...(options.onFollowForeignKey === undefined
+      ? {}
+      : { onFollowForeignKey: options.onFollowForeignKey }),
   });
 
   return {
@@ -88,6 +101,20 @@ describe('selection and hover', () => {
     harness.controller.onPointerUp(harness.screenOf(300, 200));
     harness.controller.onPointerDown(harness.screenOf(5_000, 5_000));
     expect(harness.core.session.selection).toEqual([]);
+  });
+
+  it('selects without dragging when pressing the header or the gutter', () => {
+    const harness = setup();
+    const header = harness.screenOf(200, 40);
+    harness.controller.onPointerDown(header);
+    expect(harness.core.session.selection).toEqual([harness.table.id]);
+    expect(harness.core.session.drag).toBeNull();
+    harness.controller.onPointerUp(header);
+
+    const gutter = harness.screenOf(20, harness.table.view.headerHeight + 30);
+    harness.controller.onPointerDown(gutter);
+    expect(harness.core.session.drag).toBeNull();
+    expect(harness.controller.cursor).toBe('default');
   });
 
   it('tracks hover and the cursor', () => {
@@ -305,6 +332,7 @@ describe('wheel handling', () => {
           scrollLeft: 0,
           rowCount: 1_000,
         }),
+        cellAt: () => undefined,
         scrollBy: (_id, _dx, dy) => scrolls.push(dy),
         scrollToFraction: () => {},
       },
@@ -370,6 +398,7 @@ describe('tables without an open data session', () => {
       theme: DEFAULT_TABLE_THEME,
       host: {
         viewOf: () => null,
+        cellAt: () => undefined,
         scrollBy: () => {},
         scrollToFraction: () => {},
       },
@@ -401,15 +430,30 @@ describe('the action halo', () => {
     harness.controller.onPointerMove(harness.screenOf(300, 200));
   };
 
-  it('is only reachable once the table is activated', () => {
+  it('is reachable even by a pointer that jumps straight to it', () => {
     const harness = setup();
-    expect(harness.controller.entityAt(300, -20)).toBeNull();
-
-    activate(harness);
-    // Hover keeps the table activated, so the halo above it is now pickable.
+    // No hover first: a flick of the mouse is not a continuous path, so the
+    // band has to claim the point whatever the activation state.
     const point = haloCentre(harness);
     const world = harness.camera.screenToWorld(point.screenX, point.screenY);
     expect(harness.controller.entityAt(world.x, world.y)?.id).toBe(harness.table.id);
+
+    harness.controller.onPointerMove(point);
+    expect(harness.core.session.hoveredAction?.action).toBe('close');
+  });
+
+  it('lets a table body win over a band lying over it', () => {
+    const harness = setup();
+    // A second table whose halo band sits across the first table's body.
+    const overlapping = makeTable(testIds(41), {
+      position: { x: 0, y: 240, z: 0 },
+      size: { width: 600, height: 400 },
+    });
+    harness.core.dispatch({ type: 'CreateTableEntity', entity: overlapping });
+
+    // A point inside the first table, and inside the second's band above it.
+    const inFirst = harness.controller.entityAt(300, 220);
+    expect(inFirst?.id).toBe(harness.table.id);
   });
 
   it('tracks the hovered action and shows a pointer cursor', () => {
@@ -485,6 +529,60 @@ describe('the action halo', () => {
     expect(harness.core.session.pressedAction).toBeNull();
   });
 
+  it('stays reachable while another table is selected', () => {
+    // The reported bug: with table A selected, hovering table B showed B's
+    // halo, but moving towards it deactivated B — activation fell back to A
+    // and the buttons vanished before they could be clicked.
+    const actions: Array<{ id: string; action: string }> = [];
+    const harness = setup({ onAction: (id, action) => actions.push({ id, action }) });
+    const other = makeTable(testIds(31), {
+      position: { x: -2_000, y: -2_000, z: 0 },
+      size: { width: 300, height: 200 },
+    });
+    harness.core.dispatch({ type: 'CreateTableEntity', entity: other });
+    harness.core.dispatchSession({ type: 'SetSelection', ids: [other.id] });
+
+    // Hover the *other* table — the one that is not selected.
+    harness.controller.onPointerMove(harness.screenOf(300, 200));
+    expect(harness.core.session.hovered).toBe(harness.table.id);
+
+    // Leave the table upwards on the left, nowhere near the button.
+    harness.controller.onPointerMove(harness.screenOf(40, -4));
+    expect(harness.core.session.hovered).toBe(harness.table.id);
+
+    // Travel along the band to the button and press it.
+    const point = haloCentre(harness);
+    harness.controller.onPointerMove(point);
+    expect(harness.core.session.hoveredAction?.entityId).toBe(harness.table.id);
+
+    harness.controller.onPointerDown(point);
+    harness.controller.onPointerUp(point);
+    expect(actions).toEqual([{ id: harness.table.id, action: 'close' }]);
+  });
+
+  it('releases the table once the pointer leaves the band entirely', () => {
+    const harness = setup();
+    harness.controller.onPointerMove(harness.screenOf(300, 200));
+    expect(harness.core.session.hovered).toBe(harness.table.id);
+
+    // Well above the band: nothing is activated any more.
+    harness.controller.onPointerMove(harness.screenOf(300, -200));
+    expect(harness.core.session.hovered).toBeNull();
+  });
+
+  it('presses nothing in the band between the table and its buttons', () => {
+    const actions: string[] = [];
+    const harness = setup({ onAction: (_id, action) => actions.push(action) });
+    harness.controller.onPointerMove(harness.screenOf(300, 200));
+
+    const gap = harness.screenOf(300, -4);
+    harness.controller.onPointerDown(gap);
+    expect(harness.core.session.pressedAction).toBeNull();
+    expect(harness.core.session.drag).toBeNull();
+    harness.controller.onPointerUp(gap);
+    expect(actions).toEqual([]);
+  });
+
   it('stays reachable for a selected table the pointer has left', () => {
     const harness = setup();
     harness.controller.onPointerDown(harness.screenOf(300, 200));
@@ -496,5 +594,240 @@ describe('the action halo', () => {
     // Selection alone keeps the halo available.
     harness.controller.onPointerMove(haloCentre(harness));
     expect(harness.core.session.hoveredAction?.action).toBe('close');
+  });
+});
+
+describe('following a foreign key', () => {
+  const REFERENCE = {
+    schema: 'SALES',
+    table: 'COUNTRIES',
+    column: 'NAME',
+    constraint: 'FK_COUNTRY',
+  } as const;
+
+  /** A table whose second column carries a foreign key. */
+  const linked = (
+    options: { cells?: (row: number, columnIndex: number) => CellValue | undefined } = {},
+  ): { harness: Harness; follows: ForeignKeyFollow[] } => {
+    const follows: ForeignKeyFollow[] = [];
+    const harness = setup({
+      onFollowForeignKey: (follow) => follows.push(follow),
+      cells: options.cells ?? ((row, columnIndex) => (columnIndex === 1 ? 'Germany' : row)),
+    });
+    const table = harness.core.world.entities.get(harness.table.id) as TableEntity;
+    harness.core.dispatch({
+      type: 'RemoveEntities',
+      ids: [table.id],
+    });
+    harness.core.dispatch({
+      type: 'CreateTableEntity',
+      entity: {
+        ...table,
+        columns: table.columns.map((column, index) =>
+          index === 1
+            ? { ...column, sourceColumn: { ...column.sourceColumn, foreignKey: REFERENCE } }
+            : column,
+        ),
+      },
+    });
+    return { harness, follows };
+  };
+
+  /** Screen position of a cell in the foreign key column. */
+  const cellPoint = (harness: Harness, row: number): { screenX: number; screenY: number } => {
+    const table = harness.core.world.entities.get(harness.table.id) as TableEntity;
+    const layout = computeColumnLayout(table.columns);
+    const placement = layout.placements[1];
+    if (placement === undefined) throw new Error('expected a second column');
+    return harness.screenOf(
+      64 + placement.x + placement.width / 2,
+      table.view.headerHeight + row * table.view.rowHeight + table.view.rowHeight / 2,
+    );
+  };
+
+  it('shows a pointer cursor over a followable cell', () => {
+    const { harness } = linked();
+    harness.controller.onPointerMove(cellPoint(harness, 3));
+    expect(harness.controller.cursor).toBe('pointer');
+
+    // An ordinary column is not a link.
+    const table = harness.core.world.entities.get(harness.table.id) as TableEntity;
+    harness.controller.onPointerMove(harness.screenOf(70, table.view.headerHeight + 12));
+    expect(harness.controller.cursor).toBe('default');
+  });
+
+  it('reports the click as an intent, with everything needed to follow it', () => {
+    const { harness, follows } = linked();
+    const point = cellPoint(harness, 3);
+    harness.controller.onPointerDown(point);
+    harness.controller.onPointerUp(point);
+
+    expect(follows).toHaveLength(1);
+    expect(follows[0]).toMatchObject({
+      tableId: harness.table.id,
+      row: 3,
+      sourceColumn: 'COUNTRY',
+      reference: REFERENCE,
+      value: 'Germany',
+    });
+  });
+
+  it('still selects the table it was clicked in', () => {
+    const { harness } = linked();
+    const point = cellPoint(harness, 1);
+    harness.controller.onPointerDown(point);
+    harness.controller.onPointerUp(point);
+    expect(harness.core.session.selection).toEqual([harness.table.id]);
+  });
+
+  it('does not follow a NULL, or a cell whose block has not arrived', () => {
+    for (const cells of [() => null, () => undefined] as Array<
+      (row: number, columnIndex: number) => CellValue | undefined
+    >) {
+      const { harness, follows } = linked({ cells });
+      const point = cellPoint(harness, 2);
+      harness.controller.onPointerDown(point);
+      harness.controller.onPointerUp(point);
+      expect(follows).toEqual([]);
+    }
+  });
+
+  it('does not follow a column without a foreign key', () => {
+    const { harness, follows } = linked();
+    const table = harness.core.world.entities.get(harness.table.id) as TableEntity;
+    const point = harness.screenOf(70, table.view.headerHeight + 12);
+    harness.controller.onPointerDown(point);
+    harness.controller.onPointerUp(point);
+    expect(follows).toEqual([]);
+  });
+
+  it('does not follow when the pointer moved to another cell', () => {
+    const { harness, follows } = linked();
+    harness.controller.onPointerDown(cellPoint(harness, 3));
+    harness.controller.onPointerUp(cellPoint(harness, 6));
+    expect(follows).toEqual([]);
+  });
+
+  it('does not follow when the press ends off the table', () => {
+    const { harness, follows } = linked();
+    harness.controller.onPointerDown(cellPoint(harness, 3));
+    harness.controller.onPointerUp(harness.screenOf(5_000, 5_000));
+    expect(follows).toEqual([]);
+  });
+
+  it('forgets the press when the pointer leaves the canvas', () => {
+    const { harness, follows } = linked();
+    harness.controller.onPointerDown(cellPoint(harness, 3));
+    harness.controller.onPointerLeave();
+    harness.controller.onPointerUp(cellPoint(harness, 3));
+    expect(follows).toEqual([]);
+  });
+
+  it('works without a follow handler', () => {
+    const harness = setup({ cells: () => 'Germany' });
+    const point = cellPoint(harness, 3);
+    expect(() => {
+      harness.controller.onPointerDown(point);
+      harness.controller.onPointerUp(point);
+    }).not.toThrow();
+  });
+});
+
+describe('the connector marker', () => {
+  /** Two tables joined by a labelled connector, well apart. */
+  const connected = (): {
+    harness: Harness;
+    bindingId: BindingId;
+    midpoint: { x: number; y: number };
+  } => {
+    const harness = setup();
+    const ids = testIds(51);
+    const target = makeTable(ids, {
+      position: { x: 1_400, y: 0, z: 0 },
+      size: { width: 400, height: 300 },
+    });
+    harness.core.dispatch({ type: 'CreateTableEntity', entity: target });
+    const bindingId = ids.binding();
+    harness.core.dispatch({
+      type: 'CreateBinding',
+      binding: {
+        id: bindingId,
+        kind: 'connector',
+        fromId: harness.table.id,
+        toId: target.id,
+        from: { mode: 'auto' },
+        to: { mode: 'auto' },
+        directed: true,
+        label: 'COUNTRY = Germany',
+      },
+    });
+    const resolved = resolveBinding(
+      harness.core.world,
+      harness.core.world.bindings.get(bindingId) as never,
+    );
+    if (resolved === null) throw new Error('expected a resolved binding');
+    return {
+      harness,
+      bindingId,
+      midpoint: {
+        x: (resolved.from.x + resolved.to.x) / 2,
+        y: (resolved.from.y + resolved.to.y) / 2,
+      },
+    };
+  };
+
+  it('finds the marker in the gap between the tables', () => {
+    const { harness, bindingId, midpoint } = connected();
+    expect(harness.controller.bindingMarkerAt(midpoint.x, midpoint.y)?.id).toBe(bindingId);
+    // Away from the middle there is only the line, which is not a target.
+    expect(harness.controller.bindingMarkerAt(midpoint.x + 200, midpoint.y)).toBeNull();
+  });
+
+  it('reveals the filter on hover and hides it again', () => {
+    const { harness, bindingId, midpoint } = connected();
+    harness.controller.onPointerMove(harness.screenOf(midpoint.x, midpoint.y));
+    expect(harness.core.session.hoveredBinding).toBe(bindingId);
+    expect(harness.controller.cursor).toBe('pointer');
+
+    harness.controller.onPointerMove(harness.screenOf(midpoint.x + 200, midpoint.y));
+    expect(harness.core.session.hoveredBinding).toBeNull();
+  });
+
+  it('stays open while the pointer moves within the chip it opened', () => {
+    const { harness, bindingId, midpoint } = connected();
+    harness.controller.onPointerMove(harness.screenOf(midpoint.x, midpoint.y));
+
+    // The revealed chip is wider than the compact square; a point that is only
+    // inside the expanded box must keep it open.
+    const compact = DEFAULT_TABLE_THEME.connectorMarkerSize;
+    harness.controller.onPointerMove(harness.screenOf(midpoint.x + compact, midpoint.y));
+    expect(harness.core.session.hoveredBinding).toBe(bindingId);
+  });
+
+  it('holds the filter open while pressed, which is how a touch reveals it', () => {
+    const { harness, bindingId, midpoint } = connected();
+    const point = harness.screenOf(midpoint.x, midpoint.y);
+    harness.controller.onPointerDown(point);
+    expect(harness.core.session.pressedBinding).toBe(bindingId);
+    // Pressing a marker neither selects a table nor starts a canvas pan.
+    expect(harness.core.session.drag).toBeNull();
+    expect(harness.core.session.selection).toEqual([]);
+
+    harness.controller.onPointerUp(point);
+    expect(harness.core.session.pressedBinding).toBeNull();
+  });
+
+  it('is ignored where a table covers it, since the line draws behind', () => {
+    const { harness } = connected();
+    // The middle of a table is never a marker, whatever is underneath.
+    expect(harness.controller.bindingMarkerAt(300, 200)).toBeNull();
+  });
+
+  it('clears on leaving the canvas', () => {
+    const { harness, midpoint } = connected();
+    harness.controller.onPointerDown(harness.screenOf(midpoint.x, midpoint.y));
+    harness.controller.onPointerLeave();
+    expect(harness.core.session.hoveredBinding).toBeNull();
+    expect(harness.core.session.pressedBinding).toBeNull();
   });
 });

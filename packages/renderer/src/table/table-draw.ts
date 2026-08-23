@@ -497,6 +497,9 @@ export const buildTableDrawList = (input: TableRenderInput): TableDrawList => {
 
       const type = placement.column.sourceColumn.type;
       const formatted = value === null ? NULL_PLACEHOLDER : formatCell(value, type);
+      // A followable cell reads as a link, which is the whole affordance: the
+      // click that opens the referenced rows has to look like it will.
+      const followable = value !== null && placement.column.sourceColumn.foreignKey !== undefined;
       text({
         x: visibleX + theme.cellPaddingX,
         y,
@@ -504,7 +507,7 @@ export const buildTableDrawList = (input: TableRenderInput): TableDrawList => {
         height: rowHeight,
         clip: rowClip,
         text: formatted,
-        color: value === null ? theme.nullText : theme.cellText,
+        color: value === null ? theme.nullText : followable ? theme.linkText : theme.cellText,
         align: value === null ? 'left' : alignmentForType(type),
         fontSize: theme.fontSize,
       });

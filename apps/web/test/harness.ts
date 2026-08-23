@@ -6,6 +6,7 @@ import { DataWorker, DataWorkerClient, createInProcessEndpointPair } from '@pano
 import type { ExasolConnection } from '@panorama/exasol';
 import { ManualScheduler, MockTableDataSource, factRelation } from '@panorama/test-support';
 import { Workspace } from '../src/panorama/workspace.js';
+import { DEMO_SCHEMA, demoRelation, demoSchema } from '../src/panorama/demo.js';
 
 export interface AppHarness {
   readonly workspace: Workspace;
@@ -31,6 +32,8 @@ export interface HarnessOptions {
   readonly latencyMs?: number;
   readonly failOpen?: boolean;
   readonly failDescribe?: boolean;
+  /** Simulates a source that cannot report how many rows it has. */
+  readonly hideRowCount?: boolean;
 }
 
 export const createAppHarness = (options: HarnessOptions = {}): AppHarness => {
@@ -57,17 +60,31 @@ export const createAppHarness = (options: HarnessOptions = {}): AppHarness => {
         },
       } as unknown as ExasolConnection;
     },
-    createSource: (_request: TableSourceRequest): TableDataSource =>
-      new MockTableDataSource({
-        relation: factRelation(options.rowCount ?? 100_000),
+    createSource: (request: TableSourceRequest): TableDataSource => {
+      // Mirrors the real worker: the demo schema is served locally.
+      const relation =
+        request.schema === DEMO_SCHEMA
+          ? demoRelation(request.table)
+          : factRelation(options.rowCount ?? 100_000);
+      if (relation === undefined) throw new Error(`No demo relation ${request.table}`);
+      return new MockTableDataSource({
+        relation,
         scheduler: scheduler.schedule,
         ...(options.latencyMs === undefined ? {} : { latency: options.latencyMs }),
         ...(options.failOpen === true ? { failOpen: 'permission-denied' as const } : {}),
-      }),
+        ...(request.filter === undefined ? {} : { filter: request.filter }),
+        ...(options.hideRowCount === true ? { reportRowCount: false as const } : {}),
+      });
+    },
   });
 
   const client = new DataWorkerClient(pair.main);
-  const workspace = new Workspace({ client, blockSize: 256, clock: () => scheduler.now });
+  const workspace = new Workspace({
+    client,
+    blockSize: 256,
+    clock: () => scheduler.now,
+    resolveSchema: (schema, table) => (schema === DEMO_SCHEMA ? demoSchema(table) : undefined),
+  });
 
   return {
     workspace,

@@ -30,9 +30,18 @@ export interface HaloButton {
 
 export interface Halo {
   readonly buttons: readonly HaloButton[];
-  /** Bounds covering the buttons, used to keep a table activated while the
-   * pointer travels from its edge onto them. */
+  /** Bounds covering the buttons themselves. */
   readonly bounds: ClipRect;
+  /**
+   * The band that keeps a table activated while the pointer travels from it to
+   * a button.
+   *
+   * It spans the table's whole width, not just the buttons: the pointer leaves
+   * the table wherever it likes, and if the band were only as wide as the
+   * buttons then any other path out would deactivate the table and the buttons
+   * would vanish before they could be reached.
+   */
+  readonly hoverBounds: ClipRect;
 }
 
 interface ActionSpec {
@@ -49,9 +58,12 @@ export const TABLE_ACTIONS: readonly ActionSpec[] = Object.freeze([
   { action: 'close', icon: '×', label: 'Close table' },
 ]);
 
+const EMPTY_RECT: ClipRect = Object.freeze({ x: 0, y: 0, width: 0, height: 0 });
+
 export const EMPTY_HALO: Halo = Object.freeze({
   buttons: [],
-  bounds: Object.freeze({ x: 0, y: 0, width: 0, height: 0 }),
+  bounds: EMPTY_RECT,
+  hoverBounds: EMPTY_RECT,
 });
 
 /**
@@ -84,9 +96,18 @@ export const computeHalo = (
     size,
   }));
 
+  // A little forgiveness on the way up and to the sides, and none below: the
+  // band must not overlap the table, whose own hit testing owns that space.
+  const margin = gap;
   return {
     buttons,
     bounds: { x: left, y: top, width: totalWidth, height: size + offset },
+    hoverBounds: {
+      x: -margin,
+      y: top - margin,
+      width: metrics.width + margin * 2,
+      height: size + offset + margin,
+    },
   };
 };
 
@@ -105,10 +126,13 @@ export const haloButtonAt = (halo: Halo, localX: number, localY: number): HaloBu
   return null;
 };
 
-/** True when a point is anywhere in the halo, including the gap below it. */
+/**
+ * True when a point is in the halo's band — on a button or merely on the way to
+ * one. This is what keeps the table activated while the pointer crosses the gap.
+ */
 export const withinHalo = (halo: Halo, localX: number, localY: number): boolean =>
   halo.buttons.length > 0 &&
-  localX >= halo.bounds.x &&
-  localX < halo.bounds.x + halo.bounds.width &&
-  localY >= halo.bounds.y &&
-  localY < halo.bounds.y + halo.bounds.height;
+  localX >= halo.hoverBounds.x &&
+  localX < halo.hoverBounds.x + halo.hoverBounds.width &&
+  localY >= halo.hoverBounds.y &&
+  localY < halo.hoverBounds.y + halo.hoverBounds.height;

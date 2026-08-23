@@ -1,5 +1,19 @@
-import type { EntityActionId, EntityId, PanoramaCore, TableEntity } from '@panorama/core';
-import { ROW_NUMBER_GUTTER_WIDTH, clamp, isEntityActivated } from '@panorama/core';
+import type {
+  Binding,
+  EntityActionId,
+  EntityId,
+  ForeignKeyReference,
+  PanoramaCore,
+  TableEntity,
+} from '@panorama/core';
+import type { CellValue } from '@panorama/table';
+import {
+  ROW_NUMBER_GUTTER_WIDTH,
+  clamp,
+  isBindingRevealed,
+  isEntityActivated,
+  resolveBinding,
+} from '@panorama/core';
 import type { ColumnLayout } from '@panorama/table';
 import type { CameraController } from '../camera/camera-controller.js';
 import type { TableTheme } from '../theme.js';
@@ -7,6 +21,7 @@ import type { TableHit } from './hit-test.js';
 import { hitTestTable, toTableLocal } from './hit-test.js';
 import { previewColumnWidth, previewEntity } from './drag-preview.js';
 import { computeHalo, withinHalo } from '../table/halo.js';
+import { connectorMarker } from '../table/connector.js';
 import { tableMetrics } from '../table/table-draw.js';
 import type { NormalizedWheel, WheelSample } from './wheel.js';
 import { normalizeWheel, wheelZoomFactor } from './wheel.js';
@@ -37,9 +52,21 @@ export interface TableViewState {
   readonly rowCount: number | null;
 }
 
+/** A cell whose foreign key the user asked to follow. */
+export interface ForeignKeyFollow {
+  readonly tableId: EntityId;
+  readonly columnId: EntityId;
+  readonly row: number;
+  readonly sourceColumn: string;
+  readonly reference: ForeignKeyReference;
+  readonly value: CellValue;
+}
+
 export interface InteractionHost {
   /** Table view state, or `null` when the table has no open data session yet. */
   viewOf(tableId: EntityId): TableViewState | null;
+  /** Reads a cell, so a click can tell a followable value from a NULL. */
+  cellAt(tableId: EntityId, row: number, columnIndex: number): CellValue | undefined;
   /** Scrolls a table by a pixel delta; the host owns smoothing and clamping. */
   scrollBy(tableId: EntityId, deltaX: number, deltaY: number): void;
   /** Scrolls to an absolute fraction, used by scrollbar drags. */
@@ -61,6 +88,12 @@ export interface InteractionOptions {
    * closing a table also has to release its result set.
    */
   readonly onAction?: (entityId: EntityId, action: EntityActionId) => void;
+  /**
+   * Invoked when a foreign key cell is clicked. Like halo actions, the
+   * controller reports the intent and the composition root performs it —
+   * opening a table means talking to the database.
+   */
+  readonly onFollowForeignKey?: (follow: ForeignKeyFollow) => void;
 }
 
 export class InteractionController {
@@ -74,6 +107,8 @@ export class InteractionController {
   readonly #options: InteractionOptions;
   #cursor = 'default';
   #lastPointer: PointerInput | null = null;
+  /** The followable cell a press started on; a click must end on the same one. */
+  #pressedCell: ForeignKeyFollow | null = null;
   #scrollbarDrag: { tableId: EntityId; axis: 'vertical' | 'horizontal' } | null = null;
 
   constructor(options: InteractionOptions) {
@@ -92,14 +127,21 @@ export class InteractionController {
   }
 
   /**
-   * The topmost table whose drawn bounds contain a world point.
+   * The table a world point belongs to.
    *
-   * An activated table also claims its halo, which sits outside those bounds —
-   * without that, moving the pointer from the table onto a halo button would
-   * deactivate the table and the button would vanish under the cursor.
+   * Two passes. A table's own bounds win first, topmost down; only if no table
+   * contains the point does the halo band above one claim it. Without the band
+   * the pointer would deactivate a table the moment it left for a button, and
+   * the button would vanish under the cursor; without the two passes the band
+   * would shadow the body of whatever table sits beneath it.
+   *
+   * The band is claimed whatever the activation state, so a pointer that jumps
+   * straight onto a button — a flick of the mouse is not a continuous path —
+   * still lands on it.
    */
   entityAt(worldX: number, worldY: number): TableEntity | null {
     const world = this.#core.world;
+    let banded: TableEntity | null = null;
     for (let index = world.order.length - 1; index >= 0; index -= 1) {
       const id = world.order[index] as EntityId;
       const entity = world.entities.get(id);
@@ -114,8 +156,43 @@ export class InteractionController {
       ) {
         return drawn;
       }
-      if (this.#showsHalo(drawn.id) && withinHalo(this.#haloOf(drawn), local.x, local.y)) {
-        return drawn;
+      if (banded === null && withinHalo(this.#haloOf(drawn), local.x, local.y)) {
+        banded = drawn;
+      }
+    }
+    return banded;
+  }
+
+  /**
+   * The binding whose marker is under a world point.
+   *
+   * Connector lines are drawn behind tables, so a marker only answers where no
+   * table covers it — the caller checks tables first. An already-revealed
+   * marker is matched at its expanded size, so it does not collapse the moment
+   * the pointer moves within the chip it just opened.
+   */
+  bindingMarkerAt(worldX: number, worldY: number): Binding | null {
+    const world = this.#core.world;
+    for (const binding of world.bindings.values()) {
+      const resolved = resolveBinding(world, binding, (id) => {
+        const stored = world.entities.get(id);
+        return stored === undefined ? undefined : this.#drawn(stored).transform;
+      });
+      if (resolved === null) continue;
+      const marker = connectorMarker(
+        resolved,
+        this.#theme,
+        this.#camera.scale,
+        isBindingRevealed(this.#core.session, binding.id),
+      );
+      if (marker === null) continue;
+      if (
+        worldX >= marker.x &&
+        worldX < marker.x + marker.width &&
+        worldY >= marker.y &&
+        worldY < marker.y + marker.height
+      ) {
+        return binding;
       }
     }
     return null;
@@ -156,6 +233,9 @@ export class InteractionController {
     if (entity === null) return null;
     const view = this.#host.viewOf(entity.id);
     const local = toTableLocal(entity, worldX, worldY);
+    // The halo is live for whichever table owns the point: either it is already
+    // activated, or hovering here is what activates it.
+    const inBand = withinHalo(this.#haloOf(entity), local.x, local.y);
     const hit = hitTestTable(
       {
         entity,
@@ -166,7 +246,7 @@ export class InteractionController {
         rowCount: view?.rowCount ?? null,
         gutterWidth: this.#gutterWidth,
         scale: this.#camera.scale,
-        showHalo: this.#showsHalo(entity.id),
+        showHalo: this.#showsHalo(entity.id) || inBand,
       },
       local.x,
       local.y,
@@ -195,6 +275,14 @@ export class InteractionController {
     const target = this.#hitAt(world.x, world.y);
 
     if (target === null) {
+      // A connector marker sits between tables; pressing it holds its detail
+      // open, which is how a touch reveals what a hover would.
+      const binding = this.bindingMarkerAt(world.x, world.y);
+      if (binding !== null) {
+        this.#core.dispatchSession({ type: 'SetPressedBinding', id: binding.id });
+        this.#cursor = 'pointer';
+        return;
+      }
       this.#core.dispatchSession({ type: 'SetSelection', ids: [] });
       this.#core.dispatchSession({
         type: 'BeginDrag',
@@ -206,13 +294,16 @@ export class InteractionController {
 
     const { entity, hit } = target;
 
-    // A halo press must not re-select or start a drag: it is a button.
+    // A halo press must not re-select or start a drag: it is a button. A press
+    // in the band between the table and its buttons does nothing at all.
     if (hit.kind === 'halo') {
-      this.#core.dispatchSession({
-        type: 'SetPressedAction',
-        target: { entityId: entity.id, action: hit.action },
-      });
-      this.#cursor = 'pointer';
+      if (hit.action !== null) {
+        this.#core.dispatchSession({
+          type: 'SetPressedAction',
+          target: { entityId: entity.id, action: hit.action },
+        });
+      }
+      this.#cursor = hit.cursor;
       return;
     }
 
@@ -271,9 +362,39 @@ export class InteractionController {
         this.#scrollbarDrag = { tableId: entity.id, axis: hit.axis };
         this.#applyScrollbarDrag(entity, hit.axis, world);
         return;
+      case 'body':
+        this.#pressedCell = this.#followableCell(entity, hit.row, hit.column);
+        this.#cursor = hit.cursor;
+        return;
       default:
         this.#cursor = hit.cursor;
     }
+  }
+
+  /** Describes a cell if its column carries a followable foreign key. */
+  #followableCell(
+    entity: TableEntity,
+    row: number,
+    column: {
+      readonly id: EntityId;
+      readonly sourceIndex: number;
+      readonly column: TableEntity['columns'][number];
+    } | null,
+  ): ForeignKeyFollow | null {
+    if (column === null || row < 0) return null;
+    const reference = column.column.sourceColumn.foreignKey;
+    if (reference === undefined) return null;
+    const value = this.#host.cellAt(entity.id, row, column.sourceIndex);
+    // A NULL, or a cell whose block has not arrived, points at nothing.
+    if (value === undefined || value === null) return null;
+    return {
+      tableId: entity.id,
+      columnId: column.id,
+      row,
+      sourceColumn: column.column.sourceColumn.name,
+      reference,
+      value,
+    };
   }
 
   onPointerMove(event: PointerInput): void {
@@ -298,7 +419,16 @@ export class InteractionController {
     if (drag !== null) return; // A live drag is previewed from session state.
 
     const target = this.#hitAt(world.x, world.y);
-    this.#cursor = target?.hit.cursor ?? 'default';
+    const binding = target === null ? this.bindingMarkerAt(world.x, world.y) : null;
+    this.#core.dispatchSession({ type: 'SetHoveredBinding', id: binding?.id ?? null });
+    this.#cursor =
+      binding !== null
+        ? 'pointer'
+        : target !== null &&
+            target.hit.kind === 'body' &&
+            this.#followableCell(target.entity, target.hit.row, target.hit.column) !== null
+          ? 'pointer'
+          : (target?.hit.cursor ?? 'default');
     this.#core.dispatchSession({
       type: 'SetHovered',
       id: target?.entity.id ?? null,
@@ -306,7 +436,7 @@ export class InteractionController {
     this.#core.dispatchSession({
       type: 'SetHoveredAction',
       target:
-        target !== null && target.hit.kind === 'halo'
+        target !== null && target.hit.kind === 'halo' && target.hit.action !== null
           ? { entityId: target.entity.id, action: target.hit.action }
           : null,
     });
@@ -325,6 +455,8 @@ export class InteractionController {
     const world = this.#setPointer(event);
     this.#scrollbarDrag = null;
     this.#lastPointerBeforeMove = null;
+    // A press-and-hold on a connector marker ends with the release.
+    this.#core.dispatchSession({ type: 'SetPressedBinding', id: null });
 
     // A button fires on release over the same button, so a press can be
     // abandoned by moving away — the convention everywhere else.
@@ -341,6 +473,22 @@ export class InteractionController {
         this.#options.onAction?.(pressed.entityId, pressed.action);
       }
       return;
+    }
+
+    // A click on a foreign key cell: same cell down and up, no drag between.
+    const pressedCell = this.#pressedCell;
+    this.#pressedCell = null;
+    if (pressedCell !== null) {
+      const target = this.#hitAt(world.x, world.y);
+      if (
+        target !== null &&
+        target.hit.kind === 'body' &&
+        target.entity.id === pressedCell.tableId &&
+        target.hit.row === pressedCell.row &&
+        target.hit.column?.id === pressedCell.columnId
+      ) {
+        this.#options.onFollowForeignKey?.(pressedCell);
+      }
     }
 
     const drag = this.#core.session.drag;
@@ -405,6 +553,9 @@ export class InteractionController {
   }
 
   onPointerLeave(): void {
+    this.#pressedCell = null;
+    this.#core.dispatchSession({ type: 'SetHoveredBinding', id: null });
+    this.#core.dispatchSession({ type: 'SetPressedBinding', id: null });
     this.#core.dispatchSession({ type: 'SetPointer', pointer: null });
     this.#core.dispatchSession({ type: 'SetHovered', id: null });
     this.#core.dispatchSession({ type: 'SetHoveredAction', target: null });

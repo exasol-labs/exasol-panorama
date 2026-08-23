@@ -22,6 +22,8 @@
     "probe": "node scripts/probe/run.mjs",
     "halo-check": "node scripts/halo-check.mjs",
     "halo-exclusive": "node scripts/halo-exclusive.mjs",
+    "binding-check": "node scripts/binding-check.mjs",
+    "halo-reach": "node scripts/halo-reach.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "verify": "npm run typecheck && npm run coverage"

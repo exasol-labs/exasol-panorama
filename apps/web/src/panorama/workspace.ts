@@ -1,10 +1,17 @@
 import type { EntityId, TableEntity } from '@panorama/core';
-import { PanoramaCore, buildTableEntity, isTableEntity } from '@panorama/core';
+import type { Binding, BindingId } from '@panorama/core';
+import {
+  AUTO_ANCHOR,
+  PanoramaCore,
+  buildTableEntity,
+  findColumn,
+  isTableEntity,
+} from '@panorama/core';
 import type { ConnectionId, EntityActionId } from '@panorama/core';
-import type { SchemaInfo, TableInfo, TableSchema } from '@panorama/table';
-import { DEFAULT_BLOCK_SIZE } from '@panorama/table';
+import type { CellValue, RowFilter, SchemaInfo, TableInfo, TableSchema } from '@panorama/table';
+import { DEFAULT_BLOCK_SIZE, formatCell } from '@panorama/table';
 import type { TableViewModel, TableViewProvider } from '@panorama/renderer';
-import type { InteractionHost, TableViewState } from '@panorama/renderer';
+import type { ForeignKeyFollow, InteractionHost, TableViewState } from '@panorama/renderer';
 import type { ExasolCredentials } from '@panorama/exasol';
 import type { DataWorkerClient } from '@panorama/worker';
 import { TableView } from './table-view.js';
@@ -26,6 +33,11 @@ export interface WorkspaceOptions {
   readonly clock?: () => number;
   /** Called when cached data changed and a redraw is worthwhile. */
   readonly onDataChanged?: () => void;
+  /**
+   * Supplies a schema without asking the database. The built-in demo relations
+   * use this, so following one of their foreign keys works with no connection.
+   */
+  readonly resolveSchema?: (schema: string, table: string) => TableSchema | undefined;
 }
 
 export interface OpenTableRequest {
@@ -34,9 +46,27 @@ export interface OpenTableRequest {
   readonly position?: { x: number; y: number };
   /** Supplied when the caller already knows the schema, skipping a round trip. */
   readonly knownSchema?: TableSchema;
+  /** Restricts the result set; set when following a foreign key. */
+  readonly filter?: RowFilter;
+}
+
+/** The result of following a foreign key: the new table and the line to it. */
+export interface FollowedForeignKey {
+  readonly tableId: EntityId;
+  readonly bindingId: BindingId;
 }
 
 const TABLE_GRID_STEP = 48;
+
+/**
+ * Gap between a table and the one opened by following a key from it. Wide
+ * enough that the connector — and its label — are legible between them.
+ */
+const LINKED_TABLE_GAP = 220;
+
+/** A followed table is sized to its rows, within these bounds. */
+const MIN_LINKED_ROWS = 3;
+const MAX_LINKED_ROWS = 22;
 
 /** Target cells per block, so a very wide table does not fetch huge blocks. */
 const TARGET_CELLS_PER_BLOCK = 65_536;
@@ -119,7 +149,9 @@ export class Workspace implements TableViewProvider, InteractionHost {
     // `describeTable` runs the same `SELECT *` projection the result set will,
     // so the entity's columns always line up with the fetched chunks.
     const schema =
-      request.knownSchema ?? (await this.#client.describeTable(request.schema, request.table));
+      request.knownSchema ??
+      this.#options.resolveSchema?.(request.schema, request.table) ??
+      (await this.#client.describeTable(request.schema, request.table));
     const offset = this.#opened * TABLE_GRID_STEP;
     this.#opened += 1;
     const entity = buildTableEntity(this.core.ids, {
@@ -128,7 +160,13 @@ export class Workspace implements TableViewProvider, InteractionHost {
         schema: request.schema,
         table: request.table,
       },
-      columns: schema.columns.map((column) => ({ name: column.name, type: column.type })),
+      columns: schema.columns.map((column) => ({
+        name: column.name,
+        type: column.type,
+        // Carried onto the entity so its cells render as links and can be
+        // followed without consulting the schema again.
+        ...(column.foreignKey === undefined ? {} : { foreignKey: column.foreignKey }),
+      })),
       position:
         request.position === undefined
           ? { x: offset, y: offset, z: 0 }
@@ -153,7 +191,7 @@ export class Workspace implements TableViewProvider, InteractionHost {
     this.#views.set(entity.id, view);
 
     try {
-      await view.open(request.schema, request.table);
+      await view.open(request.schema, request.table, request.filter);
     } catch (error) {
       // The table stays on the canvas showing its chrome; only its body failed.
       this.#views.delete(entity.id);
@@ -193,6 +231,93 @@ export class Workspace implements TableViewProvider, InteractionHost {
     if (session.pressedAction?.entityId === tableId) {
       this.core.dispatchSession({ type: 'SetPressedAction', target: null });
     }
+  }
+
+  /**
+   * Follows a foreign key: opens the referenced table showing only the matching
+   * rows, and binds it to the table the click came from.
+   *
+   * The binding is what makes the pair stay connected afterwards — the line
+   * re-routes itself as either table is moved or resized, because its geometry
+   * is derived rather than stored.
+   */
+  async followForeignKey(follow: ForeignKeyFollow): Promise<FollowedForeignKey> {
+    const source = this.core.world.entities.get(follow.tableId);
+    if (source === undefined || !isTableEntity(source)) {
+      throw new Error(`No table with id ${follow.tableId}`);
+    }
+    const column = findColumn(source, follow.columnId);
+    if (column === undefined) throw new Error(`No column with id ${follow.columnId}`);
+
+    const { reference } = follow;
+    const filter: RowFilter = {
+      column: reference.column,
+      value: follow.value,
+      type: column.sourceColumn.type,
+    };
+
+    // Placed beside the source rather than on the default stagger, so the line
+    // between them is short and obviously a relationship.
+    const position = {
+      x: source.transform.x + source.transform.width + LINKED_TABLE_GAP,
+      y: source.transform.y,
+    };
+    const tableId = await this.openTable({
+      schema: reference.schema,
+      table: reference.table,
+      position,
+      filter,
+    });
+
+    const binding: Binding = {
+      id: this.core.ids.binding(),
+      kind: 'connector',
+      fromId: follow.tableId,
+      toId: tableId,
+      from: AUTO_ANCHOR,
+      to: AUTO_ANCHOR,
+      directed: true,
+      label: `${follow.sourceColumn} = ${formatCell(follow.value, column.sourceColumn.type)}`,
+      meta: {
+        kind: 'foreign-key',
+        column: follow.sourceColumn,
+        referencedSchema: reference.schema,
+        referencedTable: reference.table,
+        referencedColumn: reference.column,
+        constraint: reference.constraint,
+      },
+    };
+    const created = this.core.dispatch({ type: 'CreateBinding', binding });
+    if (!created.ok) throw new Error(created.error.message);
+
+    this.#fitToRows(tableId);
+    return { tableId, bindingId: binding.id };
+  }
+
+  /**
+   * Shrinks a freshly followed table to the rows it actually has. A key that
+   * matches one row should not open a window onto twenty empty ones.
+   */
+  #fitToRows(tableId: EntityId): void {
+    const entity = this.core.world.entities.get(tableId);
+    const rowCount = this.#views.get(tableId)?.rowCount;
+    if (
+      entity === undefined ||
+      !isTableEntity(entity) ||
+      rowCount === null ||
+      rowCount === undefined
+    ) {
+      return;
+    }
+    const rows = Math.min(MAX_LINKED_ROWS, Math.max(MIN_LINKED_ROWS, rowCount));
+    const height = entity.view.headerHeight + rows * entity.view.rowHeight;
+    if (height >= entity.transform.height) return;
+    this.core.dispatch({
+      type: 'ResizeEntity',
+      id: tableId,
+      width: entity.transform.width,
+      height,
+    });
   }
 
   /** Performs a halo action reported by the interaction controller. */
@@ -247,6 +372,10 @@ export class Workspace implements TableViewProvider, InteractionHost {
       scrollLeft: view.scrollLeft,
       rowCount: view.rowCount,
     };
+  }
+
+  cellAt(tableId: EntityId, row: number, columnIndex: number): CellValue | undefined {
+    return this.#views.get(tableId)?.cell(row, columnIndex);
   }
 
   scrollBy(tableId: EntityId, deltaX: number, deltaY: number): void {

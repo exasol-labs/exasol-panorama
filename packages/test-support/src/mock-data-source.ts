@@ -1,6 +1,7 @@
 import type {
   FetchRequest,
   ResultChunk,
+  RowFilter,
   TableDataErrorCode,
   TableDataSession,
   TableDataSource,
@@ -36,8 +37,16 @@ export interface MockFailure {
   readonly code?: TableDataErrorCode;
 }
 
+/** Rows scanned when a filter is applied; beyond this the mock refuses. */
+export const MAX_FILTER_SCAN = 200_000;
+
 export interface MockTableDataSourceOptions {
   readonly relation: RelationShape;
+  /**
+   * Restricts the session to matching rows. The mock has no index, so it scans
+   * — and refuses relations too large to scan honestly rather than guessing.
+   */
+  readonly filter?: RowFilter;
   readonly latency?: MockLatency | number;
   readonly failure?: MockFailure;
   readonly scheduler?: Scheduler;
@@ -58,9 +67,36 @@ export interface MockStats {
 const normaliseLatency = (latency: MockLatency | number | undefined): MockLatency =>
   typeof latency === 'number' ? { baseMs: latency } : (latency ?? { baseMs: 0 });
 
+/** Row numbers matching a filter, or `null` when the whole relation matches. */
+const matchingRows = (options: MockTableDataSourceOptions): readonly number[] | null => {
+  const filter = options.filter;
+  if (filter === undefined) return null;
+  const shape = options.relation;
+  if (shape.rowCount > MAX_FILTER_SCAN) {
+    throw new TableDataError(
+      'fetch-failed',
+      `The mock source will not scan ${shape.rowCount} rows to filter them`,
+    );
+  }
+  const columnIndex = shape.columns.findIndex((column) => column.name === filter.column);
+  if (columnIndex < 0) {
+    throw new TableDataError('not-found', `No column named ${filter.column}`);
+  }
+  const column = shape.columns[columnIndex] as (typeof shape.columns)[number];
+  const valueFor = shape.valueFor ?? generateValue;
+  const matches: number[] = [];
+  for (let row = 0; row < shape.rowCount; row += 1) {
+    const value = valueFor(column.type, columnIndex, row) ?? null;
+    if (value === filter.value) matches.push(row);
+  }
+  return matches;
+};
+
 class MockTableDataSession implements TableDataSession {
   readonly schema: TableSchema;
   readonly rowCount: number | null;
+  /** Source row numbers this session exposes, when filtered. */
+  readonly #rows: readonly number[] | null;
   readonly #shape: RelationShape;
   readonly #latency: MockLatency;
   readonly #failure: MockFailure;
@@ -88,8 +124,10 @@ class MockTableDataSession implements TableDataSession {
     this.#failure = options.failure ?? {};
     this.#scheduler = options.scheduler ?? timeoutScheduler;
     this.#random = seededRandom(options.seed ?? 1);
+    this.#rows = matchingRows(options);
     this.schema = relationSchema(options.relation);
-    this.rowCount = options.reportRowCount === false ? null : options.relation.rowCount;
+    const total = this.#rows === null ? options.relation.rowCount : this.#rows.length;
+    this.rowCount = options.reportRowCount === false ? null : total;
     this.#onFetch = hooks.onFetch;
     this.#onDeliver = hooks.onDeliver;
     this.#onFailure = (): void => {
@@ -119,10 +157,15 @@ class MockTableDataSession implements TableDataSession {
 
   #buildChunk(startPosition: number, rowCount: number): ResultChunk {
     const valueFor = this.#shape.valueFor ?? generateValue;
+    const rows = this.#rows;
     const columns = this.#shape.columns.map((column, columnIndex) => {
       const values = new Array<unknown>(rowCount);
       for (let offset = 0; offset < rowCount; offset += 1) {
-        values[offset] = valueFor(column.type, columnIndex, startPosition + offset);
+        const position = startPosition + offset;
+        // A filtered session renumbers positions: position 0 is the first
+        // matching row, not the first row of the relation.
+        const sourceRow = rows === null ? position : (rows[position] as number);
+        values[offset] = valueFor(column.type, columnIndex, sourceRow);
       }
       return buildVector(column.type, values);
     });
@@ -136,7 +179,7 @@ class MockTableDataSession implements TableDataSession {
       return Promise.reject(new TableDataError('session-closed', 'Mock session is closed'));
     }
     const start = Math.max(0, Math.trunc(request.startPosition));
-    const total = this.#shape.rowCount;
+    const total = this.#rows === null ? this.#shape.rowCount : this.#rows.length;
     const rows = Math.max(0, Math.min(request.maxRows, total - start));
     const fetchIndex = ++this.#fetchIndex;
     this.#onFetch();
@@ -208,7 +251,16 @@ export class MockTableDataSource implements TableDataSource {
         new TableDataError(this.#options.failOpen, 'Simulated failure opening the table'),
       );
     }
-    this.#session = new MockTableDataSession(this.#options, {
+    try {
+      this.#session = this.#createSession();
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    return Promise.resolve(this.#session);
+  }
+
+  #createSession(): MockTableDataSession {
+    return new MockTableDataSession(this.#options, {
       onFetch: (): void => {
         this.#fetches += 1;
       },
@@ -222,7 +274,6 @@ export class MockTableDataSource implements TableDataSource {
         this.#maxConcurrent = Math.max(this.#maxConcurrent, value);
       },
     });
-    return Promise.resolve(this.#session);
   }
 
   async close(): Promise<void> {

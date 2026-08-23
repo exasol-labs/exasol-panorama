@@ -204,8 +204,52 @@ describe('ExasolConnection metadata', () => {
         { name: 'COUNTRY', type: { kind: 'varchar', name: 'VARCHAR(64)', size: 64 } },
       ],
     });
-    expect(server.executed.at(-1)).toContain('WHERE 1 = 0');
+    // The projection query, then the catalogue lookup for foreign keys.
+    expect(server.executed.some((sql) => sql.includes('WHERE 1 = 0'))).toBe(true);
+    expect(server.executed.at(-1)).toContain('EXA_ALL_CONSTRAINT_COLUMNS');
     expect(connection.openResultSetCount).toBe(0);
+  });
+
+  it('reads single-column foreign keys, ignoring incomplete catalogue rows', async () => {
+    const { connection } = await connect({
+      foreignKeys: {
+        ORDERS: [
+          {
+            column: 'COUNTRY',
+            referencedSchema: 'SALES',
+            referencedTable: 'COUNTRIES',
+            referencedColumn: 'NAME',
+            constraint: 'FK_COUNTRY',
+          },
+        ],
+      },
+    });
+    const schema = await connection.describeTable('SALES', 'ORDERS');
+    expect(schema.columns[1]?.foreignKey).toEqual({
+      schema: 'SALES',
+      table: 'COUNTRIES',
+      column: 'NAME',
+      constraint: 'FK_COUNTRY',
+    });
+    // Columns without a key stay plain.
+    expect(schema.columns[0]?.foreignKey).toBeUndefined();
+  });
+
+  it('skips catalogue rows missing a reference', async () => {
+    const { connection } = await connect({
+      foreignKeys: {
+        ORDERS: [
+          {
+            column: 'COUNTRY',
+            referencedSchema: null as unknown as string,
+            referencedTable: 'COUNTRIES',
+            referencedColumn: 'NAME',
+            constraint: 'FK_COUNTRY',
+          },
+        ],
+      },
+    });
+    await expect(connection.listForeignKeys('SALES', 'ORDERS')).resolves.toEqual(new Map());
   });
 
   it('reports a missing object as an error', async () => {

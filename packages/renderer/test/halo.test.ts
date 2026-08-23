@@ -103,17 +103,27 @@ describe('haloButtonAt', () => {
 describe('withinHalo', () => {
   const halo = computeHalo(metrics, DEFAULT_TABLE_THEME);
 
-  it('includes the gap between the halo and the table', () => {
-    // Just above the table's top edge is still "in" the halo, which is what
-    // keeps a table activated while the pointer travels onto a button.
+  it('spans the whole table width, not just the buttons', () => {
+    // The pointer leaves the table wherever it likes. If the band were only as
+    // wide as the buttons, any other path out would deactivate the table and
+    // the buttons would vanish before they could be reached.
+    expect(withinHalo(halo, 0, -1)).toBe(true);
+    expect(withinHalo(halo, metrics.width / 2, -1)).toBe(true);
     expect(withinHalo(halo, metrics.width - 2, -1)).toBe(true);
-    expect(withinHalo(halo, metrics.width - 2, halo.bounds.y)).toBe(true);
   });
 
-  it('excludes points outside it', () => {
-    expect(withinHalo(halo, 0, -1)).toBe(false);
-    expect(withinHalo(halo, metrics.width - 2, halo.bounds.y - 1)).toBe(false);
-    expect(withinHalo(halo, metrics.width - 2, 1)).toBe(false);
+  it('covers the gap and the buttons, up to the table edge', () => {
+    expect(withinHalo(halo, metrics.width - 2, halo.bounds.y)).toBe(true);
+    expect(withinHalo(halo, metrics.width - 2, -0.5)).toBe(true);
+  });
+
+  it('excludes the table itself and anything beyond the band', () => {
+    // y >= 0 is the table's own space; its hit testing owns that.
+    expect(withinHalo(halo, metrics.width / 2, 0)).toBe(false);
+    expect(withinHalo(halo, metrics.width / 2, 1)).toBe(false);
+    expect(withinHalo(halo, metrics.width / 2, halo.hoverBounds.y - 1)).toBe(false);
+    expect(withinHalo(halo, -50, -1)).toBe(false);
+    expect(withinHalo(halo, metrics.width + 50, -1)).toBe(false);
     expect(withinHalo(EMPTY_HALO, 0, 0)).toBe(false);
   });
 });

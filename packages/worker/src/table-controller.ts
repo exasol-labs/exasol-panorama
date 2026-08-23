@@ -1,5 +1,11 @@
 import type { EntityId } from '@panorama/core';
-import type { CellValue, RetryPolicy, RowCacheStats, TableSchema } from '@panorama/table';
+import type {
+  CellValue,
+  RetryPolicy,
+  RowCacheStats,
+  RowFilter,
+  TableSchema,
+} from '@panorama/table';
 import {
   DEFAULT_BLOCK_SIZE,
   RowCache,
@@ -109,8 +115,8 @@ export class TableDataController {
     return this.#cache.blockSize;
   }
 
-  async open(schema: string, table: string): Promise<TableSchema> {
-    const result = await this.#gateway.openTable(this.tableId, schema, table);
+  async open(schema: string, table: string, filter?: RowFilter): Promise<TableSchema> {
+    const result = await this.#gateway.openTable(this.tableId, schema, table, filter);
     this.#schema = result.schema;
     this.#rowCount = result.rowCount;
     this.#generation = result.generation;

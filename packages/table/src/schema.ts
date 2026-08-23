@@ -1,9 +1,18 @@
-import type { ColumnDataType } from '@panorama/core';
+import type { ColumnDataType, ForeignKeyReference } from '@panorama/core';
+
+export type { ForeignKeyReference };
 
 /** One column of a result set, in result order. */
 export interface TableColumnSchema {
   readonly name: string;
   readonly type: ColumnDataType;
+  /**
+   * Set only for *single-column* foreign keys. A cell can follow one of those
+   * to exactly the matching rows; one column of a composite key cannot, so
+   * composites are deliberately left unset rather than offering a link that
+   * would show the wrong rows.
+   */
+  readonly foreignKey?: ForeignKeyReference;
 }
 
 /** Metadata describing a relation or an open result set. */
@@ -27,3 +36,8 @@ export interface TableInfo {
 
 export const columnIndexByName = (schema: TableSchema, name: string): number =>
   schema.columns.findIndex((column) => column.name === name);
+
+export const foreignKeyOf = (
+  schema: TableSchema,
+  columnIndex: number,
+): ForeignKeyReference | null => schema.columns[columnIndex]?.foreignKey ?? null;

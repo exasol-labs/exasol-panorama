@@ -61,6 +61,42 @@ describe.skipIf(url === undefined)('Exasol integration', () => {
     }
   });
 
+  it('reads single-column foreign keys from the catalogue', async () => {
+    const connection = await connect();
+    try {
+      const schemas = await connection.listSchemas();
+      // Find any table on the instance that declares a foreign key.
+      let found: { schema: string; table: string; column: string } | null = null;
+      for (const schema of schemas) {
+        for (const table of await connection.listTables(schema.name)) {
+          const keys = await connection.listForeignKeys(schema.name, table.name);
+          const first = [...keys.entries()][0];
+          if (first !== undefined) {
+            found = { schema: schema.name, table: table.name, column: first[0] };
+            break;
+          }
+        }
+        if (found !== null) break;
+      }
+      if (found === null) {
+        console.log('no foreign keys on this instance; skipping the assertion');
+        return;
+      }
+
+      const described = await connection.describeTable(found.schema, found.table);
+      const column = described.columns.find((entry) => entry.name === found.column);
+      expect(column?.foreignKey).toBeDefined();
+      expect(column?.foreignKey?.table).toBeTruthy();
+      expect(column?.foreignKey?.column).toBeTruthy();
+      console.log(
+        `foreign key: ${found.schema}.${found.table}.${found.column} -> ` +
+          `${column?.foreignKey?.schema}.${column?.foreignKey?.table}.${column?.foreignKey?.column}`,
+      );
+    } finally {
+      await connection.close();
+    }
+  }, 120_000);
+
   it.skipIf(schemaName === undefined || tableName === undefined)(
     'describes a table, fetches ranges and closes the result set',
     async () => {
