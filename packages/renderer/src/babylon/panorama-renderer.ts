@@ -1,0 +1,360 @@
+import type { EntityId, PanoramaCore, TableEntity, TableColumnView } from '@panorama/core';
+import { ROW_NUMBER_GUTTER_WIDTH, isEntityActivated, rectsIntersect } from '@panorama/core';
+import type { ColumnLayout } from '@panorama/table';
+import { computeColumnLayout } from '@panorama/table';
+import type { AbstractEngine } from '@babylonjs/core/Engines/abstractEngine.js';
+import type { WebXRDefaultExperience } from '@babylonjs/core/XR/webXRDefaultExperience.js';
+import { CameraController } from '../camera/camera-controller.js';
+import type { LodThresholds } from '../table/lod.js';
+import { lodForScale } from '../table/lod.js';
+import type { TableDataView } from '../table/table-draw.js';
+import { buildTableDrawList } from '../table/table-draw.js';
+import { previewEntity } from '../input/drag-preview.js';
+import { AtlasTextRenderer } from '../text/text-renderer.js';
+import type { TextSystem, TextSystemFactory } from './text-system.js';
+import { createCanvasTextSystem } from './text-system.js';
+import type { TableTheme } from '../theme.js';
+import { DEFAULT_TABLE_THEME } from '../theme.js';
+import { PanoramaScene, toBabylonY } from './scene.js';
+import { QuadBatch } from './quad-batch.js';
+import { createSolidMaterial } from './materials.js';
+import type { FrameStats } from '../instrumentation/frame-stats.js';
+import { FrameStatsCollector } from '../instrumentation/frame-stats.js';
+
+/**
+ * The Panorama renderer.
+ *
+ * A projection of the world model: it reads document state, session state and
+ * table data, and writes GPU buffers. It never mutates persistent state, and
+ * it never waits for the database.
+ */
+
+export interface TableViewModel {
+  readonly scrollTop: number;
+  readonly scrollLeft: number;
+  readonly rowCount: number | null;
+  readonly data: TableDataView;
+}
+
+export interface TableViewProvider {
+  /** View state for a table, or `null` when its data session is not open yet. */
+  viewFor(entity: TableEntity): TableViewModel | null;
+}
+
+export interface PanoramaRendererOptions {
+  readonly core: PanoramaCore;
+  readonly engine: AbstractEngine;
+  readonly views: TableViewProvider;
+  readonly theme?: TableTheme;
+  readonly atlasSize?: number;
+  readonly pixelRatio?: number;
+  readonly lodThresholds?: LodThresholds;
+  readonly gutterWidth?: number;
+  readonly clock?: () => number;
+  /** Injected in tests and by any future non-canvas text implementation. */
+  readonly createTextSystem?: TextSystemFactory;
+  /**
+   * Called at the top of every frame with the elapsed milliseconds, before any
+   * geometry is built. This is where scroll smoothing and viewport requests
+   * happen, so the frame always draws the newest state.
+   */
+  readonly beforeFrame?: (deltaMs: number) => void;
+}
+
+const EMPTY_DATA: TableDataView = { cell: () => undefined };
+
+export class PanoramaRenderer {
+  readonly camera = new CameraController();
+  readonly scene: PanoramaScene;
+  readonly text: AtlasTextRenderer;
+  readonly theme: TableTheme;
+
+  readonly #core: PanoramaCore;
+  readonly #options: PanoramaRendererOptions;
+  readonly #views: TableViewProvider;
+  readonly #solid: QuadBatch;
+  readonly #glyphs: QuadBatch;
+  readonly #atlas: import('../text/glyph-atlas.js').GlyphAtlas;
+  readonly #stats: FrameStatsCollector;
+  readonly #lodThresholds: LodThresholds | undefined;
+  readonly #gutterWidth: number;
+  readonly #textSystem: TextSystem;
+  readonly #layoutCache = new WeakMap<readonly TableColumnView[], ColumnLayout>();
+  #atlasVersion = -1;
+  #running = false;
+
+  constructor(options: PanoramaRendererOptions) {
+    this.#options = options;
+    this.#core = options.core;
+    this.#views = options.views;
+    this.theme = options.theme ?? DEFAULT_TABLE_THEME;
+    this.#lodThresholds = options.lodThresholds;
+    this.#gutterWidth = options.gutterWidth ?? ROW_NUMBER_GUTTER_WIDTH;
+    this.#stats = new FrameStatsCollector(
+      options.clock === undefined ? {} : { clock: options.clock },
+    );
+
+    this.scene = new PanoramaScene({
+      engine: options.engine,
+      clearColor: this.theme.canvasBackground,
+    });
+
+    const atlasSize = options.atlasSize ?? 1_024;
+    const createTextSystem = options.createTextSystem ?? createCanvasTextSystem;
+    this.#textSystem = createTextSystem(this.scene.scene, atlasSize, options.pixelRatio ?? 1);
+    this.#atlas = this.#textSystem.atlas;
+    this.text = new AtlasTextRenderer(this.#atlas);
+
+    this.#solid = new QuadBatch({ name: 'panorama-solid', scene: this.scene.scene });
+    this.#solid.setMaterial(createSolidMaterial(this.scene.scene));
+    this.#glyphs = new QuadBatch({
+      name: 'panorama-glyphs',
+      scene: this.scene.scene,
+      textured: true,
+    });
+    this.#glyphs.setMaterial(this.#textSystem.material);
+    // Glyphs draw after every solid quad, in one extra draw call.
+    this.#glyphs.mesh.renderingGroupId = 1;
+  }
+
+  get stats(): FrameStats {
+    return this.#stats.stats;
+  }
+
+  get running(): boolean {
+    return this.#running;
+  }
+
+  resize(width: number, height: number): void {
+    this.camera.setViewport({ width, height });
+  }
+
+  /** Column layout for a table, memoised on the column array identity. */
+  layoutFor(entity: TableEntity): ColumnLayout {
+    const cached = this.#layoutCache.get(entity.columns);
+    if (cached !== undefined) return cached;
+    const layout = computeColumnLayout(entity.columns);
+    this.#layoutCache.set(entity.columns, layout);
+    return layout;
+  }
+
+  /** The entity as it is currently drawn, including any live drag preview. */
+  drawnEntity(entity: TableEntity): TableEntity {
+    const session = this.#core.session;
+    return previewEntity(
+      entity,
+      session.drag,
+      session.pointer?.world ?? null,
+      this.#core.constraints,
+    );
+  }
+
+  #hoveredRow(entity: TableEntity, view: TableViewModel | null): number | null {
+    const session = this.#core.session;
+    if (session.hovered !== entity.id || session.pointer === null || view === null) return null;
+    const localY = session.pointer.world.y - entity.transform.y;
+    if (localY < entity.view.headerHeight) return null;
+    return Math.floor((localY - entity.view.headerHeight + view.scrollTop) / entity.view.rowHeight);
+  }
+
+  /**
+   * Pans — without zooming — until an entity is fully on screen. Used when a
+   * table is opened, so it appears where the user is already looking instead of
+   * somewhere off the edge of the canvas.
+   */
+  revealEntity(id: EntityId, margin = 48): void {
+    const entity = this.#core.world.entities.get(id);
+    if (entity === undefined) return;
+    const view = this.camera.visibleWorldRect();
+    const inset = margin / this.camera.scale;
+    const { x, y, width, height } = entity.transform;
+
+    const shift = (start: number, size: number, viewStart: number, viewSize: number): number => {
+      const available = viewSize - inset * 2;
+      // A table larger than the viewport is aligned to its top-left corner.
+      if (size >= available) return start - inset - viewStart;
+      if (start < viewStart + inset) return start - inset - viewStart;
+      if (start + size > viewStart + viewSize - inset) {
+        return start + size + inset - (viewStart + viewSize);
+      }
+      return 0;
+    };
+
+    const dx = shift(x, width, view.x, view.width);
+    const dy = shift(y, height, view.y, view.height);
+    if (dx === 0 && dy === 0) return;
+    this.camera.moveTo(this.camera.state.centerX + dx, this.camera.state.centerY + dy);
+  }
+
+  /** Builds and uploads one frame. Never allocates a scene node per cell. */
+  renderFrame(deltaMs = 16.67): void {
+    this.#stats.beginFrame();
+    this.#options.beforeFrame?.(deltaMs);
+    this.scene.syncCamera(this.camera);
+    this.#solid.begin();
+    this.#glyphs.begin();
+
+    const visibleRect = this.camera.visibleWorldRect();
+    const lod = lodForScale(this.camera.scale, this.#lodThresholds);
+    const session = this.#core.session;
+    const selection = new Set(session.selection);
+    let visibleRows = 0;
+    let renderedRows = 0;
+    let visibleColumns = 0;
+    let textRuns = 0;
+    let placeholderCells = 0;
+    let tables = 0;
+
+    for (const id of this.#core.world.order) {
+      const stored = this.#core.world.entities.get(id);
+      if (stored === undefined) continue;
+      const entity = this.drawnEntity(stored);
+      // The halo hangs above the table, so culling allows a margin for it.
+      const margin = isEntityActivated(session, entity.id)
+        ? (this.theme.haloButtonSize + this.theme.haloOffset) / Math.max(0.05, this.camera.scale)
+        : 0;
+      const bounds = {
+        x: entity.transform.x,
+        y: entity.transform.y - margin,
+        width: entity.transform.width,
+        height: entity.transform.height + margin,
+      };
+      if (!rectsIntersect(bounds, visibleRect)) continue;
+
+      const view = this.#views.viewFor(entity);
+      const drawList = buildTableDrawList({
+        entity,
+        layout: this.layoutFor(entity),
+        theme: this.theme,
+        lod,
+        scrollTop: view?.scrollTop ?? 0,
+        scrollLeft: view?.scrollLeft ?? 0,
+        // A table whose data session has not opened yet shows empty chrome
+        // rather than an unbounded field of placeholders.
+        rowCount: view === null ? 0 : view.rowCount,
+        data: view?.data ?? EMPTY_DATA,
+        selected: selection.has(entity.id),
+        hoveredRow: this.#hoveredRow(entity, view),
+        gutterWidth: this.#gutterWidth,
+        showHalo: isEntityActivated(session, entity.id),
+        scale: this.camera.scale,
+        hoveredAction:
+          session.hoveredAction?.entityId === entity.id ? session.hoveredAction.action : null,
+        pressedAction:
+          session.pressedAction?.entityId === entity.id ? session.pressedAction.action : null,
+      });
+
+      const originX = entity.transform.x;
+      const originY = entity.transform.y;
+      const z = -entity.transform.z;
+      for (const quad of drawList.quads) {
+        this.#solid.push(
+          originX + quad.x,
+          toBabylonY(originY + quad.y),
+          z,
+          quad.width,
+          quad.height,
+          quad.color,
+        );
+      }
+      for (const run of drawList.texts) {
+        for (const glyph of this.text.layout(run).quads) {
+          this.#glyphs.push(
+            originX + glyph.x,
+            toBabylonY(originY + glyph.y),
+            z,
+            glyph.width,
+            glyph.height,
+            glyph.color,
+            [glyph.u0, glyph.v0, glyph.u1, glyph.v1],
+          );
+        }
+      }
+
+      tables += 1;
+      visibleRows += drawList.stats.visibleRows;
+      renderedRows += drawList.stats.renderedRows;
+      visibleColumns += drawList.stats.visibleColumns;
+      textRuns += drawList.stats.textRuns;
+      placeholderCells += drawList.stats.placeholderCells;
+    }
+
+    this.#solid.commit();
+    this.#glyphs.commit();
+    if (this.#atlas.version !== this.#atlasVersion) {
+      this.#atlasVersion = this.#atlas.version;
+      this.#textSystem.upload();
+    }
+
+    this.#stats.endFrame(
+      {
+        tables,
+        visibleRows,
+        renderedRows,
+        visibleColumns,
+        quads: this.#solid.quadCount,
+        glyphs: this.#glyphs.quadCount,
+        textRuns,
+        placeholderCells,
+      },
+      // Two batches plus, at most, one clear.
+      this.#solid.quadCount > 0 || this.#glyphs.quadCount > 0 ? 2 : 0,
+    );
+  }
+
+  /**
+   * Starts the render loop.
+   *
+   * A frame that throws is reported once and then stops the loop: a renderer
+   * that silently fails every frame looks exactly like an application that
+   * ignores its input, which is the worst possible way to fail.
+   */
+  start(onFrameError?: (error: unknown) => void): void {
+    if (this.#running) return;
+    this.#running = true;
+    const engine = this.scene.scene.getEngine();
+    engine.runRenderLoop(() => {
+      try {
+        this.renderFrame(engine.getDeltaTime());
+        this.scene.scene.render();
+      } catch (error) {
+        this.stop();
+        onFrameError?.(error);
+      }
+    });
+  }
+
+  stop(): void {
+    if (!this.#running) return;
+    this.#running = false;
+    this.scene.scene.getEngine().stopRenderLoop();
+  }
+
+  /**
+   * The WebXR architecture smoke test: the same scene, the same table
+   * renderer, viewed through an XR camera. Interaction is rudimentary by
+   * design; what is being validated is that nothing depends on the DOM.
+   */
+  async enterXR(): Promise<WebXRDefaultExperience | null> {
+    const { WebXRDefaultExperience } = await import('@babylonjs/core/XR/webXRDefaultExperience.js');
+    try {
+      const experience = await WebXRDefaultExperience.CreateAsync(this.scene.scene, {
+        disableDefaultUI: true,
+        disableTeleportation: true,
+      });
+      // Babylon resolves even where WebXR is unavailable, leaving no base
+      // experience behind; report that as "not entered".
+      return experience.baseExperience === undefined ? null : experience;
+    } catch {
+      return null;
+    }
+  }
+
+  dispose(): void {
+    this.stop();
+    this.#solid.dispose();
+    this.#glyphs.dispose();
+    this.#textSystem.dispose();
+    this.scene.dispose();
+  }
+}

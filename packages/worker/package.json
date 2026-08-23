@@ -1,0 +1,17 @@
+{
+  "name": "@panorama/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Data worker protocol and host: owns the Exasol client, cache and scheduler.",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@panorama/core": "*",
+    "@panorama/exasol": "*",
+    "@panorama/table": "*"
+  }
+}

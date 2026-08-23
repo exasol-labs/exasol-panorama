@@ -1,0 +1,41 @@
+{
+  "name": "exasol-panorama",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Exasol Panorama — a spatial visual environment for exploring data in Exasol.",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=20.11"
+  },
+  "scripts": {
+    "dev": "npm run dev --workspace @panorama/web",
+    "build": "npm run build --workspace @panorama/web",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "coverage": "vitest run --coverage",
+    "smoke": "node scripts/smoke.mjs",
+    "probe": "node scripts/probe/run.mjs",
+    "halo-check": "node scripts/halo-check.mjs",
+    "halo-exclusive": "node scripts/halo-exclusive.mjs",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "verify": "npm run typecheck && npm run coverage"
+  },
+  "devDependencies": {
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/react": "^16.3.2",
+    "@types/node": "^26.2.0",
+    "@vitest/coverage-v8": "^4.1.11",
+    "jsdom": "^30.0.1",
+    "playwright": "^1.62.1",
+    "prettier": "^3.9.6",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.2",
+    "vitest": "^4.1.11"
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "name": "@panorama/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Exasol Panorama web application shell.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@babylonjs/core": "^9.22.1",
+    "@panorama/core": "*",
+    "@panorama/exasol": "*",
+    "@panorama/renderer": "*",
+    "@panorama/table": "*",
+    "@panorama/test-support": "*",
+    "@panorama/ui": "*",
+    "@panorama/worker": "*",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^6.1.0"
+  }
+}
