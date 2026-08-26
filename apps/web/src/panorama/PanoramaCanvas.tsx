@@ -177,6 +177,18 @@ export const PanoramaCanvas = ({
         );
       };
       const onKeyDown = (event: KeyboardEvent): void => {
+        // A canvas shortcut must never fire while the user is typing: the SQL
+        // editor is real DOM, so ⌘Z there means "undo my typing", not "undo the
+        // last command", and Escape means "leave the field".
+        const target = event.target;
+        if (
+          target instanceof HTMLElement &&
+          (target.isContentEditable ||
+            target instanceof HTMLTextAreaElement ||
+            target instanceof HTMLInputElement)
+        ) {
+          return;
+        }
         const accel = event.metaKey || event.ctrlKey;
         if (accel && event.key.toLowerCase() === 'z') {
           event.preventDefault();
@@ -185,6 +197,13 @@ export const PanoramaCanvas = ({
           return;
         }
         if (event.key === 'Escape') {
+          // Columns first: Escape backs out of the narrower selection, so
+          // letting go of a few columns does not also let go of the table they
+          // are in. A second press clears the table.
+          if (workspace.core.session.selectedColumns.length > 0) {
+            workspace.core.dispatchSession({ type: 'SetSelectedColumns', ids: [] });
+            return;
+          }
           workspace.core.dispatchSession({ type: 'SetSelection', ids: [] });
         }
       };

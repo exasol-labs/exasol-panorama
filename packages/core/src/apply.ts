@@ -2,7 +2,8 @@ import type { Command, CommandError } from './commands.js';
 import { commandError } from './commands.js';
 import type { WorldConstraints } from './constraints.js';
 import { DEFAULT_CONSTRAINTS } from './constraints.js';
-import type { Entity, TableColumnView, TableEntity } from './entities.js';
+import type { Entity, QuerySource, TableColumnView, TableEntity } from './entities.js';
+import { isChartTable, isConfigurableTable, isQueryTable, isTableEntity } from './entities.js';
 import { clamp } from './geometry.js';
 import type { EntityId } from './ids.js';
 import type { Result } from './result.js';
@@ -11,6 +12,22 @@ import type { WorldState } from './world.js';
 import { bringToFront, withBinding, withEntity, withoutBinding, withoutEntity } from './world.js';
 
 const isFinitePositive = (value: number): boolean => Number.isFinite(value) && value > 0;
+
+/**
+ * A query table, specifically. Editing the SQL of a stored relation is not a
+ * partial success to be ignored — it is a mistake, so it is an error.
+ */
+const requireQueryTable = (
+  world: WorldState,
+  id: EntityId,
+): Result<TableEntity & { readonly source: QuerySource }, CommandError> => {
+  const found = requireTable(world, id);
+  if (!found.ok) return found;
+  if (!isQueryTable(found.value)) {
+    return err(commandError('not-a-query', `Table ${id} is not backed by a query`));
+  }
+  return ok(found.value);
+};
 
 const requireTable = (world: WorldState, id: EntityId): Result<TableEntity, CommandError> => {
   const entity = world.entities.get(id);
@@ -212,6 +229,59 @@ export const applyCommand = (
       );
     }
 
+    case 'SetTableColumns': {
+      const found = requireTable(world, command.tableId);
+      if (!found.ok) return found;
+      const seen = new Set<EntityId>();
+      for (const column of command.columns) {
+        if (seen.has(column.id)) {
+          return err(commandError('invalid-argument', `Duplicate column id ${column.id}`));
+        }
+        seen.add(column.id);
+      }
+      return ok(withEntity(world, { ...found.value, columns: [...command.columns] }));
+    }
+
+    case 'SetTableQuery': {
+      const found = requireQueryTable(world, command.tableId);
+      if (!found.ok) return found;
+      if (command.sql.trim() === '') {
+        return err(commandError('invalid-argument', 'A query table needs a statement'));
+      }
+      const table = found.value;
+      return ok(withEntity(world, { ...table, source: { ...table.source, sql: command.sql } }));
+    }
+
+    case 'SetChartSpec': {
+      const found = requireTable(world, command.tableId);
+      if (!found.ok) return found;
+      const table = found.value;
+      if (!isChartTable(table)) {
+        return err(commandError('not-a-chart', `Table ${command.tableId} is not a chart`));
+      }
+      return ok(withEntity(world, { ...table, source: { ...table.source, spec: command.spec } }));
+    }
+
+    case 'SetTableSource': {
+      const found = requireTable(world, command.tableId);
+      if (!found.ok) return found;
+      return ok(withEntity(world, { ...found.value, source: command.source }));
+    }
+
+    case 'SetTableMode': {
+      const found = requireTable(world, command.tableId);
+      if (!found.ok) return found;
+      const table = found.value;
+      // A statement to write or a chart to set up: either way there is something
+      // to switch between. A stored relation has nothing to configure.
+      if (!isConfigurableTable(table)) {
+        return err(
+          commandError('not-a-query', `Table ${command.tableId} has nothing to configure`),
+        );
+      }
+      return ok(withEntity(world, { ...table, mode: command.mode }));
+    }
+
     case 'RemoveEntities': {
       if (command.ids.length === 0) {
         return err(commandError('invalid-argument', 'RemoveEntities requires at least one id'));
@@ -257,6 +327,38 @@ export const applyCommand = (
         }
       }
       return ok(withBinding(world, binding));
+    }
+
+    case 'SetTableLabel': {
+      const entity = world.entities.get(command.tableId);
+      if (entity === undefined || !isTableEntity(entity)) {
+        return err(commandError('entity-not-found', `No table with id ${command.tableId}`));
+      }
+      if (entity.source.kind === 'relation') {
+        return err(
+          commandError(
+            'wrong-entity-type',
+            `${command.tableId} shows a stored relation, whose name is the relation's`,
+          ),
+        );
+      }
+      if (command.label.trim() === '') {
+        return err(commandError('invalid-argument', 'A label cannot be blank'));
+      }
+      return ok(
+        withEntity(world, {
+          ...entity,
+          source: { ...entity.source, label: command.label },
+        }),
+      );
+    }
+
+    case 'SetBindingLabel': {
+      const binding = world.bindings.get(command.bindingId);
+      if (binding === undefined) {
+        return err(commandError('binding-not-found', `No binding with id ${command.bindingId}`));
+      }
+      return ok(withBinding(world, { ...binding, label: command.label }));
     }
 
     case 'RemoveBindings': {

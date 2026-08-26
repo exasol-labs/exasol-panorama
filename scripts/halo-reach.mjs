@@ -123,15 +123,16 @@ report.inBandFarFromButton = await state();
 // pixels, so their world size depends on the camera scale.
 const BUTTON = 22 / scale;
 const OFFSET = 8 / scale;
+// The close button, on the corner: out past the right edge and up past the top.
 const button = {
-  x: second.x + second.width - BUTTON / 2,
-  y: second.y - (BUTTON + OFFSET) + BUTTON / 2,
+  x: second.x + second.width + OFFSET + BUTTON / 2,
+  y: second.y - OFFSET - BUTTON / 2,
 };
 report.derived = { scale, button, second };
 // Scan the band to find where the button actually responds.
 const scan = [];
-for (let dx = -60; dx <= 10; dx += 5) {
-  for (let dy = -34; dy <= -2; dy += 4) {
+for (let dx = -60; dx <= 45; dx += 5) {
+  for (let dy = -34; dy <= 30; dy += 4) {
     const world = { x: second.x + second.width + dx, y: second.y + dy };
     const point = toScreen(world);
     await page.mouse.move(point.x, point.y);

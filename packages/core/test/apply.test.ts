@@ -3,12 +3,14 @@ import type { Command, EntityId, TableEntity, WorldState } from '@panorama/core'
 import {
   DEFAULT_CONSTRAINTS,
   applyCommand,
+  buildTableEntity,
   emptyWorld,
   getEntity,
+  tableDisplayName,
   unwrap,
   withEntity,
 } from '@panorama/core';
-import { makeTable, testIds } from './fixtures.js';
+import { TEST_CONNECTION, makeTable, testIds } from './fixtures.js';
 
 const ids = testIds();
 
@@ -426,6 +428,57 @@ describe('entity type checks', () => {
       world,
       { type: 'ResizeEntity', id: table.id, width: 200, height: 200 },
       'wrong-entity-type',
+    );
+  });
+});
+
+describe('renaming a box', () => {
+  const queryBox = (): TableEntity =>
+    buildTableEntity(ids, {
+      source: {
+        kind: 'query',
+        connectionId: TEST_CONNECTION,
+        sql: 'SELECT 1',
+        label: 'SALES.ORDERS · SQL',
+      },
+      mode: 'result',
+      columns: [],
+    });
+
+  it('gives a box a name of its own', () => {
+    // A canvas where seven boxes all say "RAW.CLAIMS · SQL" is one you have to
+    // read the statements to navigate.
+    const box = queryBox();
+    const applied = applyCommand(worldWith(box), {
+      type: 'SetTableLabel',
+      tableId: box.id,
+      label: 'deciles by claim type',
+    });
+    expect(applied.ok).toBe(true);
+    const renamed = applied.ok ? applied.value.entities.get(box.id) : undefined;
+    expect(tableDisplayName(renamed as TableEntity)).toBe('deciles by claim type');
+  });
+
+  it("refuses a stored relation, whose name is the relation's", () => {
+    const table = makeTable(ids);
+    expectError(
+      worldWith(table),
+      { type: 'SetTableLabel', tableId: table.id, label: 'sales' },
+      'wrong-entity-type',
+    );
+  });
+
+  it('refuses a blank name and a box that is not there', () => {
+    const box = queryBox();
+    expectError(
+      worldWith(box),
+      { type: 'SetTableLabel', tableId: box.id, label: '   ' },
+      'invalid-argument',
+    );
+    expectError(
+      emptyWorld(),
+      { type: 'SetTableLabel', tableId: box.id, label: 'anything' },
+      'entity-not-found',
     );
   });
 });

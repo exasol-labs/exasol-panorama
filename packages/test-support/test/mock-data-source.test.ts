@@ -210,7 +210,7 @@ describe('filtering', () => {
     const source = new MockTableDataSource({
       relation: countryRelation(),
       scheduler: immediateScheduler,
-      filter: { column: 'NAME', value: 'Denmark' },
+      filter: { column: 'NAME', values: ['Denmark'] },
     });
     const session = await source.open();
     expect(session.rowCount).toBe(1);
@@ -225,7 +225,7 @@ describe('filtering', () => {
     const source = new MockTableDataSource({
       relation: countryRelation(),
       scheduler: immediateScheduler,
-      filter: { column: 'NAME', value: 'Atlantis' },
+      filter: { column: 'NAME', values: ['Atlantis'] },
     });
     expect((await source.open()).rowCount).toBe(0);
   });
@@ -233,7 +233,7 @@ describe('filtering', () => {
   it('refuses to scan a relation too large to filter honestly', async () => {
     const source = new MockTableDataSource({
       relation: factRelation(MAX_FILTER_SCAN + 1),
-      filter: { column: 'COUNTRY', value: 'Germany' },
+      filter: { column: 'COUNTRY', values: ['Germany'] },
     });
     await expect(source.open()).rejects.toThrow(/will not scan/);
   });
@@ -241,7 +241,7 @@ describe('filtering', () => {
   it('rejects a filter on a column that does not exist', async () => {
     const source = new MockTableDataSource({
       relation: countryRelation(),
-      filter: { column: 'NOPE', value: 'x' },
+      filter: { column: 'NOPE', values: ['x'] },
     });
     await expect(source.open()).rejects.toMatchObject({ code: 'not-found' });
   });

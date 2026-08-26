@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { PerformanceMetrics, TableListing } from '@panorama/ui';
+import type { ExportListing, PerformanceMetrics, SchemaContents, TableListing } from '@panorama/ui';
 import {
   ConnectionDialog,
+  connectionLabel,
+  ExportPanel,
+  SettingsPanel,
   PerformanceOverlay,
   SampleDataPanel,
   SchemaExplorer,
@@ -11,9 +14,13 @@ import type { ForeignKeyFollow, FrameStats, PanoramaRenderer } from '@panorama/r
 import type { ConnectionId, EntityActionId, EntityId } from '@panorama/core';
 import type { CreateEngineOptions } from '@panorama/renderer';
 import { PanoramaCanvas } from './panorama/PanoramaCanvas.js';
+import { ChartEditors } from './panorama/ChartEditors.js';
+import { SqlEditors } from './panorama/SqlEditors.js';
 import { backendOverride } from './bootstrap.js';
 import { DEMO_SCHEMA, demoTables } from './panorama/demo.js';
-import type { Workspace } from './panorama/workspace.js';
+import { describeFormat } from '@panorama/export';
+import type { ExportJob, Workspace } from './panorama/workspace.js';
+import type { StartupConnection } from './panorama/startup.js';
 
 /**
  * The application shell.
@@ -26,6 +33,8 @@ export interface AppProps {
   readonly workspace: Workspace;
   readonly defaultUrl?: string;
   readonly engineOptions?: CreateEngineOptions;
+  /** Connection details supplied before the page opened; see `startup.ts`. */
+  readonly startup?: StartupConnection | null;
 }
 
 const EMPTY_METRICS: PerformanceMetrics = {
@@ -53,19 +62,37 @@ const EMPTY_METRICS: PerformanceMetrics = {
 const describeError = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
-export const App = ({ workspace, defaultUrl, engineOptions }: AppProps): React.JSX.Element => {
+export const App = ({
+  workspace,
+  defaultUrl,
+  engineOptions,
+  startup = null,
+}: AppProps): React.JSX.Element => {
   const [status, setStatus] = useState<ConnectionStatus>('disconnected');
+  /**
+   * The URL of the live connection, for the explorer's indicator.
+   *
+   * The URL and nothing else: a username is not a secret, but credentials are
+   * handed to the data worker and kept nowhere, and the shell holding half of
+   * one for a caption would be the first crack in that.
+   */
+  const [connectedTo, setConnectedTo] = useState<string | null>(null);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [explorerError, setExplorerError] = useState<string | null>(null);
   const [schemas, setSchemas] = useState<readonly SchemaListing[]>([]);
-  const [tables, setTables] = useState<readonly TableListing[]>([]);
-  const [selectedSchema, setSelectedSchema] = useState<string | null>(null);
+  /**
+   * What each opened schema holds. A map rather than one selected schema's
+   * tables, because the tree can have several open at once — which is the point
+   * of it being a tree.
+   */
+  const [contents, setContents] = useState<ReadonlyMap<string, SchemaContents>>(new Map());
   const [loadingSchemas, setLoadingSchemas] = useState(false);
-  const [loadingTables, setLoadingTables] = useState(false);
   const [overlayVisible, setOverlayVisible] = useState(true);
   const [metrics, setMetrics] = useState<PerformanceMetrics>(EMPTY_METRICS);
   const [xrAvailable, setXrAvailable] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [exports, setExports] = useState<readonly ExportJob[]>([]);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const engine = useMemo<CreateEngineOptions>(() => {
     if (engineOptions !== undefined) return engineOptions;
@@ -95,30 +122,89 @@ export const App = ({ workspace, defaultUrl, engineOptions }: AppProps): React.J
     };
   }, [workspace]);
 
-  const onReady = useCallback((renderer: PanoramaRenderer, backend: string) => {
-    rendererRef.current = renderer;
-    backendRef.current = backend;
-    setXrAvailable(true);
-  }, []);
+  /**
+   * Exports live in the workspace, not in this component: one outlives any
+   * render, and stopping one has to work even if the panel is redrawn under it.
+   * React only mirrors them.
+   */
+  useEffect(
+    () =>
+      workspace.subscribeExports(() => {
+        setExports(workspace.exportJobs());
+      }),
+    [workspace],
+  );
 
+  const exportListings = useMemo<readonly ExportListing[]>(
+    () =>
+      exports.map((job: ExportJob) => ({
+        id: job.id,
+        tableName: job.tableName,
+        fileName: job.fileName,
+        formatLabel: describeFormat(job.format).label,
+        status: job.status,
+        rows: job.rows,
+        bytes: job.bytes,
+        totalRows: job.totalRows,
+        ...(job.error === undefined ? {} : { error: job.error }),
+      })),
+    [exports],
+  );
+
+  const cancelExport = useCallback(
+    (id: number) => {
+      workspace.cancelExport(id);
+    },
+    [workspace],
+  );
+
+  const dismissExport = useCallback(
+    (id: number) => {
+      workspace.dismissExport(id);
+    },
+    [workspace],
+  );
+
+  const onReady = useCallback(
+    (renderer: PanoramaRenderer, backend: string) => {
+      rendererRef.current = renderer;
+      backendRef.current = backend;
+      // Placement needs to know what is on screen, and only the camera does.
+      // Handed over here because the renderer does not exist until now.
+      workspace.viewport = (): ReturnType<typeof renderer.camera.visibleWorldRect> =>
+        renderer.camera.visibleWorldRect();
+      // Ask whether a headset is actually on offer rather than assuming one, and
+      // warm the XR chunk up now: entering needs a fresh user gesture, so the
+      // button's own click has no time to spare for a download.
+      void renderer.prepareXR().then(setXrAvailable);
+    },
+    [workspace],
+  );
+
+  /**
+   * Reports whether the connection succeeded, so a caller that has more to do
+   * once connected — opening the table named at startup — can wait for it. The
+   * dialog ignores the result, as a void-returning handler may.
+   */
   const connect = useCallback(
-    (request: ConnectionRequest) => {
+    async (request: ConnectionRequest): Promise<boolean> => {
       setStatus('connecting');
       setConnectionError(null);
-      void (async (): Promise<void> => {
-        try {
-          const result = await workspace.connect(request);
-          workspace.connectionId = result.connectionId as ConnectionId;
-          setStatus('connected');
-          setLoadingSchemas(true);
-          setSchemas(await workspace.listSchemas());
-        } catch (error) {
-          setStatus('failed');
-          setConnectionError(describeError(error));
-        } finally {
-          setLoadingSchemas(false);
-        }
-      })();
+      try {
+        const result = await workspace.connect(request);
+        workspace.connectionId = result.connectionId as ConnectionId;
+        setStatus('connected');
+        setConnectedTo(request.url);
+        setLoadingSchemas(true);
+        setSchemas(await workspace.listSchemas());
+        return true;
+      } catch (error) {
+        setStatus('failed');
+        setConnectionError(describeError(error));
+        return false;
+      } finally {
+        setLoadingSchemas(false);
+      }
     },
     [workspace],
   );
@@ -128,29 +214,36 @@ export const App = ({ workspace, defaultUrl, engineOptions }: AppProps): React.J
       await workspace.closeAll();
       await workspace.disconnect();
       setStatus('disconnected');
+      setConnectedTo(null);
       setSchemas([]);
-      setTables([]);
-      setSelectedSchema(null);
+      setContents(new Map());
     })();
   }, [workspace]);
 
-  const selectSchema = useCallback(
+  /**
+   * Lists a schema the tree has just opened.
+   *
+   * Skipped when it is already listed: the tree reports every opening, and
+   * re-querying a schema the user is merely folding back open would be a query
+   * for nothing. A schema that *failed* is retried, so closing and opening it
+   * again is the retry.
+   */
+  const expandSchema = useCallback(
     (schema: string) => {
-      setSelectedSchema(schema);
-      setExplorerError(null);
-      setLoadingTables(true);
+      if (contents.get(schema)?.status === 'ready') return;
+      setContents((held) => new Map(held).set(schema, { status: 'loading' }));
       void (async (): Promise<void> => {
         try {
-          setTables(await workspace.listTables(schema));
+          const tables = await workspace.listTables(schema);
+          setContents((held) => new Map(held).set(schema, { status: 'ready', tables }));
         } catch (error) {
-          setTables([]);
-          setExplorerError(describeError(error));
-        } finally {
-          setLoadingTables(false);
+          setContents((held) =>
+            new Map(held).set(schema, { status: 'failed', error: describeError(error) }),
+          );
         }
       })();
     },
-    [workspace],
+    [workspace, contents],
   );
 
   const openTable = useCallback(
@@ -185,6 +278,30 @@ export const App = ({ workspace, defaultUrl, engineOptions }: AppProps): React.J
 
   const samples = useMemo(() => demoTables(), []);
 
+  /**
+   * Connects with details supplied before the page opened, and opens the table
+   * they name. Runs once: a failure is reported and left alone rather than
+   * retried, so a wrong password does not hammer the database.
+   */
+  const attempted = useRef(false);
+  useEffect(() => {
+    if (startup === null || !startup.autoConnect || attempted.current) return;
+    const credentials = startup.credentials;
+    if (credentials === undefined) return;
+    attempted.current = true;
+    void (async (): Promise<void> => {
+      const connected = await connect({ url: startup.url, credentials });
+      const open = startup.open;
+      if (!connected || open === undefined) return;
+      try {
+        const id = await workspace.openTable({ schema: open.schema, table: open.table });
+        rendererRef.current?.revealEntity(id);
+      } catch (error) {
+        setExplorerError(describeError(error));
+      }
+    })();
+  }, [startup, connect, workspace]);
+
   const performAction = useCallback(
     (entityId: EntityId, action: EntityActionId) => {
       void (async (): Promise<void> => {
@@ -218,7 +335,11 @@ export const App = ({ workspace, defaultUrl, engineOptions }: AppProps): React.J
     void (async (): Promise<void> => {
       const entered = await rendererRef.current?.enterXR();
       if (entered === null || entered === undefined) {
-        setNotice('WebXR is not available in this browser.');
+        setNotice(
+          globalThis.isSecureContext === false
+            ? 'WebXR needs a secure page. Open Panorama over HTTPS (see npm run dev:vr).'
+            : 'WebXR could not start a session in this browser.',
+        );
       }
     })();
   }, []);
@@ -227,29 +348,92 @@ export const App = ({ workspace, defaultUrl, engineOptions }: AppProps): React.J
     setOverlayVisible((visible) => !visible);
   }, []);
 
+  const toggleSettings = useCallback(() => {
+    setSettingsOpen((shown) => !shown);
+  }, []);
+
+  /**
+   * The settings panel's window onto the development server.
+   *
+   * Held here rather than in the panel so that the panel needs no network of its
+   * own: it asks for a path and is given an answer or a `null`, and `null` is
+   * what a built page — where these routes do not exist — will always get.
+   */
+  const loadSetting = useCallback(async <TValue,>(path: string): Promise<TValue | null> => {
+    try {
+      const response = await fetch(path);
+      return response.ok ? ((await response.json()) as TValue) : null;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const actSetting = useCallback(
+    async <TValue,>(path: string, body: unknown): Promise<TValue | null> => {
+      try {
+        const response = await fetch(path, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        return (await response.json()) as TValue;
+      } catch {
+        return null;
+      }
+    },
+    [],
+  );
+
+  const copyText = useCallback((text: string) => {
+    void navigator.clipboard?.writeText(text);
+  }, []);
+
   const sidebar = useMemo(
     () => (
       <div className="pn-sidebar">
-        <ConnectionDialog
-          status={status}
-          error={connectionError}
-          {...(defaultUrl === undefined ? {} : { defaultUrl })}
-          onConnect={connect}
-          onDisconnect={disconnect}
-        />
+        {/*
+          The dialog is a question, so it goes once it has been answered: every
+          field in it is disabled while connected, and a form that can only be
+          read is a quarter of the sidebar spent saying "connected". What is
+          worth saying then is said by the explorer's indicator, which is also
+          the way back to this form.
+        */}
         {status === 'connected' ? (
           <SchemaExplorer
             schemas={schemas}
-            tables={tables}
-            selectedSchema={selectedSchema}
+            connection={{
+              label: connectionLabel(connectedTo ?? ''),
+              ...(connectedTo === null ? {} : { detail: connectedTo }),
+              onDisconnect: disconnect,
+            }}
+            contents={contents}
             loadingSchemas={loadingSchemas}
-            loadingTables={loadingTables}
             error={explorerError}
-            onSelectSchema={selectSchema}
+            onExpandSchema={expandSchema}
             onOpenTable={openTable}
           />
-        ) : null}
+        ) : (
+          <ConnectionDialog
+            status={status}
+            error={connectionError}
+            {...(startup?.url === undefined
+              ? defaultUrl === undefined
+                ? {}
+                : { defaultUrl }
+              : { defaultUrl: startup.url })}
+            {...(startup?.username === undefined ? {} : { defaultUsername: startup.username })}
+            onConnect={connect}
+          />
+        )}
         <SampleDataPanel tables={samples} onOpen={openSample} />
+        <ExportPanel exports={exportListings} onCancel={cancelExport} onDismiss={dismissExport} />
+        <SettingsPanel
+          open={settingsOpen}
+          onToggle={toggleSettings}
+          load={loadSetting}
+          act={actSetting}
+          onCopy={copyText}
+        />
         {xrAvailable ? (
           <button type="button" className="pn-xr" onClick={enterXR}>
             Enter XR
@@ -264,23 +448,30 @@ export const App = ({ workspace, defaultUrl, engineOptions }: AppProps): React.J
     ),
     [
       status,
+      connectedTo,
       connectionError,
       defaultUrl,
       connect,
       disconnect,
       schemas,
-      tables,
-      selectedSchema,
+      contents,
       loadingSchemas,
-      loadingTables,
       explorerError,
-      selectSchema,
+      expandSchema,
       openTable,
       xrAvailable,
       enterXR,
       notice,
       samples,
       openSample,
+      exportListings,
+      cancelExport,
+      dismissExport,
+      settingsOpen,
+      toggleSettings,
+      loadSetting,
+      actSetting,
+      copyText,
     ],
   );
 
@@ -297,6 +488,8 @@ export const App = ({ workspace, defaultUrl, engineOptions }: AppProps): React.J
           onAction={performAction}
           onFollowForeignKey={followForeignKey}
         />
+        <SqlEditors workspace={workspace} rendererRef={rendererRef} onError={setNotice} />
+        <ChartEditors workspace={workspace} rendererRef={rendererRef} onError={setNotice} />
         <PerformanceOverlay metrics={metrics} visible={overlayVisible} onToggle={toggleOverlay} />
       </main>
     </div>

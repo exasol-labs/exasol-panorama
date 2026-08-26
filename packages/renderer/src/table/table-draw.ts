@@ -1,13 +1,31 @@
-import type { TableEntity } from '@panorama/core';
-import { ROW_NUMBER_GUTTER_WIDTH, alignmentForType, clamp, tableDisplayName } from '@panorama/core';
+import type { SqlRange, TableEntity } from '@panorama/core';
+import {
+  ROW_NUMBER_GUTTER_WIDTH,
+  derivedTableRanges,
+  alignmentForType,
+  clamp,
+  isQueryTable,
+  tableDisplayName,
+} from '@panorama/core';
 import type { CellValue, ColumnLayout } from '@panorama/table';
 import { computeColumnWindow, computeRowWindow, formatCell } from '@panorama/table';
 import type { Rgba, TableTheme } from '../theme.js';
 import type { LodLevel } from './lod.js';
 import { showsCellText, showsGridLines, showsTypeRow } from './lod.js';
-import type { EntityActionId } from '@panorama/core';
-import { computeHalo } from './halo.js';
-import type { QuadInstance, TableDrawList, TextRun } from './draw-list.js';
+import type { EntityActionId, EntityId } from '@panorama/core';
+import { actionsForTable, barRects, computeHalo } from './halo.js';
+import type { SummaryPanelRequest, SummaryPanelView } from './summary-panel.js';
+import { buildSummaryPanels, layoutSummaryPanels } from './summary-panel.js';
+import { baselineOffset } from '../text/metrics.js';
+import type {
+  ChartDrawList,
+  ClipRect,
+  PolygonInstance,
+  QuadInstance,
+  TableDrawList,
+  TextRun,
+  TextSpan,
+} from './draw-list.js';
 
 /**
  * Builds one frame of a table.
@@ -38,15 +56,147 @@ export interface TableRenderInput {
   readonly gutterWidth?: number;
   /** Shown next to the title, e.g. `2.83B rows`. */
   readonly rowCountLabel?: string;
+  /** Actions the halo draws greyed out, because this table cannot perform them. */
+  readonly disabledActions?: readonly EntityActionId[];
   /** Draws the action halo; set when the table is activated. */
   readonly showHalo?: boolean;
   /** Camera pixels per world unit, so the halo keeps a constant screen size. */
   readonly scale?: number;
   readonly hoveredAction?: EntityActionId | null;
   readonly pressedAction?: EntityActionId | null;
+  /** The action whose choices the halo is showing, if any. */
+  readonly expandedAction?: EntityActionId | null;
+  /** Column-view ids picked out by clicking their headers. */
+  readonly selectedColumns?: readonly EntityId[];
+  /**
+   * The other tables, in this table's coordinates, so a statistics panel is not
+   * dropped onto one of them. Supplied by the host because a table knows nothing
+   * about its neighbours, and the renderer knows all of them.
+   */
+  readonly panelObstacles?: readonly ClipRect[];
+  /**
+   * The chart this box is drawing, in chart-local coordinates.
+   *
+   * Geometry from whatever laid it out, placed into the body by this function.
+   * A chart with no numbers yet gets `note` instead, for the same reason a
+   * summary panel does: "still reading" is a thing worth saying.
+   */
+  readonly chart?: ChartDrawList;
+  /** Shown beneath the chart: what it drew, and from how much. */
+  readonly chartNote?: string;
+  /** Marks the note as something the reader must not skim past. */
+  readonly chartNoteCaution?: boolean;
+  /**
+   * Statistics for the picked-out columns, keyed by column-view id.
+   *
+   * Supplied by the shell rather than computed here: a summary comes from the
+   * data source over a worker boundary, and the renderer is a pure function of
+   * one frame's inputs.
+   */
+  readonly columnSummaries?: ReadonlyMap<EntityId, SummaryPanelView>;
 }
 
 const NULL_PLACEHOLDER = '—';
+
+/**
+ * Room kept under a chart for the line that says what it drew.
+ *
+ * Exported because whoever lays the chart out has to subtract exactly this: the
+ * body it is given and the body it is drawn into must be the same rectangle.
+ */
+export const chartNoteHeight = (theme: TableTheme): number => theme.typeFontSize * 1.6;
+
+/** The controls take this much of the box's width, at most. */
+export /**
+ * How much of a halo button a drawn mark fills. A typed glyph brings its own
+ * side bearings; a rectangle has none, so the padding has to be given to it.
+ */
+const HALO_SHAPE_FRACTION = 0.55;
+
+const CHART_FORM_MAX_WIDTH = 250;
+/** ...and at least this much, or a fraction of the box, whichever is larger. */
+export const CHART_FORM_MIN_WIDTH = 170;
+export const CHART_FORM_FRACTION = 0.46;
+
+export interface ChartBoxLayout {
+  /** Where the controls go while the chart is being set up; empty otherwise. */
+  readonly form: ClipRect;
+  /** Where the picture goes. */
+  readonly chart: ClipRect;
+}
+
+/**
+ * Splits a chart box between its controls and its picture.
+ *
+ * The controls take a column down the left and the picture keeps the rest, so
+ * that setting a chart up is done *while looking at it*. A form covering the
+ * whole box would make every control a guess followed by a reveal, which is the
+ * difference between configuring a chart and filling in a questionnaire about
+ * one.
+ *
+ * Shared, because the controls are DOM and the picture is drawn by the GPU: two
+ * different systems have to agree on the same two rectangles, and a disagreement
+ * would show up as a form overlapping its own preview.
+ */
+export const chartBoxLayout = (
+  width: number,
+  height: number,
+  theme: TableTheme,
+  editing: boolean,
+): ChartBoxLayout => {
+  const pad = theme.editorPadding;
+  const top = theme.titleHeight;
+  const body = {
+    x: pad,
+    y: top + pad,
+    width: Math.max(0, width - pad * 2),
+    height: Math.max(0, height - top - pad * 2 - chartNoteHeight(theme)),
+  };
+  if (!editing) return { form: { x: 0, y: top, width: 0, height: 0 }, chart: body };
+  const formWidth = Math.min(
+    CHART_FORM_MAX_WIDTH,
+    Math.max(CHART_FORM_MIN_WIDTH, width * CHART_FORM_FRACTION),
+  );
+  // A box too narrow to split gives the whole of itself to the controls: half a
+  // form beside a sliver of chart is neither.
+  if (formWidth + CHART_FORM_MIN_WIDTH > width) {
+    return { form: { x: 0, y: top, width, height: height - top }, chart: body };
+  }
+  return {
+    form: { x: 0, y: top, width: formWidth, height: height - top },
+    chart: {
+      x: formWidth + pad,
+      y: body.y,
+      width: Math.max(0, width - formWidth - pad * 2),
+      height: body.height,
+    },
+  };
+};
+
+/**
+ * The parts of one line covered by a reference, in that line's own offsets.
+ *
+ * A statement is lexed as a whole and drawn a line at a time, so the ranges have
+ * to be moved into each line's frame and trimmed to it.
+ */
+export const referenceSpans = (
+  ranges: readonly SqlRange[],
+  lineStart: number,
+  lineLength: number,
+  color: Rgba,
+): readonly TextSpan[] => {
+  const spans: TextSpan[] = [];
+  const lineEnd = lineStart + lineLength;
+  for (const range of ranges) {
+    if (range.to <= lineStart || range.from >= lineEnd) continue;
+    spans.push({
+      from: Math.max(0, range.from - lineStart),
+      to: Math.min(lineLength, range.to - lineStart),
+      color,
+    });
+  }
+  return spans;
+};
 
 /** Compact row counts the way the mock-up shows them: `2.83B rows`. */
 export const formatRowCount = (rowCount: number | null): string => {
@@ -95,12 +245,78 @@ export interface TableMetrics {
   readonly scrollbarInset: number;
 }
 
+/**
+ * Width of one digit as a fraction of the font size.
+ *
+ * The *widest* digit of the fonts the glyph atlas falls through, rounded up —
+ * the whole point of measuring is that a row number is never cut short, so the
+ * estimate has to be generous rather than average. An estimate rather than a
+ * measurement because hit testing must arrive at the same gutter as drawing,
+ * and hit testing has no text system to ask.
+ */
+const DIGIT_WIDTH_RATIO = 0.65;
+
+/**
+ * How far a line of text inks above and below its baseline, as a fraction of
+ * the font size — generous enough to cover the ascenders and descenders of the
+ * fonts the atlas falls through.
+ */
+const ASCENT_RATIO = 0.78;
+const DESCENT_RATIO = 0.24;
+
+/**
+ * The band a row's text actually inks, as offsets from the top of the row.
+ *
+ * Text is centred on a baseline rather than filling its row, so a row can be
+ * clipped by a few pixels and still show every glyph whole. Measuring the band
+ * rather than the row is what keeps the textless gap at a scrolling edge down to
+ * a few pixels instead of a whole row.
+ */
+export const rowTextBand = (
+  rowHeight: number,
+  fontSize: number,
+): { readonly top: number; readonly bottom: number } => {
+  const baseline = baselineOffset(rowHeight, fontSize);
+  return { top: baseline - fontSize * ASCENT_RATIO, bottom: baseline + fontSize * DESCENT_RATIO };
+};
+
+/**
+ * How wide the row-number gutter has to be.
+ *
+ * A fixed gutter cannot work: the number in it is a *result position*, so a
+ * hundred-row table needs three digits and a ten-billion-row one needs eleven,
+ * and a width that suits the first truncates the second — which is the one case
+ * where the number shown would be actively misleading rather than merely
+ * abbreviated.
+ *
+ * Derived from the row count rather than from the numbers currently on screen,
+ * so it is settled once when the result set reports its size and never moves
+ * again while scrolling. A gutter that grew as you scrolled past a million would
+ * shift every column to its right, which is the same reason Stage 1 does not
+ * re-measure columns from the values that happen to be visible.
+ *
+ * Never *narrower* than the configured width: a short table keeps the gutter
+ * proportions the rest of the chrome was designed around.
+ */
+export const rowNumberGutterWidth = (
+  rowCount: number | null,
+  theme: TableTheme,
+  minimum = ROW_NUMBER_GUTTER_WIDTH,
+): number => {
+  // Nothing to derive from: a source that cannot report a row count cannot say
+  // how wide its positions will get either.
+  if (rowCount === null) return minimum;
+  const digits = String(Math.max(1, Math.trunc(rowCount))).length;
+  const digitWidth = Math.ceil(theme.fontSize * DIGIT_WIDTH_RATIO);
+  return Math.max(minimum, digits * digitWidth + theme.cellPaddingX * 2);
+};
+
 export const tableMetrics = (
   entity: TableEntity,
   layout: ColumnLayout,
   rowCount: number | null,
   theme: TableTheme,
-  gutterWidth = ROW_NUMBER_GUTTER_WIDTH,
+  minimumGutterWidth = ROW_NUMBER_GUTTER_WIDTH,
 ): TableMetrics => {
   const width = entity.transform.width;
   const height = entity.transform.height;
@@ -109,6 +325,7 @@ export const tableMetrics = (
   const reserve = theme.scrollbarWidth + theme.resizeMargin;
   const contentHeight = (rowCount ?? 0) * rowHeight;
   const contentWidth = layout.totalWidth;
+  const gutterWidth = rowNumberGutterWidth(rowCount, theme, minimumGutterWidth);
 
   let bodyWidth = Math.max(0, width - gutterWidth);
   let bodyHeight = Math.max(0, height - headerHeight);
@@ -254,6 +471,7 @@ export const buildTableDrawList = (input: TableRenderInput): TableDrawList => {
   const bodyBottom = headerHeight + bodyHeight;
 
   const quads: QuadInstance[] = [];
+  const polygons: PolygonInstance[] = [];
   const texts: TextRun[] = [];
   let characters = 0;
   let placeholderCells = 0;
@@ -279,29 +497,43 @@ export const buildTableDrawList = (input: TableRenderInput): TableDrawList => {
 
   // Title bar.
   const titleHeight = metrics.titleHeight;
-  quad(0, 0, width, titleHeight, theme.titleBackground);
-  const rowCountLabel = input.rowCountLabel ?? formatRowCount(input.rowCount);
+  // A derived table is tinted rather than differently shaped: the eye picks up
+  // "this one was computed" from the title bar without anything else moving, and
+  // the bar stays one flat colour like every other table's.
+  const derived = isQueryTable(entity);
+  quad(0, 0, width, titleHeight, derived ? theme.derivedTitleBackground : theme.titleBackground);
+  // A box being written has no rows, and saying "0 rows" would read as a result
+  // that came back empty rather than a statement that has not run.
+  // A chart has no rows of its own to count, and "0 rows" beside a picture of a
+  // hundred thousand of them is worse than nothing. What it read is said under
+  // the chart instead, where it belongs.
+  const rowCountLabel =
+    entity.mode === 'editing' || entity.source.kind === 'chart'
+      ? ''
+      : (input.rowCountLabel ?? formatRowCount(input.rowCount));
   text({
     x: theme.cellPaddingX,
     y: 0,
     maxWidth: Math.max(0, width - theme.cellPaddingX * 2 - 110),
     height: titleHeight,
     text: tableDisplayName(entity),
-    color: theme.titleText,
+    color: derived ? theme.derivedTitleText : theme.titleText,
     align: 'left',
     fontSize: theme.titleFontSize,
     bold: true,
   });
-  text({
-    x: Math.max(0, width - 110 - theme.cellPaddingX),
-    y: 0,
-    maxWidth: 110,
-    height: titleHeight,
-    text: rowCountLabel,
-    color: theme.typeText,
-    align: 'right',
-    fontSize: theme.typeFontSize,
-  });
+  if (rowCountLabel !== '') {
+    text({
+      x: Math.max(0, width - 110 - theme.cellPaddingX),
+      y: 0,
+      maxWidth: 110,
+      height: titleHeight,
+      text: rowCountLabel,
+      color: theme.typeText,
+      align: 'right',
+      fontSize: theme.typeFontSize,
+    });
+  }
 
   /**
    * The halo is drawn after everything else so it layers above the chrome, and
@@ -309,35 +541,76 @@ export const buildTableDrawList = (input: TableRenderInput): TableDrawList => {
    */
   const drawHalo = (): void => {
     if (input.showHalo !== true || lod === 'summary') return;
-    const halo = computeHalo(metrics, theme, input.scale ?? 1);
+    const halo = computeHalo(
+      metrics,
+      theme,
+      input.scale ?? 1,
+      actionsForTable(entity, input.expandedAction ?? null),
+    );
     for (const button of halo.buttons) {
-      const hovered = input.hoveredAction === button.action;
-      const pressed = input.pressedAction === button.action;
-      const background = pressed
-        ? theme.haloPressedBackground
-        : hovered
-          ? theme.haloHoverBackground
-          : theme.haloBackground;
-      quad(button.x, button.y, button.size, button.size, theme.haloBorder);
+      // A disabled button is drawn, not hidden: the halo keeps a stable shape,
+      // and a greyed-out control says "not for this table" where a missing one
+      // would say nothing at all.
+      const disabled = input.disabledActions?.includes(button.action) === true;
+      const hovered = !disabled && input.hoveredAction === button.action;
+      const pressed = !disabled && input.pressedAction === button.action;
+      const highlight =
+        button.tone === 'destructive'
+          ? { hover: theme.haloDangerBackground, press: theme.haloDangerPressedBackground }
+          : { hover: theme.haloAccentBackground, press: theme.haloAccentPressedBackground };
+      const background = disabled
+        ? theme.haloDisabledBackground
+        : pressed
+          ? highlight.press
+          : hovered
+            ? highlight.hover
+            : theme.haloBackground;
+      quad(
+        button.x,
+        button.y,
+        button.width,
+        button.size,
+        disabled ? theme.haloDisabledBorder : theme.haloBorder,
+      );
       const inset = Math.max(0.5, theme.borderWidth / Math.max(0.05, input.scale ?? 1));
       quad(
         button.x + inset,
         button.y + inset,
-        button.size - inset * 2,
+        button.width - inset * 2,
         button.size - inset * 2,
         background,
       );
-      text({
-        x: button.x,
-        y: button.y,
-        maxWidth: button.size,
-        height: button.size,
-        text: button.icon,
-        color: hovered || pressed ? theme.haloHoverIcon : theme.haloIcon,
-        align: 'center',
-        fontSize: theme.haloIconFontSize / Math.max(0.05, input.scale ?? 1),
-        bold: true,
-      });
+      const mark = disabled
+        ? theme.haloDisabledIcon
+        : hovered || pressed
+          ? theme.haloHoverIcon
+          : theme.haloIcon;
+      if (button.shape === 'bars') {
+        // Into the quads, with the background it has to sit on top of: the
+        // polygon batch is drawn under them and the button would swallow it.
+        const box = button.size * HALO_SHAPE_FRACTION;
+        for (const bar of barRects(
+          button.x + (button.width - box) / 2,
+          button.y + (button.size - box) / 2,
+          box,
+        )) {
+          quad(bar.x, bar.y, bar.width, bar.height, mark);
+        }
+      }
+      if (button.icon !== undefined) {
+        text({
+          x: button.x,
+          y: button.y,
+          maxWidth: button.width,
+          height: button.size,
+          text: button.icon,
+          color: mark,
+          align: 'center',
+          fontSize:
+            (button.iconFontSize ?? theme.haloIconFontSize) / Math.max(0.05, input.scale ?? 1),
+          bold: true,
+        });
+      }
     }
   };
 
@@ -351,6 +624,158 @@ export const buildTableDrawList = (input: TableRenderInput): TableDrawList => {
     drawHalo();
     return {
       quads,
+      polygons,
+      texts,
+      stats: {
+        visibleRows: 0,
+        renderedRows: 0,
+        visibleColumns: 0,
+        quads: quads.length,
+        textRuns: texts.length,
+        characters,
+        placeholderCells: 0,
+      },
+    };
+  }
+
+  /**
+   * A query box being written has no rows to draw, so it draws its statement
+   * instead.
+   *
+   * The text is rendered by the GPU even though an editable DOM surface sits on
+   * top of it in the browser: that surface is opaque, and in XR — or in a
+   * screenshot — there is no DOM at all, so this is what the box actually looks
+   * like.
+   */
+  /**
+   * A chart takes the body whole: no gutter, no header, no rows. It is drawn
+   * from geometry someone else laid out, translated here into the same quads and
+   * text runs as everything else on the canvas — so it is sharp at any zoom, it
+   * joins the same two batches, and it exists in a headset.
+   */
+  const chart = input.chart;
+  if (chart !== undefined) {
+    const pad = theme.editorPadding;
+    const note = input.chartNote;
+    // Reserved whether or not there is a note to put in it, so the picture is
+    // laid out for exactly the room it is drawn into. Reserve it on one side only
+    // and the axis labels along the bottom are laid out into space that is then
+    // clipped away.
+    const noteHeight = chartNoteHeight(theme);
+    const box = chartBoxLayout(width, height, theme, entity.mode === 'editing');
+    quad(0, titleHeight, width, height - titleHeight, theme.background);
+    // The controls' own ground, drawn by the GPU as well as covered by the DOM —
+    // so the split reads the same in a headset, where there is no DOM at all.
+    if (box.form.width > 0) {
+      quad(box.form.x, box.form.y, box.form.width, box.form.height, theme.editorBackground);
+    }
+    const clip = box.chart;
+    for (const polygon of chart.polygons) {
+      polygons.push({
+        corners: [
+          clip.x + polygon.corners[0],
+          clip.y + polygon.corners[1],
+          clip.x + polygon.corners[2],
+          clip.y + polygon.corners[3],
+          clip.x + polygon.corners[4],
+          clip.y + polygon.corners[5],
+          clip.x + polygon.corners[6],
+          clip.y + polygon.corners[7],
+        ],
+        color: polygon.color,
+      });
+    }
+    for (const run of chart.texts) {
+      text({
+        x: clip.x + run.x,
+        y: clip.y + run.y,
+        maxWidth: run.width,
+        height: run.height,
+        text: run.text,
+        color: run.color,
+        align: run.align,
+        fontSize: run.fontSize,
+        ...(run.bold === true ? { bold: true } : {}),
+        clip,
+      });
+    }
+    if (note !== undefined) {
+      text({
+        x: clip.x,
+        y: height - pad - noteHeight,
+        maxWidth: Math.max(0, width - clip.x - pad),
+        height: noteHeight,
+        text: note,
+        color: input.chartNoteCaution === true ? theme.summaryNullBar : theme.typeText,
+        align: 'left',
+        fontSize: theme.typeFontSize,
+      });
+    }
+    drawHalo();
+    return {
+      quads,
+      texts,
+      polygons,
+      stats: {
+        visibleRows: 0,
+        renderedRows: 0,
+        visibleColumns: 0,
+        quads: quads.length + polygons.length,
+        textRuns: texts.length,
+        characters,
+        placeholderCells: 0,
+      },
+    };
+  }
+
+  if (entity.mode === 'editing') {
+    const pad = theme.editorPadding;
+    quad(0, titleHeight, width, height - titleHeight, theme.editorBackground);
+    quad(
+      pad,
+      titleHeight + pad,
+      Math.max(0, width - pad * 2),
+      Math.max(0, height - titleHeight - pad * 2),
+      theme.editorFieldBackground,
+    );
+    const lineHeight = theme.editorFontSize * 1.45;
+    const statement = entity.source.kind === 'query' ? entity.source.sql : '';
+    // Where the statement names its input. Found once over the whole text, so
+    // that a name inside a string or a comment is left alone even when the
+    // string or comment runs across lines, and then cut up per line.
+    const references = derivedTableRanges(statement);
+    const lines = statement === '' ? [] : statement.split('\n');
+    const room = Math.max(0, height - titleHeight - pad * 2 - lineHeight);
+    let lineStart = 0;
+    lines.slice(0, Math.max(0, Math.floor(room / lineHeight))).forEach((line, index) => {
+      const spans = referenceSpans(references, lineStart, line.length, theme.editorReferenceText);
+      lineStart += line.length + 1;
+      text({
+        x: pad * 2,
+        y: titleHeight + pad * 2 + index * lineHeight,
+        maxWidth: Math.max(0, width - pad * 4),
+        height: lineHeight,
+        text: line,
+        color: theme.editorText,
+        align: 'left',
+        fontSize: theme.editorFontSize,
+        ...(spans.length === 0 ? {} : { spans }),
+      });
+    });
+    text({
+      x: pad * 2,
+      y: height - pad - lineHeight,
+      maxWidth: Math.max(0, width - pad * 4),
+      height: lineHeight,
+      text: theme.editorHint,
+      color: theme.typeText,
+      align: 'left',
+      fontSize: theme.typeFontSize,
+    });
+    drawHalo();
+    return {
+      quads,
+      polygons,
       texts,
       stats: {
         visibleRows: 0,
@@ -435,6 +860,7 @@ export const buildTableDrawList = (input: TableRenderInput): TableDrawList => {
 
   // Rows.
   const drawCellText = showsCellText(lod);
+  const textBand = rowTextBand(rowHeight, theme.fontSize);
   for (let offset = 0; offset < rows.renderedRowCount; offset += 1) {
     const row = rows.firstRenderedRow + offset;
     const y = headerHeight + rows.offsetY + offset * rowHeight;
@@ -448,8 +874,22 @@ export const buildTableDrawList = (input: TableRenderInput): TableDrawList => {
         : theme.rowAlternateBackground;
     const clippedY = Math.max(y, headerHeight);
     const clippedHeight = Math.min(y + rowHeight, bodyBottom) - clippedY;
-    /** Text keeps the full row's baseline and is clipped to the visible part. */
+    /**
+     * A partly visible row keeps its background and loses its text.
+     *
+     * Clipping a glyph mid-height does not abbreviate a value, it changes it: a
+     * halved `8` reads as a `0`, and a halved row *position* reads as a
+     * different row. That is worst at the bottom edge, where the clip line is
+     * the horizontal scrollbar and a sliced number looks like the bar is lying
+     * on top of it. So the letters wait until they can be read — which, because
+     * the test is against the inked band rather than the whole row, is only a
+     * few pixels of patience either side.
+     */
     const rowClip = { x: 0, y: clippedY, width, height: clippedHeight };
+    const lettered =
+      drawCellText &&
+      y + textBand.top >= clippedY &&
+      y + textBand.bottom <= clippedY + clippedHeight;
     quad(theme.borderWidth, clippedY, cellRight - theme.borderWidth, clippedHeight, background);
     quad(
       theme.borderWidth,
@@ -459,7 +899,7 @@ export const buildTableDrawList = (input: TableRenderInput): TableDrawList => {
       hovered ? theme.rowHoverBackground : theme.gutterBackground,
     );
 
-    if (drawCellText) {
+    if (lettered) {
       text({
         x: theme.cellPaddingX,
         y,
@@ -493,7 +933,8 @@ export const buildTableDrawList = (input: TableRenderInput): TableDrawList => {
         );
         continue;
       }
-      if (!drawCellText) continue;
+      // Same rule as the row number: a value cut in half is not the value.
+      if (!lettered) continue;
 
       const type = placement.column.sourceColumn.type;
       const formatted = value === null ? NULL_PLACEHOLDER : formatCell(value, type);
@@ -511,6 +952,68 @@ export const buildTableDrawList = (input: TableRenderInput): TableDrawList => {
         align: value === null ? 'left' : alignmentForType(type),
         fontSize: theme.fontSize,
       });
+    }
+  }
+
+  /**
+   * Columns picked out by their headers.
+   *
+   * Drawn after the rows and before the grid lines: a wash over the cells rather
+   * than a replacement for their backgrounds, so the striping and the hovered
+   * row still read through it, and the values are untouched — they are glyphs,
+   * which land on top of every quad whatever order these go in.
+   */
+  const selected = input.selectedColumns;
+  const panelRequests: SummaryPanelRequest[] = [];
+  if (selected !== undefined && selected.length > 0) {
+    for (const placement of columns.placements) {
+      if (!selected.includes(placement.id)) continue;
+      const x = columnX(placement.x);
+      if (x + placement.width <= gutterWidth || x >= cellRight) continue;
+      const visibleX = Math.max(x, gutterWidth);
+      const visibleWidth = Math.min(x + placement.width, cellRight) - visibleX;
+      const view = input.columnSummaries?.get(placement.id);
+      panelRequests.push({
+        columnId: placement.id,
+        // Aligned to the part of the column that can be seen, so a column half
+        // scrolled under the gutter still gets a panel inside the table's span
+        // rather than one reaching out to the left of it.
+        x: visibleX,
+        width: visibleWidth,
+        column: {
+          name: placement.column.sourceColumn.name,
+          type: placement.column.sourceColumn.type,
+          summary: view?.summary,
+          note: view?.note,
+        },
+      });
+      quad(
+        visibleX,
+        titleHeight,
+        visibleWidth,
+        headerHeight - titleHeight,
+        theme.columnSelectedHeaderBackground,
+      );
+      quad(visibleX, headerHeight, visibleWidth, bodyHeight, theme.columnSelectedBackground);
+      // An edge either side, so two selected columns side by side still read as
+      // two rather than as one wide one.
+      quad(
+        visibleX,
+        titleHeight,
+        theme.gridLineWidth,
+        height - titleHeight,
+        theme.columnSelectedBorder,
+      );
+      const right = visibleX + visibleWidth - theme.gridLineWidth;
+      if (right > visibleX) {
+        quad(
+          right,
+          titleHeight,
+          theme.gridLineWidth,
+          height - titleHeight,
+          theme.columnSelectedBorder,
+        );
+      }
     }
   }
 
@@ -543,10 +1046,26 @@ export const buildTableDrawList = (input: TableRenderInput): TableDrawList => {
     quads.push(scrollbars.horizontalTrack, scrollbars.horizontal);
   }
 
+  /**
+   * Statistics panels, below the table and above nothing: they are outside its
+   * bounds, so they layer over the canvas rather than over any of its own rows.
+   * Far zoom has already returned by here, which is right — a row of unreadable
+   * panels under every table would be noise.
+   */
+  if (panelRequests.length > 0) {
+    const panels = buildSummaryPanels(
+      layoutSummaryPanels(panelRequests, height, input.panelObstacles),
+      theme,
+    );
+    quads.push(...panels.quads);
+    for (const run of panels.texts) text(run);
+  }
+
   drawHalo();
 
   return {
     quads,
+    polygons,
     texts,
     stats: {
       visibleRows: rows.visibleRowCount,

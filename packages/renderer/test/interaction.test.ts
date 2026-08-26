@@ -1,17 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import type { BindingId, EntityActionId, EntityId, TableEntity } from '@panorama/core';
-import { PanoramaCore, resolveBinding } from '@panorama/core';
+import { PanoramaCore, buildTableEntity, resolveBinding } from '@panorama/core';
 import { computeColumnLayout } from '@panorama/table';
 import type { CellValue } from '@panorama/table';
-import type { ForeignKeyFollow, InteractionHost } from '@panorama/renderer';
+import type { ForeignKeyFollow, InteractionHost, PointerInput } from '@panorama/renderer';
 import {
   CameraController,
   DEFAULT_TABLE_THEME,
   InteractionController,
   computeHalo,
+  rowNumberGutterWidth,
   tableMetrics,
 } from '@panorama/renderer';
-import { makeTable, testIds } from './fixtures.js';
+import { TEST_CONNECTION, makeTable, testIds } from './fixtures.js';
 
 interface Harness {
   readonly core: PanoramaCore;
@@ -30,6 +31,7 @@ const setup = (
     onAction?: (entityId: EntityId, action: EntityActionId) => void;
     onFollowForeignKey?: (follow: ForeignKeyFollow) => void;
     cells?: (row: number, columnIndex: number) => CellValue | undefined;
+    disabledActions?: readonly EntityActionId[];
   } = {},
 ): Harness => {
   const ids = testIds();
@@ -64,6 +66,9 @@ const setup = (
     cellAt: (_tableId, row, columnIndex) => options.cells?.(row, columnIndex),
     scrollBy: (tableId, deltaX, deltaY) => scrolls.push({ tableId, deltaX, deltaY }),
     scrollToFraction: (_tableId, axis, fraction) => fractions.push({ axis, fraction }),
+    ...(options.disabledActions === undefined
+      ? {}
+      : { disabledActionsFor: (): readonly EntityActionId[] => options.disabledActions ?? [] }),
   };
 
   const controller = new InteractionController({
@@ -181,6 +186,239 @@ describe('moving a table', () => {
   });
 });
 
+describe('picking columns out by their headers', () => {
+  const HEADER_Y = 40;
+
+  /** Screen point in the middle of the nth visible column's header. */
+  const headerOf = (harness: ReturnType<typeof setup>, index: number): PointerInput => {
+    const entity = harness.core.world.entities.get(harness.table.id) as TableEntity;
+    const layout = computeColumnLayout(entity.columns);
+    const placement = layout.placements[index] as (typeof layout.placements)[number];
+    const gutter = rowNumberGutterWidth(1_000_000, DEFAULT_TABLE_THEME);
+    return harness.screenOf(gutter + placement.x + placement.width / 2, HEADER_Y);
+  };
+
+  const columnId = (harness: ReturnType<typeof setup>, index: number): EntityId => {
+    const entity = harness.core.world.entities.get(harness.table.id) as TableEntity;
+    return computeColumnLayout(entity.columns).placements[index]?.id as EntityId;
+  };
+
+  const click = (harness: ReturnType<typeof setup>, index: number): void => {
+    harness.controller.onPointerDown(headerOf(harness, index));
+    harness.controller.onPointerUp(headerOf(harness, index));
+  };
+
+  it('picks a column out when its header is clicked', () => {
+    const harness = setup();
+    click(harness, 1);
+    expect(harness.core.session.selectedColumns).toEqual([columnId(harness, 1)]);
+    // And the table itself is now the active one, so Escape has something to
+    // back out of.
+    expect(harness.core.session.focusedTable).toBe(harness.table.id);
+  });
+
+  it('answers on the way down, in whichever direction it is going', () => {
+    const harness = setup();
+    harness.controller.onPointerDown(headerOf(harness, 0));
+    expect(harness.core.session.selectedColumns).toEqual([columnId(harness, 0)]);
+    harness.controller.onPointerUp(headerOf(harness, 0));
+    expect(harness.core.session.selectedColumns).toEqual([columnId(harness, 0)]);
+
+    // And out again on the way down, with nothing undone on release — so there
+    // is nothing to flicker either way.
+    harness.controller.onPointerDown(headerOf(harness, 0));
+    expect(harness.core.session.selectedColumns).toEqual([]);
+    harness.controller.onPointerUp(headerOf(harness, 0));
+    expect(harness.core.session.selectedColumns).toEqual([]);
+  });
+
+  it('takes a column out again when its header is clicked a second time', () => {
+    const harness = setup();
+    click(harness, 1);
+    click(harness, 1);
+    expect(harness.core.session.selectedColumns).toEqual([]);
+  });
+
+  it('adds a column to the ones already picked out', () => {
+    const harness = setup();
+    click(harness, 0);
+    click(harness, 2);
+    expect(harness.core.session.selectedColumns).toEqual([
+      columnId(harness, 0),
+      columnId(harness, 2),
+    ]);
+    // And takes one of them out without disturbing the other.
+    click(harness, 0);
+    expect(harness.core.session.selectedColumns).toEqual([columnId(harness, 2)]);
+  });
+
+  it('sweeps a range out with a drag', () => {
+    const harness = setup();
+    harness.controller.onPointerDown(headerOf(harness, 0));
+    harness.controller.onPointerMove(headerOf(harness, 1));
+    harness.controller.onPointerMove(headerOf(harness, 2));
+    harness.controller.onPointerUp(headerOf(harness, 2));
+    expect(harness.core.session.selectedColumns).toEqual([
+      columnId(harness, 0),
+      columnId(harness, 1),
+      columnId(harness, 2),
+    ]);
+  });
+
+  it('leaves only what is between the ends when a sweep doubles back', () => {
+    const harness = setup();
+    harness.controller.onPointerDown(headerOf(harness, 0));
+    harness.controller.onPointerMove(headerOf(harness, 2));
+    // Back towards the start: the range shrinks rather than accumulating.
+    harness.controller.onPointerMove(headerOf(harness, 1));
+    harness.controller.onPointerUp(headerOf(harness, 1));
+    expect(harness.core.session.selectedColumns).toEqual([
+      columnId(harness, 0),
+      columnId(harness, 1),
+    ]);
+  });
+
+  it('sweeps the same range whichever way it is dragged', () => {
+    const harness = setup();
+    harness.controller.onPointerDown(headerOf(harness, 2));
+    harness.controller.onPointerMove(headerOf(harness, 0));
+    harness.controller.onPointerUp(headerOf(harness, 0));
+    expect([...harness.core.session.selectedColumns].sort()).toEqual(
+      [columnId(harness, 0), columnId(harness, 1), columnId(harness, 2)].sort(),
+    );
+  });
+
+  it('adds a sweep to what was already picked out, and never removes', () => {
+    const harness = setup();
+    click(harness, 2);
+    harness.controller.onPointerDown(headerOf(harness, 0));
+    harness.controller.onPointerMove(headerOf(harness, 1));
+    harness.controller.onPointerUp(headerOf(harness, 1));
+    expect([...harness.core.session.selectedColumns].sort()).toEqual(
+      [columnId(harness, 0), columnId(harness, 1), columnId(harness, 2)].sort(),
+    );
+  });
+
+  it('sweeps a range back out again when it starts on a column already picked out', () => {
+    const harness = setup();
+    // Everything picked out first.
+    harness.controller.onPointerDown(headerOf(harness, 0));
+    harness.controller.onPointerMove(headerOf(harness, 2));
+    harness.controller.onPointerUp(headerOf(harness, 2));
+    expect(harness.core.session.selectedColumns).toHaveLength(3);
+
+    // A sweep beginning on one of them takes that range away again.
+    harness.controller.onPointerDown(headerOf(harness, 0));
+    harness.controller.onPointerMove(headerOf(harness, 1));
+    harness.controller.onPointerUp(headerOf(harness, 1));
+    expect(harness.core.session.selectedColumns).toEqual([columnId(harness, 2)]);
+  });
+
+  it('decides which way it is going once, from the column it began on', () => {
+    const harness = setup();
+    click(harness, 0);
+    // Begun on a picked column, swept over ones that are not: they stay out
+    // rather than being picked up along the way.
+    harness.controller.onPointerDown(headerOf(harness, 0));
+    harness.controller.onPointerMove(headerOf(harness, 2));
+    harness.controller.onPointerUp(headerOf(harness, 2));
+    expect(harness.core.session.selectedColumns).toEqual([]);
+
+    // And the other way round: begun on one that is out, the picked ones it
+    // passes over stay in.
+    click(harness, 1);
+    harness.controller.onPointerDown(headerOf(harness, 0));
+    harness.controller.onPointerMove(headerOf(harness, 2));
+    harness.controller.onPointerUp(headerOf(harness, 2));
+    expect([...harness.core.session.selectedColumns].sort()).toEqual(
+      [columnId(harness, 0), columnId(harness, 1), columnId(harness, 2)].sort(),
+    );
+  });
+
+  it('leaves columns outside the range alone when sweeping them out', () => {
+    const harness = setup();
+    click(harness, 0);
+    click(harness, 1);
+    click(harness, 2);
+    // Only the first two are swept away.
+    harness.controller.onPointerDown(headerOf(harness, 0));
+    harness.controller.onPointerMove(headerOf(harness, 1));
+    harness.controller.onPointerUp(headerOf(harness, 1));
+    expect(harness.core.session.selectedColumns).toEqual([columnId(harness, 2)]);
+  });
+
+  it('leaves what is between the ends when a sweep out doubles back', () => {
+    const harness = setup();
+    harness.controller.onPointerDown(headerOf(harness, 0));
+    harness.controller.onPointerMove(headerOf(harness, 2));
+    harness.controller.onPointerUp(headerOf(harness, 2));
+
+    harness.controller.onPointerDown(headerOf(harness, 0));
+    harness.controller.onPointerMove(headerOf(harness, 2));
+    // Back towards the start: only the shrunken range is given up.
+    harness.controller.onPointerMove(headerOf(harness, 1));
+    harness.controller.onPointerUp(headerOf(harness, 1));
+    expect(harness.core.session.selectedColumns).toEqual([columnId(harness, 2)]);
+  });
+
+  it('keeps a sweep alive when the pointer drifts down out of the header', () => {
+    const harness = setup();
+    harness.controller.onPointerDown(headerOf(harness, 0));
+    const entity = harness.core.world.entities.get(harness.table.id) as TableEntity;
+    const layout = computeColumnLayout(entity.columns);
+    const gutter = rowNumberGutterWidth(1_000_000, DEFAULT_TABLE_THEME);
+    const second = layout.placements[1] as (typeof layout.placements)[number];
+    // Well below the header, over a cell of the next column along.
+    harness.controller.onPointerMove(
+      harness.screenOf(gutter + second.x + second.width / 2, entity.view.headerHeight + 60),
+    );
+    harness.controller.onPointerUp(
+      harness.screenOf(gutter + second.x + second.width / 2, entity.view.headerHeight + 60),
+    );
+    expect(harness.core.session.selectedColumns).toEqual([
+      columnId(harness, 0),
+      columnId(harness, 1),
+    ]);
+  });
+
+  it('does not start a sweep from the header above the gutter', () => {
+    const harness = setup();
+    harness.controller.onPointerDown(harness.screenOf(10, HEADER_Y));
+    harness.controller.onPointerUp(harness.screenOf(10, HEADER_Y));
+    expect(harness.core.session.selectedColumns).toEqual([]);
+  });
+
+  it('does not move the table, and resizing a column still wins at the edge', () => {
+    const harness = setup();
+    const before = harness.core.world.entities.get(harness.table.id)?.transform;
+    harness.controller.onPointerDown(headerOf(harness, 0));
+    harness.controller.onPointerMove(headerOf(harness, 1));
+    harness.controller.onPointerUp(headerOf(harness, 1));
+    expect(harness.core.world.entities.get(harness.table.id)?.transform).toEqual(before);
+    expect(harness.core.session.drag).toBeNull();
+
+    // The separator is a resize handle, not a column to pick out.
+    const entity = harness.core.world.entities.get(harness.table.id) as TableEntity;
+    const layout = computeColumnLayout(entity.columns);
+    const first = layout.placements[0] as (typeof layout.placements)[number];
+    const gutter = rowNumberGutterWidth(1_000_000, DEFAULT_TABLE_THEME);
+    harness.core.dispatchSession({ type: 'SetSelectedColumns', ids: [] });
+    harness.controller.onPointerDown(harness.screenOf(gutter + first.width, HEADER_Y));
+    expect(harness.core.session.drag?.kind).toBe('resize-column');
+    expect(harness.core.session.selectedColumns).toEqual([]);
+  });
+
+  it('abandons a sweep when the pointer leaves the canvas', () => {
+    const harness = setup();
+    harness.controller.onPointerDown(headerOf(harness, 0));
+    harness.controller.onPointerLeave();
+    // What was swept stays; the gesture does not.
+    expect(harness.core.session.selectedColumns).toEqual([columnId(harness, 0)]);
+    harness.controller.onPointerUp(headerOf(harness, 0));
+    expect(harness.core.session.selectedColumns).toEqual([columnId(harness, 0)]);
+  });
+});
+
 describe('resizing', () => {
   it('resizes a table on release', () => {
     const harness = setup();
@@ -197,7 +435,9 @@ describe('resizing', () => {
     const harness = setup();
     const first = harness.table.columns[0];
     if (first === undefined) throw new Error('expected columns');
-    const edge = 64 + first.width;
+    // Derived from the gutter, which is as wide as the longest row number this
+    // table has to show rather than a fixed width.
+    const edge = rowNumberGutterWidth(1_000_000, DEFAULT_TABLE_THEME) + first.width;
     harness.controller.onPointerDown(harness.screenOf(edge, 30));
     expect(harness.core.session.drag?.kind).toBe('resize-column');
 
@@ -210,7 +450,9 @@ describe('resizing', () => {
     const harness = setup();
     const first = harness.table.columns[0];
     if (first === undefined) throw new Error('expected columns');
-    const edge = 64 + first.width;
+    // Derived from the gutter, which is as wide as the longest row number this
+    // table has to show rather than a fixed width.
+    const edge = rowNumberGutterWidth(1_000_000, DEFAULT_TABLE_THEME) + first.width;
     const commitsBefore = harness.core.history.commits.size;
     harness.controller.onPointerDown(harness.screenOf(edge, 30));
     harness.controller.onPointerUp(harness.screenOf(edge, 30));
@@ -411,7 +653,10 @@ describe('tables without an open data session', () => {
 });
 
 describe('the action halo', () => {
-  const haloCentre = (harness: Harness): { screenX: number; screenY: number } => {
+  const haloCentre = (
+    harness: Harness,
+    action: EntityActionId = 'close',
+  ): { screenX: number; screenY: number } => {
     const halo = computeHalo(
       tableMetrics(
         harness.table,
@@ -421,14 +666,50 @@ describe('the action halo', () => {
       ),
       DEFAULT_TABLE_THEME,
     );
-    const button = halo.buttons[0];
-    if (button === undefined) throw new Error('expected a halo button');
+    const button = halo.buttons.find((candidate) => candidate.action === action);
+    if (button === undefined) throw new Error(`expected a ${action} button`);
     return harness.screenOf(button.x + button.size / 2, button.y + button.size / 2);
   };
 
   const activate = (harness: Harness): void => {
     harness.controller.onPointerMove(harness.screenOf(300, 200));
   };
+
+  it('refuses a disabled action but keeps the halo alive', () => {
+    const fired: EntityActionId[] = [];
+    const harness = setup({
+      disabledActions: ['sql'],
+      onAction: (_id, action) => fired.push(action),
+    });
+    const point = haloCentre(harness, 'sql');
+
+    harness.controller.onPointerMove(point);
+    // Hovering a greyed-out button must not dismiss the halo it belongs to.
+    expect(harness.core.session.hovered).toBe(harness.table.id);
+    expect(harness.core.session.hoveredAction).toBeNull();
+    expect(harness.controller.cursor).toBe('not-allowed');
+
+    harness.controller.onPointerDown(point);
+    expect(harness.core.session.pressedAction).toBeNull();
+    // A press on the halo must not select or start dragging the table either.
+    expect(harness.core.session.drag).toBeNull();
+    harness.controller.onPointerUp(point);
+    expect(fired).toEqual([]);
+  });
+
+  it('still fires the actions a table can perform', () => {
+    const fired: EntityActionId[] = [];
+    const harness = setup({
+      disabledActions: ['sql'],
+      onAction: (_id, action) => fired.push(action),
+    });
+    const point = haloCentre(harness, 'close');
+    harness.controller.onPointerMove(point);
+    expect(harness.core.session.hoveredAction?.action).toBe('close');
+    harness.controller.onPointerDown(point);
+    harness.controller.onPointerUp(point);
+    expect(fired).toEqual(['close']);
+  });
 
   it('is reachable even by a pointer that jumps straight to it', () => {
     const harness = setup();
@@ -829,5 +1110,184 @@ describe('the connector marker', () => {
     harness.controller.onPointerLeave();
     expect(harness.core.session.hoveredBinding).toBeNull();
     expect(harness.core.session.pressedBinding).toBeNull();
+  });
+});
+
+describe('pointing at a chart', () => {
+  /**
+   * A chart box, and a host that reports a mark over the left half of it.
+   *
+   * The geometry lives with whatever laid the chart out, so the controller's part
+   * is knowing that the pointer is over a chart's body and where in it — which is
+   * exactly what this stands in for.
+   */
+  const chartHarness = (): {
+    core: PanoramaCore;
+    camera: CameraController;
+    controller: InteractionController;
+    chart: TableEntity;
+    asked: { x: number; y: number }[];
+  } => {
+    const ids = testIds(5);
+    const core = new PanoramaCore({ ids });
+    const chart = buildTableEntity(ids, {
+      source: {
+        kind: 'chart',
+        connectionId: TEST_CONNECTION,
+        spec: { type: 'bar', category: 'C', values: ['V'], aggregate: 'sum' },
+        label: 'S.T · Chart',
+        derivedFrom: 'table:base' as EntityId,
+      },
+      mode: 'result',
+      columns: [],
+      position: { x: 0, y: 0, z: 0 },
+      size: { width: 400, height: 300 },
+    });
+    core.dispatch({ type: 'CreateTableEntity', entity: chart });
+    const camera = new CameraController();
+    camera.setViewport({ width: 1_000, height: 800 });
+    camera.moveTo(0, 0);
+    const asked: { x: number; y: number }[] = [];
+    const controller = new InteractionController({
+      core,
+      camera,
+      theme: DEFAULT_TABLE_THEME,
+      host: {
+        viewOf: () => null,
+        cellAt: () => undefined,
+        scrollBy: () => undefined,
+        scrollToFraction: () => undefined,
+        chartMarkAt: (_id, x, y) => {
+          asked.push({ x, y });
+          return x < 200 ? { series: 0, data: Math.floor(x / 50) } : null;
+        },
+      },
+    });
+    return {
+      core,
+      camera,
+      controller,
+      chart: core.world.entities.get(chart.id) as TableEntity,
+      asked,
+    };
+  };
+
+  const at = (
+    camera: CameraController,
+    x: number,
+    y: number,
+  ): { screenX: number; screenY: number } => {
+    const screen = camera.worldToScreen(x, y);
+    return { screenX: screen.x, screenY: screen.y };
+  };
+
+  it('remembers the mark under the pointer, in the box own coordinates', () => {
+    const harness = chartHarness();
+    harness.controller.onPointerMove(at(harness.camera, 120, 200));
+    expect(harness.core.session.hoveredMark).toEqual({
+      entityId: harness.chart.id,
+      series: 0,
+      data: 2,
+    });
+    expect(harness.asked[0]).toEqual({ x: 120, y: 200 });
+  });
+
+  it('says under the pointer that a mark can be picked', () => {
+    const harness = chartHarness();
+    harness.controller.onPointerMove(at(harness.camera, 120, 200));
+    expect(harness.controller.cursor).toBe('pointer');
+  });
+
+  it('lets go of it over the background, and over the chrome', () => {
+    const harness = chartHarness();
+    harness.controller.onPointerMove(at(harness.camera, 120, 200));
+    harness.controller.onPointerMove(at(harness.camera, 300, 200));
+    expect(harness.core.session.hoveredMark).toBeNull();
+    // The title bar is not the picture.
+    harness.controller.onPointerMove(at(harness.camera, 120, 200));
+    harness.controller.onPointerMove(at(harness.camera, 120, 5));
+    expect(harness.core.session.hoveredMark).toBeNull();
+  });
+
+  it('lets go of it when the pointer leaves the canvas', () => {
+    const harness = chartHarness();
+    harness.controller.onPointerMove(at(harness.camera, 120, 200));
+    harness.controller.onPointerLeave();
+    expect(harness.core.session.hoveredMark).toBeNull();
+  });
+
+  it('picks a mark out on a press, and adds the next to it', () => {
+    const harness = chartHarness();
+    harness.controller.onPointerDown({ ...at(harness.camera, 20, 200), button: 0 });
+    expect(harness.core.session.selectedMarks).toEqual([
+      { entityId: harness.chart.id, series: 0, data: 0 },
+    ]);
+    harness.controller.onPointerUp(at(harness.camera, 20, 200));
+    harness.controller.onPointerDown({ ...at(harness.camera, 120, 200), button: 0 });
+    // Additive, because comparing two bars is the reason anybody picks one out.
+    expect(harness.core.session.selectedMarks).toHaveLength(2);
+  });
+
+  it('lets go of a mark that was already picked', () => {
+    const harness = chartHarness();
+    harness.controller.onPointerDown({ ...at(harness.camera, 20, 200), button: 0 });
+    harness.controller.onPointerUp(at(harness.camera, 20, 200));
+    harness.controller.onPointerDown({ ...at(harness.camera, 30, 200), button: 0 });
+    expect(harness.core.session.selectedMarks).toEqual([]);
+  });
+
+  it('lets go of them all on a press in the background of the picture', () => {
+    const harness = chartHarness();
+    harness.controller.onPointerDown({ ...at(harness.camera, 20, 200), button: 0 });
+    harness.controller.onPointerUp(at(harness.camera, 20, 200));
+    harness.controller.onPointerDown({ ...at(harness.camera, 300, 200), button: 0 });
+    expect(harness.core.session.selectedMarks).toEqual([]);
+    // And pressing the background again is not an error.
+    harness.controller.onPointerDown({ ...at(harness.camera, 300, 200), button: 0 });
+    expect(harness.core.session.selectedMarks).toEqual([]);
+  });
+
+  it('asks nothing of a host that has no charts', () => {
+    const ids = testIds(6);
+    const core = new PanoramaCore({ ids });
+    const chart = buildTableEntity(ids, {
+      source: {
+        kind: 'chart',
+        connectionId: TEST_CONNECTION,
+        spec: { type: 'bar', category: 'C', values: ['V'], aggregate: 'sum' },
+        label: 'S.T · Chart',
+        derivedFrom: 'table:base' as EntityId,
+      },
+      mode: 'result',
+      columns: [],
+      position: { x: 0, y: 0, z: 0 },
+      size: { width: 400, height: 300 },
+    });
+    core.dispatch({ type: 'CreateTableEntity', entity: chart });
+    const camera = new CameraController();
+    camera.setViewport({ width: 1_000, height: 800 });
+    camera.moveTo(0, 0);
+    const controller = new InteractionController({
+      core,
+      camera,
+      theme: DEFAULT_TABLE_THEME,
+      host: {
+        viewOf: () => null,
+        cellAt: () => undefined,
+        scrollBy: () => undefined,
+        scrollToFraction: () => undefined,
+      },
+    });
+    const screen = camera.worldToScreen(120, 200);
+    controller.onPointerMove({ screenX: screen.x, screenY: screen.y });
+    expect(core.session.hoveredMark).toBeNull();
+    controller.onPointerDown({ screenX: screen.x, screenY: screen.y, button: 0 });
+    expect(core.session.selectedMarks).toEqual([]);
+  });
+
+  it('leaves an ordinary table alone: its body is a grid, not a picture', () => {
+    const harness = setup();
+    harness.controller.onPointerMove(harness.screenOf(120, 200));
+    expect(harness.core.session.hoveredMark).toBeNull();
   });
 });

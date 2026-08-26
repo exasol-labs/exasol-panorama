@@ -1,19 +1,24 @@
-import type { EntityId } from '@panorama/core';
+import type { ChartSpec, EntityId } from '@panorama/core';
 import type {
   DesiredBlock,
   ResultChunk,
-  RowFilter,
   SchemaInfo,
   TableInfo,
   TableSchema,
 } from '@panorama/table';
 import { TableDataError } from '@panorama/table';
 import type { ExasolCredentials } from '@panorama/exasol';
+import type { ByteSink, ExportFormat } from '@panorama/export';
+import { abandon } from '@panorama/export';
 import type { WorkerEndpoint } from './endpoint.js';
 import type {
+  ExportResultMessage,
   MainToWorkerMessage,
+  OpenTableRequest,
   OpenTableResult,
   SerializedError,
+  SummariseColumnResult,
+  ChartDataResult,
   WorkerToMainMessage,
 } from './messages.js';
 
@@ -43,14 +48,31 @@ export interface ConnectionStatusEvent {
   readonly error?: SerializedError;
 }
 
+export interface ExportProgressEvent {
+  readonly exportId: number;
+  readonly rows: number;
+  readonly bytes: number;
+  readonly totalRows: number | null;
+}
+
+export interface ExportRequest {
+  readonly tableId: EntityId;
+  readonly format: ExportFormat;
+  /** Where the bytes go. Closed on success, aborted on failure or cancellation. */
+  readonly sink: ByteSink;
+  readonly onProgress?: (progress: ExportProgressEvent) => void;
+}
+
+export interface RunningExportHandle {
+  readonly exportId: number;
+  /** Resolves when the file is complete; rejects if it failed or was cancelled. */
+  readonly done: Promise<ExportResultMessage>;
+  cancel(): void;
+}
+
 /** The narrow surface a table controller needs; keeps controllers testable. */
 export interface TableDataGateway {
-  openTable(
-    tableId: EntityId,
-    schema: string,
-    table: string,
-    filter?: RowFilter,
-  ): Promise<OpenTableResult>;
+  openTable(request: OpenTableRequest): Promise<OpenTableResult>;
   reopenTable(tableId: EntityId): Promise<OpenTableResult>;
   closeTable(tableId: EntityId): Promise<void>;
   requestBlocks(
@@ -68,6 +90,13 @@ interface Pending {
   readonly reject: (error: unknown) => void;
 }
 
+interface ExportSinkState {
+  readonly sink: ByteSink;
+  readonly onProgress?: (progress: ExportProgressEvent) => void;
+  /** Records a write failure so the export's promise rejects with it. */
+  readonly fail: (error: unknown) => void;
+}
+
 export const deserializeError = (error: SerializedError): TableDataError =>
   new TableDataError(error.code, error.message);
 
@@ -80,7 +109,9 @@ export class DataWorkerClient implements TableDataGateway {
   readonly #listener = (event: { data: unknown }): void => {
     this.#receive(event.data as WorkerToMainMessage);
   };
+  readonly #exportSinks = new Map<number, ExportSinkState>();
   #nextRequestId = 1;
+  #nextExportId = 1;
   #disposed = false;
 
   constructor(endpoint: WorkerEndpoint) {
@@ -121,6 +152,36 @@ export class DataWorkerClient implements TableDataGateway {
           });
         }
         return;
+      case 'exportChunk': {
+        const state = this.#exportSinks.get(message.exportId);
+        const bytes = new Uint8Array(message.bytes);
+        // Acknowledged only once the bytes are on their way to the file, which
+        // is what stops the worker from running ahead of the disk.
+        void (async (): Promise<void> => {
+          try {
+            await state?.sink.write(bytes);
+          } catch (error) {
+            state?.fail(error);
+          }
+          if (!this.#disposed) {
+            this.#endpoint.postMessage({
+              type: 'exportAck',
+              exportId: message.exportId,
+              sequence: message.sequence,
+            } satisfies MainToWorkerMessage);
+          }
+        })();
+        return;
+      }
+      case 'exportProgress': {
+        this.#exportSinks.get(message.exportId)?.onProgress?.({
+          exportId: message.exportId,
+          rows: message.rows,
+          bytes: message.bytes,
+          totalRows: message.totalRows,
+        });
+        return;
+      }
       case 'connectionStatus':
         for (const listener of [...this.#statusListeners]) {
           listener({
@@ -142,7 +203,16 @@ export class DataWorkerClient implements TableDataGateway {
     });
   }
 
-  connect(url: string, credentials: ExasolCredentials): Promise<{ connectionId: string }> {
+  connect(
+    url: string,
+    credentials: ExasolCredentials,
+  ): Promise<{
+    connectionId: string;
+    /** What the database called itself at login, where it said. */
+    database?: string;
+    version?: string;
+    sessionId?: number;
+  }> {
     return this.#request((requestId) => ({ type: 'connect', requestId, url, credentials }));
   }
 
@@ -162,20 +232,30 @@ export class DataWorkerClient implements TableDataGateway {
     return this.#request((requestId) => ({ type: 'describeTable', requestId, schema, table }));
   }
 
-  openTable(
-    tableId: EntityId,
-    schema: string,
-    table: string,
-    filter?: RowFilter,
-  ): Promise<OpenTableResult> {
+  /**
+   * Describes one column of an open table, or resolves `null` when whatever is
+   * behind the table has no way to say.
+   */
+  summariseColumn(tableId: EntityId, column: string): Promise<SummariseColumnResult> {
     return this.#request((requestId) => ({
-      type: 'openTable',
+      type: 'summariseColumn',
       requestId,
       tableId,
-      schema,
-      table,
-      ...(filter === undefined ? {} : { filter }),
+      column,
     }));
+  }
+
+  /**
+   * The numbers a chart draws, reduced beside the rows they came from.
+   *
+   * `tableId` is the table being charted: a chart has no result set of its own.
+   */
+  chartData(tableId: EntityId, spec: ChartSpec): Promise<ChartDataResult> {
+    return this.#request((requestId) => ({ type: 'chartData', requestId, tableId, spec }));
+  }
+
+  openTable(request: OpenTableRequest): Promise<OpenTableResult> {
+    return this.#request((requestId) => ({ type: 'openTable', requestId, ...request }));
   }
 
   reopenTable(tableId: EntityId): Promise<OpenTableResult> {
@@ -200,6 +280,60 @@ export class DataWorkerClient implements TableDataGateway {
       blockSize,
       blocks,
     } satisfies MainToWorkerMessage);
+  }
+
+  /**
+   * Starts an export and returns a handle to it.
+   *
+   * The sink is this side's: the worker encodes and this thread writes, so the
+   * file dialog's handle never has to leave the thread that opened it. Whichever
+   * way the export ends, the sink is finished here — closed on success, abandoned
+   * otherwise, because a truncated Parquet file or ZIP is not a partial result
+   * but an unopenable one.
+   */
+  startExport(request: ExportRequest): RunningExportHandle {
+    const exportId = this.#nextExportId++;
+    let failure: unknown = null;
+    this.#exportSinks.set(exportId, {
+      sink: request.sink,
+      ...(request.onProgress === undefined ? {} : { onProgress: request.onProgress }),
+      fail: (error): void => {
+        failure = failure ?? error;
+      },
+    });
+
+    const done = this.#request<ExportResultMessage>((requestId) => ({
+      type: 'startExport',
+      requestId,
+      exportId,
+      tableId: request.tableId,
+      format: request.format,
+    }))
+      .then(async (result) => {
+        if (failure !== null) throw failure;
+        await request.sink.close();
+        return result;
+      })
+      .catch(async (error: unknown) => {
+        await abandon(request.sink, error);
+        throw error;
+      })
+      .finally(() => {
+        this.#exportSinks.delete(exportId);
+      });
+
+    return {
+      exportId,
+      done,
+      cancel: (): void => {
+        if (this.#disposed) return;
+        this.#endpoint.postMessage({
+          type: 'cancelExport',
+          requestId: this.#nextRequestId++,
+          exportId,
+        } satisfies MainToWorkerMessage);
+      },
+    };
   }
 
   onRows(listener: (event: RowsAvailable) => void): () => void {
@@ -230,6 +364,7 @@ export class DataWorkerClient implements TableDataGateway {
       pending.reject(new TableDataError('session-closed', 'Data worker client disposed'));
     }
     this.#pending.clear();
+    this.#exportSinks.clear();
     this.#rowListeners.clear();
     this.#failureListeners.clear();
     this.#statusListeners.clear();

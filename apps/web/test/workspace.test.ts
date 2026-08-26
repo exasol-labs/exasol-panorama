@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { EntityId } from '@panorama/core';
-import { dataType, resolveBinding, tableDisplayName } from '@panorama/core';
+import { dataType, isTableEntity, resolveBinding, tableDisplayName } from '@panorama/core';
 import { createAppHarness, firstTableId } from './harness.js';
-import { blockSizeForColumns } from '../src/panorama/workspace.js';
+import { blockSizeForColumns, summaryPanelView } from '../src/panorama/workspace.js';
 import { DEMO_SCHEMA } from '../src/panorama/demo.js';
 
 describe('Workspace connection', () => {
@@ -328,6 +328,39 @@ describe('halo actions', () => {
   });
 });
 
+describe('closing a table with columns picked out', () => {
+  it('lets go of its own columns and leaves the other table alone', async () => {
+    const harness = createAppHarness();
+    const first = await harness.workspace.openTable({
+      schema: DEMO_SCHEMA,
+      table: 'SAMPLE_100',
+    });
+    const second = await harness.workspace.openTable({
+      schema: DEMO_SCHEMA,
+      table: 'COUNTRIES',
+    });
+    await harness.settle();
+    const columnsOf = (id: EntityId): readonly EntityId[] => {
+      const entity = harness.workspace.core.world.entities.get(id);
+      if (entity === undefined || !isTableEntity(entity)) throw new Error('expected a table');
+      return entity.columns.map((column) => column.id);
+    };
+    const kept = columnsOf(second)[0] as EntityId;
+    harness.workspace.core.dispatchSession({
+      type: 'SetSelectedColumns',
+      ids: [...columnsOf(first).slice(0, 2), kept],
+    });
+
+    await harness.workspace.closeTable(first);
+    // Only the closed table's columns go: the others were never in question.
+    expect(harness.workspace.core.session.selectedColumns).toEqual([kept]);
+
+    // Closing a table with nothing picked out leaves the selection alone.
+    await harness.workspace.closeTable(second);
+    expect(harness.workspace.core.session.selectedColumns).toEqual([]);
+  });
+});
+
 describe('following a foreign key', () => {
   const openSales = async (): Promise<{
     harness: ReturnType<typeof createAppHarness>;
@@ -511,5 +544,180 @@ describe('sizing a followed table', () => {
     // Nothing to fit to, so the table keeps the size it was created with.
     const opened = harness.workspace.core.world.entities.get(tableId);
     expect(opened?.transform.height).toBe(source.transform.height);
+  });
+});
+
+describe('statistics for a picked-out column', () => {
+  const openWithColumns = async (): Promise<{
+    readonly harness: ReturnType<typeof createAppHarness>;
+    readonly tableId: EntityId;
+    readonly columns: readonly EntityId[];
+    readonly names: readonly string[];
+  }> => {
+    const harness = createAppHarness();
+    const tableId = await harness.workspace.openTable({
+      schema: DEMO_SCHEMA,
+      table: 'SAMPLE_100',
+    });
+    await harness.settle();
+    const entity = harness.workspace.core.world.entities.get(tableId);
+    if (entity === undefined || !isTableEntity(entity)) throw new Error('expected a table');
+    return {
+      harness,
+      tableId,
+      columns: entity.columns.map((column) => column.id),
+      names: entity.columns.map((column) => column.sourceColumn.name),
+    };
+  };
+
+  const pick = async (
+    harness: ReturnType<typeof createAppHarness>,
+    ids: readonly EntityId[],
+  ): Promise<void> => {
+    harness.workspace.core.dispatchSession({ type: 'SetSelectedColumns', ids: [...ids] });
+    harness.workspace.update(16);
+    await harness.settle();
+  };
+
+  it('asks for a summary when a column is picked out, and once only', async () => {
+    const { harness, columns } = await openWithColumns();
+    const first = columns[0] as EntityId;
+    await pick(harness, [first]);
+
+    const state = harness.workspace.columnSummary(first);
+    expect(state?.status).toBe('ready');
+    expect(state?.status === 'ready' && state.summary.rows).toBe(100);
+
+    // Another frame with the same selection asks nothing new: a summary costs a
+    // query, and the selection has not changed.
+    const before = state;
+    harness.workspace.update(16);
+    await harness.settle();
+    expect(harness.workspace.columnSummary(first)).toBe(before);
+  });
+
+  it('is on its way before it has arrived', async () => {
+    const { harness, columns } = await openWithColumns();
+    const first = columns[0] as EntityId;
+    harness.workspace.core.dispatchSession({ type: 'SetSelectedColumns', ids: [first] });
+    harness.workspace.update(16);
+    // Nothing has been driven yet: the panel has a column to describe and no
+    // numbers for it, which is a thing it can say.
+    expect(harness.workspace.columnSummary(first)?.status).toBe('loading');
+  });
+
+  it('lets go of a summary for a column nobody is asking about any more', async () => {
+    const { harness, columns } = await openWithColumns();
+    const first = columns[0] as EntityId;
+    await pick(harness, [first]);
+    expect(harness.workspace.columnSummary(first)?.status).toBe('ready');
+
+    await pick(harness, []);
+    expect(harness.workspace.columnSummary(first)).toBeUndefined();
+  });
+
+  it('does not let a late answer land on a column already let go of', async () => {
+    const { harness, columns } = await openWithColumns();
+    const first = columns[0] as EntityId;
+    harness.workspace.core.dispatchSession({ type: 'SetSelectedColumns', ids: [first] });
+    harness.workspace.update(16);
+    // Let go of while the query is in flight.
+    harness.workspace.core.dispatchSession({ type: 'SetSelectedColumns', ids: [] });
+    harness.workspace.update(16);
+    await harness.settle();
+
+    expect(harness.workspace.columnSummary(first)).toBeUndefined();
+  });
+
+  it('ignores a column id belonging to no table at all', async () => {
+    const { harness } = await openWithColumns();
+    await pick(harness, ['column:nowhere' as EntityId]);
+    expect(harness.workspace.columnSummary('column:nowhere' as EntityId)).toBeUndefined();
+  });
+
+  it('keeps nothing for a column whose table has gone', async () => {
+    const { harness, columns, tableId } = await openWithColumns();
+    const first = columns[0] as EntityId;
+    await pick(harness, [first]);
+    await harness.workspace.closeTable(tableId);
+    harness.workspace.update(16);
+    await harness.settle();
+
+    expect(harness.workspace.columnSummary(first)).toBeUndefined();
+  });
+
+  it('reports a failure in the words the source used', async () => {
+    const { harness, columns } = await openWithColumns();
+    const first = columns[0] as EntityId;
+    harness.client.summariseColumn = (): Promise<never> =>
+      Promise.reject(new Error('the database said no'));
+    await pick(harness, [first]);
+
+    // The database's own words: they are almost always the ones worth reading.
+    expect(harness.workspace.columnSummary(first)).toEqual({
+      status: 'failed',
+      error: 'the database said no',
+    });
+  });
+
+  it('reports a failure that was not even an error', async () => {
+    const { harness, columns } = await openWithColumns();
+    const first = columns[0] as EntityId;
+    harness.client.summariseColumn = (): Promise<never> => Promise.reject('dropped');
+    await pick(harness, [first]);
+
+    expect(harness.workspace.columnSummary(first)).toEqual({
+      status: 'failed',
+      error: 'dropped',
+    });
+  });
+
+  it('says a source cannot answer rather than leaving the panel waiting', async () => {
+    const { harness, columns } = await openWithColumns();
+    const first = columns[0] as EntityId;
+    harness.client.summariseColumn = (): Promise<null> => Promise.resolve(null);
+    await pick(harness, [first]);
+
+    expect(harness.workspace.columnSummary(first)?.status).toBe('unavailable');
+  });
+
+  it('hands the renderer a view per column, and nothing when none is picked out', async () => {
+    const { harness, tableId, columns } = await openWithColumns();
+    const entity = harness.workspace.core.world.entities.get(tableId);
+    if (entity === undefined || !isTableEntity(entity)) throw new Error('expected a table');
+    expect(harness.workspace.columnSummariesFor(entity)).toBeUndefined();
+
+    const first = columns[0] as EntityId;
+    await pick(harness, [first]);
+    const views = harness.workspace.columnSummariesFor(entity);
+    expect(views?.size).toBe(1);
+    expect(views?.get(first)?.summary?.rows).toBe(100);
+  });
+});
+
+describe('what a panel shows when there are no numbers', () => {
+  it.each([
+    ['loading', undefined, undefined],
+    ['unavailable', undefined, 'No statistics for this source'],
+    ['failed', undefined, 'the database said no'],
+  ])('turns %s into a view', (status, summary, note) => {
+    const state =
+      status === 'failed'
+        ? ({ status: 'failed', error: 'the database said no' } as const)
+        : ({ status } as { status: 'loading' | 'unavailable' });
+    const view = summaryPanelView(state);
+    expect(view.summary).toBe(summary);
+    expect(view.note).toBe(note);
+  });
+
+  it('hands over the summary itself once there is one', () => {
+    const summary = {
+      column: 'C',
+      rows: 1,
+      nulls: 0,
+      basis: 'exact',
+      distinct: 1,
+    } as const;
+    expect(summaryPanelView({ status: 'ready', summary })).toEqual({ summary });
   });
 });

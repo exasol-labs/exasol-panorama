@@ -22,10 +22,16 @@ export interface WorkerHarness {
   readonly scheduler: ManualScheduler;
   /** Runs every scheduled fetch and lets the message queue drain. */
   settle(): Promise<void>;
+  /** Runs scheduled work, on real event-loop turns, until `promise` settles. */
+  drive<TValue>(promise: Promise<TValue>): Promise<TValue>;
+  /** Runs a bounded number of real turns, leaving work part-finished. */
+  pump(rounds: number): Promise<void>;
 }
 
 export interface HarnessOptions {
   readonly source?: Partial<MockTableDataSourceOptions>;
+  /** Replaces the mock entirely, for a source with different capabilities. */
+  readonly createSource?: (request: TableSourceRequest) => TableDataSource;
   readonly maxConcurrentFetches?: number;
   readonly createConnection?: (options: ConnectionFactoryOptions) => ExasolConnection;
 }
@@ -44,6 +50,8 @@ export const createWorkerHarness = (options: HarnessOptions = {}): WorkerHarness
       ? {}
       : { createConnection: options.createConnection }),
     createSource: (request: TableSourceRequest): TableDataSource => {
+      const replacement = options.createSource?.(request);
+      if (replacement !== undefined) return replacement;
       const source = new MockTableDataSource({
         relation: factRelation(10_000),
         scheduler: scheduler.schedule,
@@ -64,7 +72,46 @@ export const createWorkerHarness = (options: HarnessOptions = {}): WorkerHarness
     }
   };
 
-  return { client, worker, sources, scheduler, settle };
+  return { client, worker, sources, scheduler, settle, drive, pump };
+
+  /**
+   * Runs scheduled work until a promise settles, yielding to *real* turns of
+   * the event loop rather than only to microtasks.
+   *
+   * `settle` is microtasks only, which is all a fetch needs. An export needs
+   * more: it deflates through the platform's own `CompressionStream`, whose
+   * output arrives on a task rather than a microtask, so a loop that never
+   * yields to the event loop parks the export forever.
+   */
+  async function drive<TValue>(promise: Promise<TValue>): Promise<TValue> {
+    let done = false;
+    const tracked = promise.then(
+      () => {
+        done = true;
+      },
+      () => {
+        done = true;
+      },
+    );
+    for (let round = 0; round < 5_000 && !done; round += 1) {
+      scheduler.runAll();
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 0);
+      });
+    }
+    await tracked;
+    return promise;
+  }
+
+  /** Runs a bounded number of turns, to stop something part-way through. */
+  async function pump(rounds: number): Promise<void> {
+    for (let round = 0; round < rounds; round += 1) {
+      scheduler.runAll();
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 0);
+      });
+    }
+  }
 };
 
 export interface StubGateway extends TableDataGateway {

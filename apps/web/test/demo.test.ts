@@ -39,7 +39,7 @@ describe('demo relations', () => {
       createWorkerEndpoint({ useWorker: false, demoLatencyMs: 0 }),
     );
     const tableId = 'table:demo' as EntityId;
-    const opened = await client.openTable(tableId, DEMO_SCHEMA, 'SAMPLE_100');
+    const opened = await client.openTable({ tableId, schema: DEMO_SCHEMA, table: 'SAMPLE_100' });
     expect(opened.rowCount).toBe(100);
 
     const rows = new Promise<{ blockIndex: number; chunk: { startRow: number } }>((resolve) => {
@@ -54,9 +54,9 @@ describe('demo relations', () => {
 
   it('refuses non-demo tables when nothing is connected', async () => {
     const client = new DataWorkerClient(createWorkerEndpoint({ useWorker: false }));
-    await expect(client.openTable('table:x' as EntityId, 'SALES', 'ORDERS')).rejects.toThrow(
-      /No connection/,
-    );
+    await expect(
+      client.openTable({ tableId: 'table:x' as EntityId, schema: 'SALES', table: 'ORDERS' }),
+    ).rejects.toThrow(/No connection/);
   });
 
   it('builds an Exasol-backed source for real schemas', async () => {
@@ -65,6 +65,25 @@ describe('demo relations', () => {
     const source = createTableSource({ schema: 'SALES', table: 'ORDERS' }, connection);
     expect(source).toBeDefined();
     expect(typeof source.open).toBe('function');
+  });
+
+  it('sends a statement to the database, never to the demo generator', async () => {
+    const { createTableSource } = await import('../src/panorama/start-data-worker.js');
+    const connection = { id: 'connection:1' } as never;
+    // Even addressed at the demo schema, a statement needs a real engine: the
+    // local generator has no SQL in it.
+    const source = createTableSource(
+      { schema: DEMO_SCHEMA, table: 'SAMPLE_100', sql: 'SELECT 1' },
+      connection,
+    );
+    expect(source.constructor.name).toBe('ExasolTableDataSource');
+  });
+
+  it('refuses a statement when nothing is connected', async () => {
+    const { createTableSource } = await import('../src/panorama/start-data-worker.js');
+    expect(() => createTableSource({ schema: 'QUERY', table: 'q', sql: 'SELECT 1' }, null)).toThrow(
+      /without a database connection/,
+    );
   });
 
   it('generates deterministic cells far into a huge relation', () => {

@@ -12,10 +12,25 @@ export interface TableTheme {
   readonly background: Rgba;
   readonly headerBackground: Rgba;
   readonly titleBackground: Rgba;
+  /**
+   * The title bar of a derived table — one produced by a statement rather than
+   * read from a stored relation. A tint of the accent, so the difference reads
+   * as "computed" at a glance without turning into a second visual language.
+   */
+  readonly derivedTitleBackground: Rgba;
+  readonly derivedTitleText: Rgba;
   readonly gutterBackground: Rgba;
   readonly rowBackground: Rgba;
   readonly rowAlternateBackground: Rgba;
   readonly rowHoverBackground: Rgba;
+  /**
+   * A column picked out by clicking its header. Translucent over the body, so
+   * the striping and the values still read through it, and solid on the header,
+   * which is the thing that was clicked.
+   */
+  readonly columnSelectedBackground: Rgba;
+  readonly columnSelectedHeaderBackground: Rgba;
+  readonly columnSelectedBorder: Rgba;
   readonly placeholderFill: Rgba;
   readonly gridLine: Rgba;
   readonly border: Rgba;
@@ -31,11 +46,29 @@ export interface TableTheme {
   readonly resizeHandle: Rgba;
   readonly canvasBackground: Rgba;
   readonly haloBackground: Rgba;
-  readonly haloHoverBackground: Rgba;
-  readonly haloPressedBackground: Rgba;
+  /** Hover and press for a destructive action, e.g. close. */
+  readonly haloDangerBackground: Rgba;
+  readonly haloDangerPressedBackground: Rgba;
+  /** Hover and press for an ordinary action. */
+  readonly haloAccentBackground: Rgba;
+  readonly haloAccentPressedBackground: Rgba;
   readonly haloBorder: Rgba;
   readonly haloIcon: Rgba;
   readonly haloHoverIcon: Rgba;
+  /** An action the table cannot perform: shown, but visibly inert. */
+  readonly haloDisabledBackground: Rgba;
+  readonly haloDisabledIcon: Rgba;
+  readonly haloDisabledBorder: Rgba;
+  /** The SQL editor a query box shows while its statement is being written. */
+  readonly editorBackground: Rgba;
+  readonly editorFieldBackground: Rgba;
+  readonly editorText: Rgba;
+  /**
+   * A name in a statement that is not a real relation: the table the box was
+   * opened on. Coloured because it is the one word in there that the database
+   * has never heard of.
+   */
+  readonly editorReferenceText: Rgba;
   readonly connectorLine: Rgba;
   readonly connectorHighlight: Rgba;
   readonly connectorLabelText: Rgba;
@@ -47,6 +80,20 @@ export interface TableTheme {
   readonly connectorMarkerHoverIcon: Rgba;
   /** Cells that can be followed to the rows their foreign key points at. */
   readonly linkText: Rgba;
+  /**
+   * The panel that opens under a picked-out column.
+   *
+   * Its own surface rather than the table's, because it is a statement *about*
+   * the data rather than more of it, and the eye should not have to work out
+   * which of the two it is reading.
+   */
+  readonly summaryPanelBackground: Rgba;
+  readonly summaryPanelBorder: Rgba;
+  /** Bars: the filled part, and the track showing what a full bar would be. */
+  readonly summaryBar: Rgba;
+  readonly summaryBarTrack: Rgba;
+  /** What is missing, and anything else the reader must not skim past. */
+  readonly summaryNullBar: Rgba;
 
   readonly titleHeight: number;
   readonly typeRowHeight: number;
@@ -62,6 +109,10 @@ export interface TableTheme {
   /** Distance from the table's top edge to the halo, in screen pixels. */
   readonly haloOffset: number;
   readonly haloIconFontSize: number;
+  readonly editorFontSize: number;
+  readonly editorPadding: number;
+  /** Shown under the statement; names the gesture that runs it. */
+  readonly editorHint: string;
   /** Connector metrics, in screen pixels. */
   readonly connectorWidth: number;
   readonly connectorGap: number;
@@ -89,10 +140,15 @@ export const DEFAULT_TABLE_THEME: TableTheme = Object.freeze({
   background: rgb(0xff_ff_ff),
   headerBackground: rgb(0xf4_f5_f7),
   titleBackground: rgb(0xe9_ec_ef),
+  derivedTitleBackground: rgb(0xdd_e7_fa),
+  derivedTitleText: rgb(0x14_3c_78),
   gutterBackground: rgb(0xf8_f9_fa),
   rowBackground: rgb(0xff_ff_ff),
   rowAlternateBackground: rgb(0xfa_fb_fc),
   rowHoverBackground: rgb(0xe8_f1_fb),
+  columnSelectedBackground: rgb(0x2f_6f_ed, 0.1),
+  columnSelectedHeaderBackground: rgb(0x2f_6f_ed, 0.22),
+  columnSelectedBorder: rgb(0x2f_6f_ed, 0.55),
   placeholderFill: rgb(0xdf_e3_e8, 0.75),
   gridLine: rgb(0xe3_e6_ea),
   border: rgb(0xb9_c0_c8),
@@ -108,11 +164,20 @@ export const DEFAULT_TABLE_THEME: TableTheme = Object.freeze({
   resizeHandle: rgb(0x2f_6f_ed, 0.85),
   canvasBackground: rgb(0xf1_f3_f5),
   haloBackground: rgb(0xff_ff_ff, 0.96),
-  haloHoverBackground: rgb(0xd6_3b_2f),
-  haloPressedBackground: rgb(0xa8_2c_22),
+  haloDangerBackground: rgb(0xd6_3b_2f),
+  haloDangerPressedBackground: rgb(0xa8_2c_22),
+  haloAccentBackground: rgb(0x1a_73_e8),
+  haloAccentPressedBackground: rgb(0x14_5a_b8),
   haloBorder: rgb(0xb9_c0_c8),
   haloIcon: rgb(0x3c_44_4d),
   haloHoverIcon: rgb(0xff_ff_ff),
+  haloDisabledBackground: rgb(0xf2_f4_f6, 0.96),
+  haloDisabledIcon: rgb(0xa8_b0_b8),
+  haloDisabledBorder: rgb(0xdd_e2_e6),
+  editorBackground: rgb(0xf7_f8_fa),
+  editorFieldBackground: rgb(0xff_ff_ff),
+  editorText: rgb(0x1f_25_2b),
+  editorReferenceText: rgb(0x8a_44_c8),
   connectorLine: rgb(0x6b_7a_8f),
   connectorHighlight: rgb(0x2f_6f_ed),
   connectorLabelText: rgb(0x3c_44_4d),
@@ -123,6 +188,11 @@ export const DEFAULT_TABLE_THEME: TableTheme = Object.freeze({
   connectorMarkerIcon: rgb(0x5c_66_71),
   connectorMarkerHoverIcon: rgb(0xff_ff_ff),
   linkText: rgb(0x1c_5b_c4),
+  summaryPanelBackground: rgb(0xff_ff_ff, 0.98),
+  summaryPanelBorder: rgb(0x9a_a3_ad),
+  summaryBar: rgb(0x2f_6f_ed, 0.85),
+  summaryBarTrack: rgb(0xdf_e3_e8),
+  summaryNullBar: rgb(0xd6_7b_2f),
 
   titleHeight: 26,
   typeRowHeight: 22,
@@ -136,6 +206,9 @@ export const DEFAULT_TABLE_THEME: TableTheme = Object.freeze({
   haloGap: 6,
   haloOffset: 8,
   haloIconFontSize: 15,
+  editorFontSize: 13,
+  editorPadding: 10,
+  editorHint: 'Press ⌘↵ (Ctrl+↵) to run',
   connectorWidth: 1.75,
   connectorGap: 4,
   connectorArrowLength: 11,

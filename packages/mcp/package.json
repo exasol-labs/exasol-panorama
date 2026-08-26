@@ -1,0 +1,18 @@
+{
+  "name": "@panorama/mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Agent interface: an MCP server over the live Panorama session.",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "bin": {
+    "panorama-agent": "./bin/panorama-agent.mjs"
+  },
+  "dependencies": {
+    "@panorama/core": "*"
+  }
+}

@@ -28,7 +28,7 @@ export const makeTable = (
   overrides: Partial<TableEntitySpec> = {},
 ): TableEntity =>
   buildTableEntity(ids, {
-    source: { connectionId: TEST_CONNECTION, schema: 'SALES', table: 'ORDERS' },
+    source: { kind: 'relation', connectionId: TEST_CONNECTION, schema: 'SALES', table: 'ORDERS' },
     columns: sampleColumns,
     size: { width: 600, height: 400 },
     ...overrides,

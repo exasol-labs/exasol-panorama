@@ -1,14 +1,19 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { RowsAvailable } from '@panorama/worker';
 import { serializeError } from '@panorama/worker';
+import type { TableDataSession } from '@panorama/table';
 import { TableDataError, cellValue } from '@panorama/table';
-import { factRelation } from '@panorama/test-support';
+import { MAX_SUMMARY_SCAN, factRelation } from '@panorama/test-support';
 import { TABLE_ID, createWorkerHarness } from './harness.js';
 
 describe('DataWorker table lifecycle', () => {
   it('opens a table and reports its schema and row count', async () => {
     const harness = createWorkerHarness();
-    const result = await harness.client.openTable(TABLE_ID, 'PANORAMA_TEST', 'SALES');
+    const result = await harness.client.openTable({
+      tableId: TABLE_ID,
+      schema: 'PANORAMA_TEST',
+      table: 'SALES',
+    });
     expect(result.rowCount).toBe(10_000);
     expect(result.generation).toBe(0);
     expect(result.schema.columns.map((column) => column.name)).toEqual([
@@ -24,7 +29,7 @@ describe('DataWorker table lifecycle', () => {
     const harness = createWorkerHarness();
     const rows: RowsAvailable[] = [];
     harness.client.onRows((event) => rows.push(event));
-    await harness.client.openTable(TABLE_ID, 'PANORAMA_TEST', 'SALES');
+    await harness.client.openTable({ tableId: TABLE_ID, schema: 'PANORAMA_TEST', table: 'SALES' });
 
     harness.client.requestBlocks(TABLE_ID, 0, 256, [
       { index: 4, priority: 0 },
@@ -43,7 +48,7 @@ describe('DataWorker table lifecycle', () => {
     const harness = createWorkerHarness();
     const rows: RowsAvailable[] = [];
     harness.client.onRows((event) => rows.push(event));
-    await harness.client.openTable(TABLE_ID, 'PANORAMA_TEST', 'SALES');
+    await harness.client.openTable({ tableId: TABLE_ID, schema: 'PANORAMA_TEST', table: 'SALES' });
 
     harness.client.requestBlocks(TABLE_ID, 0, 64, [{ index: 2, priority: 0 }]);
     await harness.settle();
@@ -56,7 +61,7 @@ describe('DataWorker table lifecycle', () => {
       maxConcurrentFetches: 2,
       source: { latency: 20 },
     });
-    await harness.client.openTable(TABLE_ID, 'PANORAMA_TEST', 'SALES');
+    await harness.client.openTable({ tableId: TABLE_ID, schema: 'PANORAMA_TEST', table: 'SALES' });
     harness.client.requestBlocks(
       TABLE_ID,
       0,
@@ -71,7 +76,7 @@ describe('DataWorker table lifecycle', () => {
     const harness = createWorkerHarness({ source: { failure: { everyNth: 1 } } });
     const failures: number[] = [];
     harness.client.onBlockFailed((event) => failures.push(event.blockIndex));
-    await harness.client.openTable(TABLE_ID, 'PANORAMA_TEST', 'SALES');
+    await harness.client.openTable({ tableId: TABLE_ID, schema: 'PANORAMA_TEST', table: 'SALES' });
 
     harness.client.requestBlocks(TABLE_ID, 0, 256, [{ index: 0, priority: 0 }]);
     await harness.settle();
@@ -88,7 +93,7 @@ describe('DataWorker table lifecycle', () => {
     await harness.settle();
     expect(rows).toEqual([]);
 
-    await harness.client.openTable(TABLE_ID, 'PANORAMA_TEST', 'SALES');
+    await harness.client.openTable({ tableId: TABLE_ID, schema: 'PANORAMA_TEST', table: 'SALES' });
     harness.client.requestBlocks(TABLE_ID, 7, 256, [{ index: 0, priority: 0 }]);
     await harness.settle();
     expect(rows).toEqual([]);
@@ -98,7 +103,7 @@ describe('DataWorker table lifecycle', () => {
     const harness = createWorkerHarness({ source: { latency: 50 } });
     const rows: RowsAvailable[] = [];
     harness.client.onRows((event) => rows.push(event));
-    await harness.client.openTable(TABLE_ID, 'PANORAMA_TEST', 'SALES');
+    await harness.client.openTable({ tableId: TABLE_ID, schema: 'PANORAMA_TEST', table: 'SALES' });
 
     harness.client.requestBlocks(TABLE_ID, 0, 256, [{ index: 0, priority: 0 }]);
     await Promise.resolve();
@@ -123,14 +128,14 @@ describe('DataWorker table lifecycle', () => {
   it('surfaces an open failure', async () => {
     const harness = createWorkerHarness({ source: { failOpen: 'permission-denied' } });
     await expect(
-      harness.client.openTable(TABLE_ID, 'PANORAMA_TEST', 'SALES'),
+      harness.client.openTable({ tableId: TABLE_ID, schema: 'PANORAMA_TEST', table: 'SALES' }),
     ).rejects.toMatchObject({ code: 'permission-denied' });
     expect(harness.worker.openTableCount).toBe(0);
   });
 
   it('closes tables and releases their result sets', async () => {
     const harness = createWorkerHarness();
-    await harness.client.openTable(TABLE_ID, 'PANORAMA_TEST', 'SALES');
+    await harness.client.openTable({ tableId: TABLE_ID, schema: 'PANORAMA_TEST', table: 'SALES' });
     await harness.client.closeTable(TABLE_ID);
     expect(harness.worker.openTableCount).toBe(0);
     // Closing an unknown table is a no-op.
@@ -139,8 +144,8 @@ describe('DataWorker table lifecycle', () => {
 
   it('replaces an existing table when reopened by id', async () => {
     const harness = createWorkerHarness();
-    await harness.client.openTable(TABLE_ID, 'PANORAMA_TEST', 'SALES');
-    await harness.client.openTable(TABLE_ID, 'PANORAMA_TEST', 'SALES');
+    await harness.client.openTable({ tableId: TABLE_ID, schema: 'PANORAMA_TEST', table: 'SALES' });
+    await harness.client.openTable({ tableId: TABLE_ID, schema: 'PANORAMA_TEST', table: 'SALES' });
     expect(harness.worker.openTableCount).toBe(1);
   });
 });
@@ -236,7 +241,7 @@ describe('DataWorker connection handling', () => {
         }) as never,
     });
     await harness.client.connect('wss://x', { kind: 'token', token: 't' });
-    await harness.client.openTable(TABLE_ID, 'PANORAMA_TEST', 'SALES');
+    await harness.client.openTable({ tableId: TABLE_ID, schema: 'PANORAMA_TEST', table: 'SALES' });
     await harness.client.disconnect();
     expect(harness.worker.openTableCount).toBe(0);
   });
@@ -283,7 +288,9 @@ describe('the default Exasol source factory', () => {
     const pair = createInProcessEndpointPair();
     new DataWorker({ endpoint: pair.worker });
     const client = new DataWorkerClient(pair.main);
-    await expect(client.openTable(TABLE_ID, 'S', 'T')).rejects.toMatchObject({
+    await expect(
+      client.openTable({ tableId: TABLE_ID, schema: 'S', table: 'T' }),
+    ).rejects.toMatchObject({
       code: 'connection-lost',
     });
     expect(factRelation().table).toBe('SALES');
@@ -322,7 +329,7 @@ describe('DataWorker failure paths', () => {
     new DataWorker({ endpoint: pair.worker, createSource: () => brokenSource('reopen') as never });
     const client = new DataWorkerClient(pair.main);
 
-    await client.openTable(TABLE_ID, 'S', 'T');
+    await client.openTable({ tableId: TABLE_ID, schema: 'S', table: 'T' });
     await expect(client.reopenTable(TABLE_ID)).rejects.toMatchObject({
       code: 'result-set-expired',
     });
@@ -335,7 +342,132 @@ describe('DataWorker failure paths', () => {
     new DataWorker({ endpoint: pair.worker, createSource: () => brokenSource('close') as never });
     const client = new DataWorkerClient(pair.main);
 
-    await client.openTable(TABLE_ID, 'S', 'T');
+    await client.openTable({ tableId: TABLE_ID, schema: 'S', table: 'T' });
     await expect(client.closeTable(TABLE_ID)).rejects.toMatchObject({ code: 'protocol-error' });
+  });
+});
+
+describe('DataWorker column summaries', () => {
+  it('describes a column of an open table', async () => {
+    const harness = createWorkerHarness();
+    await harness.client.openTable({ tableId: TABLE_ID, schema: 'PANORAMA_TEST', table: 'SALES' });
+    const summary = await harness.drive(harness.client.summariseColumn(TABLE_ID, 'COUNTRY'));
+
+    expect(summary?.column).toBe('COUNTRY');
+    expect(summary?.rows).toBeGreaterThan(0);
+    expect(summary?.frequencies?.length).toBeGreaterThan(0);
+  });
+
+  it('says which rows it looked at, for a relation too big to walk', async () => {
+    const harness = createWorkerHarness({
+      source: { relation: factRelation(MAX_SUMMARY_SCAN * 2) },
+    });
+    await harness.client.openTable({ tableId: TABLE_ID, schema: 'PANORAMA_TEST', table: 'SALES' });
+    const summary = await harness.drive(harness.client.summariseColumn(TABLE_ID, 'COUNTRY'));
+
+    // A statement about the first hundred thousand rows that does not say so is
+    // a statement about the whole table, and a wrong one.
+    expect(summary?.basis).toBe('sampled');
+    expect(summary?.rows).toBe(MAX_SUMMARY_SCAN);
+  });
+
+  it('says nothing at all rather than guessing, for a source that cannot answer', async () => {
+    // A session with no `summarise`: deriving one from the blocks that happen to
+    // be cached would describe the scroll position rather than the column.
+    const session: TableDataSession = {
+      schema: { schema: 'S', table: 'T', columns: [] },
+      rowCount: 3,
+      fetch: () => Promise.reject(new Error('not asked for')),
+      close: () => Promise.resolve(),
+    };
+    const harness = createWorkerHarness({
+      createSource: () => ({
+        open: () => Promise.resolve(session),
+        close: () => Promise.resolve(),
+      }),
+    });
+    await harness.client.openTable({ tableId: TABLE_ID, schema: 'PANORAMA_TEST', table: 'SALES' });
+
+    await expect(
+      harness.drive(harness.client.summariseColumn(TABLE_ID, 'COUNTRY')),
+    ).resolves.toBeNull();
+  });
+
+  it('refuses a column of a table nobody opened', async () => {
+    const harness = createWorkerHarness();
+    await expect(harness.client.summariseColumn(TABLE_ID, 'COUNTRY')).rejects.toMatchObject({
+      code: 'not-found',
+    });
+  });
+
+  it('passes on what the source said about a column it does not have', async () => {
+    const harness = createWorkerHarness();
+    await harness.client.openTable({ tableId: TABLE_ID, schema: 'PANORAMA_TEST', table: 'SALES' });
+    await expect(
+      harness.drive(harness.client.summariseColumn(TABLE_ID, 'NO_SUCH_COLUMN')),
+    ).rejects.toMatchObject({ code: 'not-found' });
+  });
+});
+
+describe('DataWorker chart data', () => {
+  const spec = {
+    type: 'bar',
+    category: 'COUNTRY',
+    values: ['REVENUE'],
+    aggregate: 'sum',
+  } as const;
+
+  it('reduces the rows beside the rows, and reports what it read', async () => {
+    const harness = createWorkerHarness();
+    await harness.client.openTable({ tableId: TABLE_ID, schema: 'PANORAMA_TEST', table: 'SALES' });
+    const data = await harness.drive(harness.client.chartData(TABLE_ID, spec));
+
+    expect(data?.categories.length).toBeGreaterThan(0);
+    expect(data?.series[0]?.name).toBe('REVENUE');
+    // Ten thousand rows in the relation, and the default limit is above that.
+    expect(data?.rows).toBe(10_000);
+    expect(data?.basis).toBe('exact');
+  });
+
+  it('stops at the limit and says the picture is of a beginning', async () => {
+    const harness = createWorkerHarness({ source: { relation: factRelation(100_000) } });
+    await harness.client.openTable({ tableId: TABLE_ID, schema: 'PANORAMA_TEST', table: 'SALES' });
+    const data = await harness.drive(
+      harness.client.chartData(TABLE_ID, { ...spec, rowLimit: 500 }),
+    );
+
+    expect(data?.rows).toBe(500);
+    expect(data?.basis).toBe('sampled');
+  });
+
+  it('never asks for fewer than one row, however small the limit', async () => {
+    const harness = createWorkerHarness();
+    await harness.client.openTable({ tableId: TABLE_ID, schema: 'PANORAMA_TEST', table: 'SALES' });
+    const data = await harness.drive(harness.client.chartData(TABLE_ID, { ...spec, rowLimit: 0 }));
+    expect(data?.rows).toBe(1);
+  });
+
+  it('has nothing to draw from a table with no rows', async () => {
+    const harness = createWorkerHarness({ source: { relation: factRelation(0) } });
+    await harness.client.openTable({ tableId: TABLE_ID, schema: 'PANORAMA_TEST', table: 'SALES' });
+    await expect(harness.drive(harness.client.chartData(TABLE_ID, spec))).resolves.toBeNull();
+  });
+
+  it('refuses a table nobody opened', async () => {
+    const harness = createWorkerHarness();
+    await expect(harness.client.chartData(TABLE_ID, spec)).rejects.toMatchObject({
+      code: 'not-found',
+    });
+  });
+
+  it('reads a source that cannot say how many rows it has', async () => {
+    const harness = createWorkerHarness({ source: { reportRowCount: false } });
+    await harness.client.openTable({ tableId: TABLE_ID, schema: 'PANORAMA_TEST', table: 'SALES' });
+    const data = await harness.drive(
+      harness.client.chartData(TABLE_ID, { ...spec, rowLimit: 300 }),
+    );
+    // It cannot claim to have read everything, so it does not.
+    expect(data?.rows).toBe(300);
+    expect(data?.basis).toBe('sampled');
   });
 });

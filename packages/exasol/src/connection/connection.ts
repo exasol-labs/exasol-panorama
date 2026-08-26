@@ -81,6 +81,19 @@ export const MAX_FETCH_BYTES = 64 * 1024 * 1024;
 const CLIENT_OS = 'browser';
 const CLIENT_RUNTIME = 'JavaScript';
 
+/**
+ * A count from the catalogue, which Exasol may deliver as digits rather than as
+ * a JSON number: `TABLE_ROW_COUNT` is a `DECIMAL(18,0)`, and eighteen digits is
+ * more than a double is trusted with. Absent rather than zero when the database
+ * has no figure — a table whose statistics have never been gathered has none,
+ * and "unknown" is not "empty".
+ */
+const toRowCount = (value: ExasolValue | undefined): number | undefined => {
+  if (value === null || value === undefined) return undefined;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : undefined;
+};
+
 export class ExasolConnection {
   readonly id: ConnectionId;
   readonly #options: ExasolConnectionOptions;
@@ -276,25 +289,41 @@ export class ExasolConnection {
     return (result.columns[0] ?? []).map((name) => ({ name: String(name) }));
   }
 
+  /**
+   * Lists the relations in a schema, with the row count the catalogue knows.
+   *
+   * A table's count comes free with this query — `EXA_ALL_TABLES` records it —
+   * and it is the database's own figure, maintained with its statistics rather
+   * than counted here. A *view* has no count in the catalogue at all: the only
+   * way to know how many rows one has is to run it, and a view over a
+   * ten-billion-row table would then charge an arbitrary query for the
+   * privilege of opening a schema. So a view's count is absent rather than
+   * guessed at or paid for.
+   */
   async listTables(schema: string): Promise<readonly TableInfo[]> {
     const literal = quoteLiteral(schema);
     const result = await this.queryAll(
       `SELECT TABLE_NAME AS OBJECT_NAME, 'TABLE' AS OBJECT_KIND, TABLE_COMMENT AS OBJECT_COMMENT` +
+        `, TABLE_ROW_COUNT AS OBJECT_ROWS` +
         ` FROM SYS.EXA_ALL_TABLES WHERE TABLE_SCHEMA = ${literal}` +
         ` UNION ALL` +
-        ` SELECT VIEW_NAME, 'VIEW', VIEW_COMMENT FROM SYS.EXA_ALL_VIEWS WHERE VIEW_SCHEMA = ${literal}` +
+        ` SELECT VIEW_NAME, 'VIEW', VIEW_COMMENT, CAST(NULL AS DECIMAL(18,0))` +
+        ` FROM SYS.EXA_ALL_VIEWS WHERE VIEW_SCHEMA = ${literal}` +
         ` ORDER BY 1`,
     );
     const names = result.columns[0] ?? [];
     const kinds = result.columns[1] ?? [];
     const comments = result.columns[2] ?? [];
+    const rowCounts = result.columns[3] ?? [];
     return names.map((name, index) => {
       const comment = comments[index];
+      const rowCount = toRowCount(rowCounts[index]);
       return {
         schema,
         name: String(name),
         kind: String(kinds[index] ?? 'TABLE'),
         ...(comment === null || comment === undefined ? {} : { comment: String(comment) }),
+        ...(rowCount === undefined ? {} : { rowCount }),
       };
     });
   }

@@ -65,3 +65,6 @@ desktop.ini
 # Internal agent guidance
 plans/
 reports/
+
+# Self-signed certificates for the VR dev server
+apps/web/.certs/

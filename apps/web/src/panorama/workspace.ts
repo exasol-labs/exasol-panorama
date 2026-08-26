@@ -1,20 +1,78 @@
-import type { EntityId, TableEntity } from '@panorama/core';
+import type { EntityId, QueryStep, TableColumnView, TableEntity } from '@panorama/core';
 import type { Binding, BindingId } from '@panorama/core';
+import type { ChartColumnHint, ChartSource, ChartSpec, ColumnDataType } from '@panorama/core';
 import {
   AUTO_ANCHOR,
+  DERIVED_TABLE,
+  derivedFromOf,
+  defaultChartSpec,
+  describeChartSpec,
+  isChartSpecDrawable,
+  isChartTable,
   PanoramaCore,
+  buildTableColumns,
   buildTableEntity,
+  composeQuery,
+  derivedTreeOf,
   findColumn,
+  isQueryTable,
+  isSelectionTable,
   isTableEntity,
+  hoveredMarkOf,
+  selectedMarksOf,
+  tableContentWidth,
+  tableDisplayName,
 } from '@panorama/core';
-import type { ConnectionId, EntityActionId } from '@panorama/core';
-import type { CellValue, RowFilter, SchemaInfo, TableInfo, TableSchema } from '@panorama/table';
+import type {
+  ConnectionId,
+  EntityActionId,
+  Placement,
+  PlacementAnchor,
+  Rect,
+  Size2,
+} from '@panorama/core';
+import { findFreePlacement, rightEdgeAnchor } from '@panorama/core';
+import type {
+  CellValue,
+  ColumnSummary,
+  RowFilter,
+  SchemaInfo,
+  TableInfo,
+  TableSchema,
+} from '@panorama/table';
 import { DEFAULT_BLOCK_SIZE, formatCell } from '@panorama/table';
-import type { TableViewModel, TableViewProvider } from '@panorama/renderer';
+import type {
+  ChartMetrics,
+  ChartView,
+  SummaryPanelView,
+  TableViewModel,
+  TableViewProvider,
+} from '@panorama/renderer';
 import type { ForeignKeyFollow, InteractionHost, TableViewState } from '@panorama/renderer';
+import { DEFAULT_TABLE_THEME, chartBoxLayout } from '@panorama/renderer';
 import type { ExasolCredentials } from '@panorama/exasol';
-import type { DataWorkerClient } from '@panorama/worker';
+import { qualifiedName } from '@panorama/exasol';
+import type { ChartData, ChartDrawList, ChartSurface, ChartTheme } from '@panorama/chart';
+import type { ChartExportFormat, ChartFigure, FileFormatDescriptor } from '@panorama/export';
+import {
+  CHART_EXPORT_FORMATS,
+  abandon,
+  chartFigureToPdf,
+  chartFigureToSvg,
+  figureLayout,
+} from '@panorama/export';
+import {
+  DEFAULT_CHART_THEME,
+  EMPTY_CHART_DRAW_LIST,
+  chartMarkAt,
+  emphasiseChart,
+} from '@panorama/chart';
+import { isNumericType } from '@panorama/table';
+import type { ByteSink, ExportFormat } from '@panorama/export';
+import { describeFormat, exportFileName } from '@panorama/export';
+import type { DataWorkerClient, RunningExportHandle, TableOpenSpec } from '@panorama/worker';
 import { TableView } from './table-view.js';
+import { DEMO_SCHEMA } from './demo.js';
 
 /**
  * The composition root on the render thread.
@@ -31,6 +89,11 @@ export interface WorkspaceOptions {
   readonly blockSize?: number;
   readonly maxBytes?: number;
   readonly clock?: () => number;
+  /**
+   * How long `ensureRows` waits for a window of rows. Generous by default,
+   * because the wait is for a database.
+   */
+  readonly rowWaitMs?: number;
   /** Called when cached data changed and a redraw is worthwhile. */
   readonly onDataChanged?: () => void;
   /**
@@ -38,7 +101,286 @@ export interface WorkspaceOptions {
    * use this, so following one of their foreign keys works with no connection.
    */
   readonly resolveSchema?: (schema: string, table: string) => TableSchema | undefined;
+  /**
+   * Lays charts out. Supplied rather than constructed, so the workspace depends
+   * on the interface and never on whichever library is behind it.
+   */
+  readonly chartSurface?: ChartSurface;
+  readonly chartTheme?: ChartTheme;
+  /**
+   * Turns an SVG into PNG bytes.
+   *
+   * Supplied by the shell because rasterising is the browser's job — it has the
+   * fonts and the decoder — and the workspace should not know that a `<canvas>`
+   * exists any more than it knows that a save dialog does.
+   */
+  readonly rasteriseSvg?: (
+    svg: string,
+    size: { readonly width: number; readonly height: number },
+  ) => Promise<Uint8Array>;
+  /**
+   * Opens the file the export will be written to, or returns `null` when the
+   * user dismissed the dialog.
+   *
+   * Supplied by the shell rather than done here: a save dialog is conventional
+   * UI, it needs the click's own user activation, and which of the two ways to
+   * offer a download a browser supports is a fact about the browser.
+   */
+  readonly openExportSink?: (request: ExportSinkRequest) => Promise<ByteSink | null>;
 }
+
+/** The result of opening a SQL editor: the new box and the line to it. */
+export interface QueryTableOpened {
+  readonly tableId: EntityId;
+  readonly bindingId: BindingId;
+}
+
+/** A chart's numbers, or how far it has got towards having them. */
+export type ChartState =
+  | { readonly status: 'loading' }
+  | { readonly status: 'ready'; readonly data: ChartData }
+  /** Nothing chosen yet: the controls are open and waiting. */
+  | { readonly status: 'unset' }
+  /** Chosen, but the table it reads had no rows to give. */
+  | { readonly status: 'empty' }
+  | { readonly status: 'failed'; readonly error: string };
+
+interface ChartLayout {
+  readonly key: string;
+  readonly data: ChartData;
+  readonly chart: ChartDrawList;
+  /** What it was laid out for, which is what an export has to reproduce. */
+  readonly width: number;
+  readonly height: number;
+  readonly fontFamily: string;
+}
+
+/**
+ * A file name for a chart, from what it is a chart of.
+ *
+ * Sanitised the same way a table's export name is: a name the operating system
+ * will accept, and one the user recognises.
+ */
+const chartFileStem = (entity: TableEntity): string =>
+  tableDisplayName(entity)
+    .replace(/[^\w.-]+/gu, '_')
+    .replace(/^_+|_+$/gu, '') || 'chart';
+
+/**
+ * A predicate as one comparable string.
+ *
+ * So that a frame in which the selection has not changed does not reopen a result
+ * set. Order matters and is kept: the values arrive in the order they were picked
+ * out, and re-filtering because two clicks happened in the other order would be
+ * work for nothing.
+ */
+const filterKey = (filter: RowFilter): string =>
+  `${filter.column}:${filter.values.map((value) => `${typeof value}\u0000${String(value)}`).join('\u0001')}`;
+
+/** What a chart with no picture yet has to say for itself. */
+const chartNoteFor = (state: ChartState | undefined): string => {
+  if (state === undefined) return 'Reading…';
+  switch (state.status) {
+    case 'unset':
+      return 'Choose a column to chart';
+    case 'empty':
+      return 'No rows to chart';
+    case 'failed':
+      return state.error;
+    default:
+      return 'Reading…';
+  }
+};
+
+/**
+ * What the chart says about the rows behind it.
+ *
+ * Always the count, because a picture cannot say how much it was drawn from, and
+ * "the first twenty thousand" is a materially different claim from "all of them".
+ */
+const chartDataNote = (data: ChartData): string => {
+  const rows = data.rows.toLocaleString('en-US');
+  const parts = [data.basis === 'sampled' ? `first ${rows} rows` : `${rows} rows`];
+  if (data.gathered !== undefined) {
+    parts.push(`${data.gathered} more categor${data.gathered === 1 ? 'y' : 'ies'} not shown`);
+  }
+  return parts.join(' · ');
+};
+
+/** One column a chart may be set up against. */
+export interface ChartColumnChoice extends ChartColumnHint {
+  readonly type: string;
+}
+
+/**
+ * What a column offers a chart: whether it can be measured, and whether it looks
+ * like a measurement rather than an identifier.
+ */
+const chartColumnHint = (column: TableColumnView): ChartColumnHint => {
+  const type = column.sourceColumn.type;
+  const numeric = isNumericType(type);
+  return {
+    name: column.sourceColumn.name,
+    numeric,
+    // Decimal places, or a floating-point type: either says quantity rather
+    // than key.
+    ...(numeric && (type.kind === 'double' || (type.scale ?? 0) > 0) ? { measure: true } : {}),
+  };
+};
+
+/**
+ * A chart box is sized for a picture with its controls beside it: wide enough
+ * that the preview beside the form is a chart rather than a sliver.
+ */
+const CHART_WIDTH = 620;
+const CHART_HEIGHT = 360;
+
+/** A column summary, or how far it has got towards being one. */
+export type ColumnSummaryState =
+  | { readonly status: 'loading' }
+  | { readonly status: 'ready'; readonly summary: ColumnSummary }
+  | { readonly status: 'unavailable' }
+  | { readonly status: 'failed'; readonly error: string };
+
+/**
+ * What the panel under a column should show for it.
+ *
+ * The three ways of having no numbers are kept apart on purpose. "Still coming"
+ * will turn into an answer; "cannot say" never will, and telling someone to wait
+ * for an answer that is not coming is worse than saying so; and a failure is the
+ * database's own words, which are usually the ones worth reading.
+ */
+export const summaryPanelView = (state: ColumnSummaryState): SummaryPanelView => {
+  switch (state.status) {
+    case 'ready':
+      return { summary: state.summary };
+    case 'unavailable':
+      return { note: 'No statistics for this source' };
+    case 'failed':
+      return { note: state.error };
+    default:
+      return {};
+  }
+};
+
+export type ExportStatus = 'running' | 'done' | 'failed' | 'cancelled';
+
+/**
+ * One export, as the sidebar sees it.
+ *
+ * Kept here rather than in React state because an export outlives any component:
+ * it is a long-running job against the database, and closing a panel or
+ * re-rendering the shell must not lose track of it.
+ */
+export interface ExportJob {
+  readonly id: number;
+  readonly tableId: EntityId;
+  readonly tableName: string;
+  readonly fileName: string;
+  readonly format: ExportFormat;
+  readonly status: ExportStatus;
+  readonly rows: number;
+  readonly bytes: number;
+  readonly totalRows: number | null;
+  readonly error?: string;
+}
+
+/** What the shell needs to open a save dialog. */
+export interface ExportSinkRequest {
+  readonly tableId: EntityId;
+  readonly tableName: string;
+  readonly fileName: string;
+  /**
+   * What the dialog should suggest. Narrowed to the parts a file dialog needs, so
+   * that a table's formats and a chart's can both be offered through it without
+   * the shell having to know which family it is looking at.
+   */
+  readonly format: FileFormatDescriptor;
+}
+
+/** A chart's whole export family, greyed out together. */
+const CHART_EXPORT_ACTIONS_IDS: readonly EntityActionId[] = Object.freeze([
+  'export',
+  'export-svg',
+  'export-png',
+  'export-pdf',
+]);
+
+/** Which picture format each of a chart's format buttons asks for. */
+const CHART_FORMAT_BY_ACTION: Partial<Record<EntityActionId, ChartExportFormat>> = Object.freeze({
+  'export-svg': 'svg',
+  'export-png': 'png',
+  'export-pdf': 'pdf',
+});
+
+const NO_ACTIONS: readonly EntityActionId[] = Object.freeze([]);
+
+/**
+ * The whole export family, greyed out together.
+ *
+ * A table with no rows behind it cannot write a file in any format, so the
+ * disclosure goes inert along with the three formats it would have revealed —
+ * rather than opening onto three dead buttons.
+ */
+const EXPORT_ACTIONS: readonly EntityActionId[] = Object.freeze([
+  'export',
+  'export-csv',
+  'export-xlsx',
+  'export-parquet',
+]);
+
+/** The format each halo button asks for. */
+const FORMAT_BY_ACTION: Readonly<Partial<Record<EntityActionId, ExportFormat>>> = Object.freeze({
+  'export-csv': 'csv',
+  'export-xlsx': 'xlsx',
+  'export-parquet': 'parquet',
+});
+
+/** Comfortable for a few lines of SQL; the result may be wider. */
+const EDITOR_WIDTH = 520;
+const EDITOR_HEIGHT = 260;
+const MAX_QUERY_WIDTH = 1_200;
+/** A query's width is unknown when its blocks are sized, so assume a wide one. */
+const QUERY_BLOCK_COLUMNS = 12;
+/** Stands in for a schema name in a query result's label. */
+const QUERY_SCHEMA_LABEL = 'QUERY';
+
+/** Longest statement a connector will spell out before trailing off. */
+const SQL_SUMMARY_LENGTH = 90;
+
+/**
+ * A statement as one line, for a connector's label. SQL is written across
+ * several lines; a label is a single run of text.
+ */
+const summariseSql = (sql: string): string => {
+  const flat = sql.replace(/\s+/gu, ' ').trim();
+  return flat.length <= SQL_SUMMARY_LENGTH ? flat : `${flat.slice(0, SQL_SUMMARY_LENGTH - 1)}…`;
+};
+
+/**
+ * True when there is an engine behind this table to send SQL to.
+ *
+ * A chart runs no SQL of its own — it reads rows through whatever it was opened
+ * on — so a chart of a sample table is fine where a query on one is not.
+ */
+const canRunSql = (entity: TableEntity): boolean =>
+  entity.source.kind !== 'relation' || entity.source.schema !== DEMO_SCHEMA;
+
+/**
+ * The statement a fresh editor starts with: the whole of its input, ready to
+ * have a `WHERE` added.
+ *
+ * A stored relation is named outright, because it has a name and seeing it is
+ * useful. A query box has no name to show, so it is referred to as
+ * `derived_table` — one short line rather than the whole of the statement it
+ * runs, which by the third level of refinement is a wall of parentheses with the
+ * user's own clause lost somewhere inside it. The levels are put back together
+ * when the query runs.
+ */
+const defaultQueryFor = (base: TableEntity): string =>
+  base.source.kind === 'relation'
+    ? `SELECT *\nFROM ${qualifiedName(base.source.schema, base.source.table)}`
+    : `SELECT *\nFROM ${DERIVED_TABLE}`;
 
 export interface OpenTableRequest {
   readonly schema: string;
@@ -48,6 +390,12 @@ export interface OpenTableRequest {
   readonly knownSchema?: TableSchema;
   /** Restricts the result set; set when following a foreign key. */
   readonly filter?: RowFilter;
+  /**
+   * The edge the table should end up beside, when it belongs next to something.
+   * Ignored if `position` is given, and defaulting to the corner of the view —
+   * where the explorer is — when neither is.
+   */
+  readonly anchor?: PlacementAnchor;
 }
 
 /** The result of following a foreign key: the new table and the line to it. */
@@ -59,9 +407,58 @@ export interface FollowedForeignKey {
 const TABLE_GRID_STEP = 48;
 
 /**
+ * A stand-in viewport for when there is no camera to ask — headless, or before
+ * the first frame — but an anchor still says where "beside" is.
+ *
+ * Generous enough that the spots near the anchor all count as being inside it,
+ * so the search is decided by distance from the edge rather than by a view that
+ * does not exist.
+ */
+const neighbourhoodOf = (source: Rect, size: Size2, anchor?: PlacementAnchor): Rect => {
+  const left = anchor?.x ?? source.x;
+  return {
+    x: left - LINKED_TABLE_GAP,
+    y: Math.min(source.y, anchor?.top ?? source.y) - size.height,
+    width: LINKED_TABLE_GAP + size.width * 3,
+    height: Math.max(source.height, size.height) * 3,
+  };
+};
+
+/**
  * Gap between a table and the one opened by following a key from it. Wide
  * enough that the connector — and its label — are legible between them.
  */
+/**
+ * The connection id before there is a connection, and after there is not.
+ *
+ * A real one is a number the database gave us; this stands for "nobody", and is
+ * the answer to whether there is a database behind these tables.
+ */
+const PENDING_CONNECTION = 'connection:pending' as ConnectionId;
+
+/**
+ * How long to wait for a window of rows, and how often to look.
+ *
+ * Generous, because the wait is for a database: an agent asking for a preview of
+ * a statement it just ran would rather wait a second than be told the rows are
+ * not there yet.
+ */
+const ROW_WAIT_MS = 8_000;
+const ROW_POLL_MS = 25;
+
+/** What the canvas drew of a chart, for whoever cannot look at it. */
+export interface ChartGeometry {
+  /** The rectangle the picture was laid out for, in world units. */
+  readonly width: number;
+  readonly height: number;
+  readonly polygons: number;
+  readonly texts: number;
+  /** What it actually covers, which is not always what it was given. */
+  readonly bounds: { x: number; y: number; width: number; height: number } | null;
+  /** Labels that fall outside the rectangle, by their text. */
+  readonly clipped: readonly string[];
+}
+
 const LINKED_TABLE_GAP = 220;
 
 /** A followed table is sized to its rows, within these bounds. */
@@ -87,17 +484,69 @@ export class Workspace implements TableViewProvider, InteractionHost {
   readonly core: PanoramaCore;
   readonly #client: DataWorkerClient;
   readonly #views = new Map<EntityId, TableView>();
+  /**
+   * Statements as they are being typed, by table.
+   *
+   * Session state, not document state: committing every keystroke would fill
+   * history with one entry per character. A draft becomes a command when it is
+   * run.
+   */
+  readonly #drafts = new Map<EntityId, string>();
+  /** Exports, live and finished, newest last. */
+  readonly #jobs = new Map<number, ExportJob>();
+  readonly #running = new Map<number, RunningExportHandle>();
+  /** Exports the user stopped, so their failure reads as a cancellation. */
+  readonly #cancelled = new Set<number>();
+  readonly #exportListeners = new Set<() => void>();
+  /**
+   * Column summaries, by column-view id.
+   *
+   * Cached because a summary costs a query and a selection is toggled freely:
+   * clicking a column off and on again should not ask the database twice. Keyed
+   * by the *column view*, so a table opened twice has a summary each — they are
+   * showing different statements as far as anyone knows.
+   */
+  readonly #summaries = new Map<EntityId, ColumnSummaryState>();
+  /** Chart specifications as they are being set up, by chart id. */
+  readonly #chartDrafts = new Map<EntityId, ChartSpec>();
+  /** The numbers each chart is drawing, or how far it has got towards them. */
+  readonly #charts = new Map<EntityId, ChartState>();
+  /** The last geometry laid out for each chart, and what it was laid out for. */
+  readonly #chartLayouts = new Map<EntityId, ChartLayout>();
+  /** The database this session reached, as it described itself. */
+  #reached: {
+    readonly url: string;
+    readonly database?: string;
+    readonly version?: string;
+    readonly sessionId?: number;
+  } | null = null;
+  /** The same geometry with the pointer and the selection applied to it. */
+  /** The predicate each drill-down table is currently showing. */
+  readonly #rowFilters = new Map<EntityId, string>();
+  readonly #emphasis = new Map<
+    EntityId,
+    { readonly key: string; readonly base: ChartDrawList; readonly chart: ChartDrawList }
+  >();
   readonly #options: WorkspaceOptions;
   readonly #clock: () => number;
   #connectionId: ConnectionId;
   #opened = 0;
+  /**
+   * Where the camera is looking, in world units.
+   *
+   * Set once the renderer exists, which is after this is constructed — hence a
+   * property rather than an option. A function rather than a value because the
+   * answer changes with every pan and zoom, and placement wants the answer at
+   * the moment a table is opened.
+   */
+  viewport: (() => Rect | null) | null = null;
 
   constructor(options: WorkspaceOptions) {
     this.#options = options;
     this.#client = options.client;
     this.core = options.core ?? new PanoramaCore();
     this.#clock = options.clock ?? ((): number => performance.now());
-    this.#connectionId = options.connectionId ?? ('connection:pending' as ConnectionId);
+    this.#connectionId = options.connectionId ?? PENDING_CONNECTION;
   }
 
   get connectionId(): ConnectionId {
@@ -126,11 +575,43 @@ export class Workspace implements TableViewProvider, InteractionHost {
   }): Promise<{ connectionId: string }> {
     const result = await this.#client.connect(request.url, request.credentials);
     this.#connectionId = result.connectionId as ConnectionId;
+    // Which database this is, kept so that anything else claiming to reach the
+    // same one can be checked against it. The URL and the name the server gave;
+    // never the credentials, which went to the worker and stop there.
+    this.#reached = {
+      url: request.url,
+      ...(result.database === undefined ? {} : { database: result.database }),
+      ...(result.version === undefined ? {} : { version: result.version }),
+      ...(result.sessionId === undefined ? {} : { sessionId: result.sessionId }),
+    };
     return result;
+  }
+
+  /**
+   * Which database is behind these tables.
+   *
+   * Not decoration: a session is one way to reach a database and rarely the
+   * fastest, so anything else that reaches one — a driver, a native MCP server —
+   * has to be able to establish that it is looking at the *same* database before
+   * its answers can be trusted alongside these. A name and a version the server
+   * itself reported are the evidence for that; a URL somebody typed is a hint.
+   */
+  reachedDatabase(): {
+    readonly url: string;
+    readonly database?: string;
+    readonly version?: string;
+    readonly sessionId?: number;
+  } | null {
+    return this.#connectionId === PENDING_CONNECTION ? null : this.#reached;
   }
 
   async disconnect(): Promise<void> {
     await this.#client.disconnect();
+    this.#reached = null;
+    // Given up with the connection: the id named a live session, and anything
+    // asking whether there is one — the agent interface does — would otherwise
+    // be told yes by a number that outlived what it referred to.
+    this.#connectionId = PENDING_CONNECTION;
   }
 
   listSchemas(): Promise<readonly SchemaInfo[]> {
@@ -152,10 +633,9 @@ export class Workspace implements TableViewProvider, InteractionHost {
       request.knownSchema ??
       this.#options.resolveSchema?.(request.schema, request.table) ??
       (await this.#client.describeTable(request.schema, request.table));
-    const offset = this.#opened * TABLE_GRID_STEP;
-    this.#opened += 1;
-    const entity = buildTableEntity(this.core.ids, {
+    const sized = buildTableEntity(this.core.ids, {
       source: {
+        kind: 'relation',
         connectionId: this.#connectionId,
         schema: request.schema,
         table: request.table,
@@ -167,39 +647,188 @@ export class Workspace implements TableViewProvider, InteractionHost {
         // followed without consulting the schema again.
         ...(column.foreignKey === undefined ? {} : { foreignKey: column.foreignKey }),
       })),
-      position:
-        request.position === undefined
-          ? { x: offset, y: offset, z: 0 }
-          : { ...request.position, z: 0 },
+      // A free spot depends on how big the table is, and how big it is depends
+      // on its columns — so it is built at the origin and moved once its size
+      // is known, before anything has seen it.
+      ...(request.position === undefined ? {} : { position: { ...request.position, z: 0 } }),
     });
+    const entity = request.position === undefined ? this.#placed(sized, request.anchor) : sized;
 
     const created = this.core.dispatch({ type: 'CreateTableEntity', entity });
     if (!created.ok) throw new Error(created.error.message);
 
+    await this.#attachView(entity.id, schema.columns.length, {
+      schema: request.schema,
+      table: request.table,
+      ...(request.filter === undefined ? {} : { filter: request.filter }),
+    });
+    this.core.dispatchSession({ type: 'SetSelection', ids: [entity.id] });
+    return entity.id;
+  }
+
+  /**
+   * Moves a freshly built table to the nearest free space.
+   *
+   * "Nearest" is measured from the corner of what is on screen — the corner the
+   * explorer is next to, the explorer being what was just clicked — unless the
+   * caller names an edge to gather along instead, which following a foreign key
+   * does. The shell reveals the table afterwards, which does nothing at all when
+   * the spot found was already in view, so a table only ever pulls the camera
+   * when the view really had no room left.
+   */
+  #placed(entity: TableEntity, anchor?: PlacementAnchor): TableEntity {
+    const viewport =
+      this.viewport?.() ??
+      // No camera to consult, but an anchor still says where "beside" is: treat
+      // the source's own surroundings as the view so that being inside it
+      // neither helps nor hinders.
+      (anchor === undefined ? null : neighbourhoodOf(entity.transform, entity.transform, anchor));
+    if (viewport === null || viewport === undefined) {
+      // No camera to consult — headless, or before the first frame. The old
+      // diagonal stagger at least never lands two tables on the same spot.
+      const offset = this.#opened * TABLE_GRID_STEP;
+      this.#opened += 1;
+      return this.#movedTo(entity, { x: offset, y: offset });
+    }
+    const { width, height } = entity.transform;
+    return this.#movedTo(
+      entity,
+      findFreePlacement({
+        size: { width, height },
+        occupied: this.#occupied(),
+        viewport,
+        ...(anchor === undefined ? {} : { anchor }),
+      }),
+    );
+  }
+
+  // --- Column summaries -------------------------------------------------
+
+  /**
+   * Makes sure every picked-out column has a summary, and none of the others do.
+   *
+   * Driven by the selection rather than by the click, so it does not matter
+   * whether a column was picked out by pointer, by keyboard or by an agent — and
+   * so a sweep across eight columns asks eight questions and no more. Summaries
+   * for columns no longer picked out are dropped: they were only ever an answer
+   * to a question nobody is asking any more.
+   */
+  syncColumnSummaries(): void {
+    const wanted = new Set(this.core.session.selectedColumns);
+    for (const id of [...this.#summaries.keys()]) {
+      if (!wanted.has(id)) this.#summaries.delete(id);
+    }
+    for (const id of wanted) {
+      if (this.#summaries.has(id)) continue;
+      const found = this.#tableOfColumn(id);
+      if (found === null) continue;
+      this.#summaries.set(id, { status: 'loading' });
+      void this.#loadSummary(id, found.tableId, found.column.sourceColumn.name);
+    }
+  }
+
+  /** The summary of a picked-out column, or its progress towards one. */
+  columnSummary(columnId: EntityId): ColumnSummaryState | undefined {
+    return this.#summaries.get(columnId);
+  }
+
+  #tableOfColumn(
+    columnId: EntityId,
+  ): { readonly tableId: EntityId; readonly column: TableColumnView } | null {
+    for (const entity of this.core.world.entities.values()) {
+      if (!isTableEntity(entity)) continue;
+      const column = findColumn(entity, columnId);
+      if (column !== undefined) return { tableId: entity.id, column };
+    }
+    return null;
+  }
+
+  async #loadSummary(columnId: EntityId, tableId: EntityId, name: string): Promise<void> {
+    const settle = (state: ColumnSummaryState): void => {
+      // Only if it is still wanted: a column let go of while its query was in
+      // flight should not have the answer arrive behind it.
+      if (this.#summaries.get(columnId)?.status !== 'loading') return;
+      this.#summaries.set(columnId, state);
+      this.#options.onDataChanged?.();
+    };
+    try {
+      const summary = await this.#client.summariseColumn(tableId, name);
+      settle(summary === null ? { status: 'unavailable' } : { status: 'ready', summary });
+    } catch (error) {
+      settle({
+        status: 'failed',
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /** Every table's rectangle, which is everything a placement has to miss. */
+  #occupied(): readonly Rect[] {
+    const occupied: Rect[] = [];
+    for (const entity of this.core.world.entities.values()) {
+      if (isTableEntity(entity)) occupied.push(entity.transform);
+    }
+    return occupied;
+  }
+
+  /**
+   * The nearest free spot beside a table, for the things that belong next to it:
+   * the table a foreign key was followed to, and the box a statement is written
+   * in.
+   *
+   * Beside rather than anywhere, because the line drawn between them is the
+   * point — a long line reads as two unrelated tables. So the anchor is the
+   * source's own right edge, and a spot pushed up or down *along* that edge
+   * beats one shoved sideways past whatever was already there. It used to be a
+   * fixed offset, which put the new table straight on top of anything that
+   * happened to be sitting in that spot.
+   */
+  #besideTable(source: TableEntity, size: Size2): Placement {
+    const anchor = rightEdgeAnchor(source.transform, LINKED_TABLE_GAP);
+    return findFreePlacement({
+      size,
+      occupied: this.#occupied(),
+      viewport: this.viewport?.() ?? neighbourhoodOf(source.transform, size),
+      anchor,
+    });
+  }
+
+  #movedTo(entity: TableEntity, position: { x: number; y: number }): TableEntity {
+    return {
+      ...entity,
+      transform: { ...entity.transform, x: position.x, y: position.y },
+    };
+  }
+
+  /**
+   * Gives a table entity a live result set. Separated from entity creation
+   * because a query table is created without one and gains it only when its
+   * statement is run.
+   */
+  async #attachView(
+    tableId: EntityId,
+    columnCount: number,
+    spec: TableOpenSpec,
+  ): Promise<{ view: TableView; schema: TableSchema }> {
     const view = new TableView({
-      tableId: entity.id,
+      tableId,
       gateway: this.#client,
-      blockSize: blockSizeForColumns(
-        schema.columns.length,
-        this.#options.blockSize ?? DEFAULT_BLOCK_SIZE,
-      ),
+      blockSize: blockSizeForColumns(columnCount, this.#options.blockSize ?? DEFAULT_BLOCK_SIZE),
       ...(this.#options.maxBytes === undefined ? {} : { maxBytes: this.#options.maxBytes }),
       ...(this.#options.onDataChanged === undefined
         ? {}
         : { onChange: this.#options.onDataChanged }),
     });
-    this.#views.set(entity.id, view);
+    this.#views.set(tableId, view);
 
     try {
-      await view.open(request.schema, request.table, request.filter);
+      return { view, schema: await view.open(spec) };
     } catch (error) {
       // The table stays on the canvas showing its chrome; only its body failed.
-      this.#views.delete(entity.id);
+      this.#views.delete(tableId);
       await view.close().catch(() => undefined);
       throw error;
     }
-    this.core.dispatchSession({ type: 'SetSelection', ids: [entity.id] });
-    return entity.id;
   }
 
   /**
@@ -208,9 +837,23 @@ export class Workspace implements TableViewProvider, InteractionHost {
    * gone.
    */
   async closeTable(tableId: EntityId): Promise<void> {
+    // The boxes built on this one go with it, furthest first. A box holds one
+    // step and the name of its input; with the input gone there is nothing for
+    // that name to mean, and a box that can never run again is worse than no box.
+    for (const derived of [...derivedTreeOf(this.core.world, tableId)].reverse()) {
+      await this.closeTable(derived.id);
+    }
     const view = this.#views.get(tableId);
     this.#views.delete(tableId);
     if (view !== undefined) await view.close();
+    // Noted before the entity goes: its columns are about to stop existing and
+    // a selection may still name them.
+    const closing = this.core.world.entities.get(tableId);
+    const columns = new Set(
+      closing !== undefined && isTableEntity(closing)
+        ? closing.columns.map((column) => column.id)
+        : [],
+    );
     if (this.core.world.entities.has(tableId)) {
       this.core.dispatch({ type: 'RemoveEntities', ids: [tableId] });
     }
@@ -231,6 +874,24 @@ export class Workspace implements TableViewProvider, InteractionHost {
     if (session.pressedAction?.entityId === tableId) {
       this.core.dispatchSession({ type: 'SetPressedAction', target: null });
     }
+    if (session.expandedAction?.entityId === tableId) {
+      this.core.dispatchSession({ type: 'SetExpandedAction', target: null });
+    }
+    // A closed table's columns cannot stay picked out: nothing would show them,
+    // and an agent asking what is selected would be told about columns that are
+    // no longer anywhere.
+    if (session.selectedColumns.some((id) => columns.has(id))) {
+      this.core.dispatchSession({
+        type: 'SetSelectedColumns',
+        ids: session.selectedColumns.filter((id) => !columns.has(id)),
+      });
+    }
+    // Nor can a closed chart's marks: there is no longer a picture they are in.
+    this.#releaseMarks(tableId);
+    this.#chartLayouts.delete(tableId);
+    this.#emphasis.delete(tableId);
+    this.#charts.delete(tableId);
+    this.#chartDrafts.delete(tableId);
   }
 
   /**
@@ -250,22 +911,22 @@ export class Workspace implements TableViewProvider, InteractionHost {
     if (column === undefined) throw new Error(`No column with id ${follow.columnId}`);
 
     const { reference } = follow;
+    // One value, which is the ordinary case for a key: a filter is a membership
+    // predicate so that a chart's selection can be one too.
     const filter: RowFilter = {
       column: reference.column,
-      value: follow.value,
+      values: [follow.value],
       type: column.sourceColumn.type,
     };
 
-    // Placed beside the source rather than on the default stagger, so the line
-    // between them is short and obviously a relationship.
-    const position = {
-      x: source.transform.x + source.transform.width + LINKED_TABLE_GAP,
-      y: source.transform.y,
-    };
+    // Beside the source, so the line between them is short and obviously a
+    // relationship — but in a *free* spot, not on top of a neighbour. An anchor
+    // rather than a position, because how much room the table needs is not known
+    // until its columns have been described.
     const tableId = await this.openTable({
       schema: reference.schema,
       table: reference.table,
-      position,
+      anchor: rightEdgeAnchor(source.transform, LINKED_TABLE_GAP),
       filter,
     });
 
@@ -322,7 +983,1047 @@ export class Workspace implements TableViewProvider, InteractionHost {
 
   /** Performs a halo action reported by the interaction controller. */
   async performAction(tableId: EntityId, action: EntityActionId): Promise<void> {
-    if (action === 'close') await this.closeTable(tableId);
+    if (action === 'close') {
+      await this.closeTable(tableId);
+      return;
+    }
+    // A disclosure rather than a deed: it reveals the formats and does nothing
+    // else, and pressing it again folds them away.
+    if (action === 'export') {
+      const open = this.core.session.expandedAction;
+      const same = open?.entityId === tableId && open.action === 'export';
+      this.core.dispatchSession({
+        type: 'SetExpandedAction',
+        target: same ? null : { entityId: tableId, action: 'export' },
+      });
+      return;
+    }
+    const format = FORMAT_BY_ACTION[action];
+    if (format !== undefined) {
+      // The choice has been made, so the choices fold away — before the save
+      // dialog opens, so the halo is not left hanging open behind it.
+      this.core.dispatchSession({ type: 'SetExpandedAction', target: null });
+      await this.exportTable(tableId, format);
+      return;
+    }
+    const picture = CHART_FORMAT_BY_ACTION[action];
+    if (picture !== undefined) {
+      this.core.dispatchSession({ type: 'SetExpandedAction', target: null });
+      await this.exportChart(tableId, picture);
+      return;
+    }
+    if (action === 'edit') {
+      // The same button in both directions: it opens the setup, and while the
+      // setup is open it goes back to what the box was showing.
+      const box = this.core.world.entities.get(tableId);
+      if (box === undefined || !isTableEntity(box)) return;
+      if (isChartTable(box)) {
+        if (box.mode === 'editing') this.showChart(tableId);
+        else this.editChart(tableId);
+        return;
+      }
+      if (isQueryTable(box) && box.mode === 'editing') this.showQueryResult(tableId);
+      else this.editQuery(tableId);
+      return;
+    }
+    // Always a *new* box, on a query table as much as an ordinary one: refining
+    // a query is how the next one is made, so this is not a toggle. Going back
+    // to a box's own editor is what the edit button is for.
+    if (action === 'sql') await this.openQuery(tableId);
+    if (action === 'chart') await this.openChart(tableId);
+    if (action === 'rows') await this.openChartRows(tableId);
+  }
+
+  /**
+   * Halo actions a table cannot perform.
+   *
+   * The demo relations are generated in the browser, so there is no engine to
+   * send SQL to. The button is greyed out rather than hidden, so the capability
+   * is discoverable before there is a connection to use it with.
+   */
+  disabledActionsFor(table: TableEntity | EntityId): readonly EntityActionId[] {
+    const entity = typeof table === 'string' ? this.core.world.entities.get(table) : table;
+    if (entity === undefined || !isTableEntity(entity)) return NO_ACTIONS;
+    const disabled: EntityActionId[] = [];
+    if (isChartTable(entity)) {
+      // A chart's formats need a picture, which needs the rows to have arrived
+      // and the layout to have been asked for at least once.
+      if (this.chartFigure(entity) === null) disabled.push(...CHART_EXPORT_ACTIONS_IDS);
+      return disabled.length === 0 ? NO_ACTIONS : disabled;
+    }
+    const hasRows = this.#views.has(entity.id);
+    // Nothing to go back to: a statement being written for the first time has
+    // no result behind it.
+    if (isQueryTable(entity) && entity.mode === 'editing' && !hasRows) disabled.push('edit');
+    // Nothing to write to a file either. The usual case is that unrun
+    // statement; the other is a table whose body failed to open, which keeps
+    // its chrome on the canvas but has no result set behind it.
+    if (!hasRows) disabled.push(...EXPORT_ACTIONS);
+    // No engine to send SQL to: the demo relations are generated in the browser.
+    if (!canRunSql(entity)) disabled.push('sql');
+    return disabled.length === 0 ? NO_ACTIONS : disabled;
+  }
+
+  // --- Export -----------------------------------------------------------
+
+  /** Every export this session has started, oldest first. */
+  exportJobs(): readonly ExportJob[] {
+    return [...this.#jobs.values()];
+  }
+
+  /**
+   * Notified when an export starts, advances or ends.
+   *
+   * A subscription rather than a constructor callback because the shell that
+   * wants to re-render is built after the workspace it renders.
+   */
+  subscribeExports(listener: () => void): () => void {
+    this.#exportListeners.add(listener);
+    return (): void => {
+      this.#exportListeners.delete(listener);
+    };
+  }
+
+  #exportsChanged(): void {
+    for (const listener of [...this.#exportListeners]) listener();
+  }
+
+  #updateJob(id: number, patch: Partial<ExportJob>): void {
+    const existing = this.#jobs.get(id);
+    if (existing === undefined) return;
+    this.#jobs.set(id, { ...existing, ...patch });
+    this.#exportsChanged();
+  }
+
+  /**
+   * Writes a table to a file.
+   *
+   * The shell is asked for the destination first, because a save dialog needs
+   * the user activation of the click that got here and cannot be opened after
+   * anything is awaited. Only then is the worker asked to encode: there is no
+   * point reading a billion rows towards a file the user decided not to save.
+   */
+  async exportTable(tableId: EntityId, format: ExportFormat): Promise<void> {
+    const entity = this.core.world.entities.get(tableId);
+    if (entity === undefined || !isTableEntity(entity)) {
+      throw new Error(`No table with id ${tableId}`);
+    }
+    if (!this.#views.has(tableId)) {
+      throw new Error(`${tableDisplayName(entity)} has no rows to export yet`);
+    }
+    const openSink = this.#options.openExportSink;
+    if (openSink === undefined) throw new Error('This build cannot save files');
+
+    const tableName = tableDisplayName(entity);
+    const descriptor = describeFormat(format);
+    const fileName = exportFileName(tableName, format);
+    const sink = await openSink({ tableId, tableName, fileName, format: descriptor });
+    // `null` is the user closing the dialog, which is not a failure and needs
+    // no notice: they know they did it.
+    if (sink === null) return;
+
+    const handle = this.#client.startExport({
+      tableId,
+      format,
+      sink,
+      onProgress: (progress): void => {
+        this.#updateJob(handle.exportId, {
+          rows: progress.rows,
+          bytes: progress.bytes,
+          totalRows: progress.totalRows,
+        });
+      },
+    });
+    this.#jobs.set(handle.exportId, {
+      id: handle.exportId,
+      tableId,
+      tableName,
+      fileName,
+      format,
+      status: 'running',
+      rows: 0,
+      bytes: 0,
+      totalRows: this.#views.get(tableId)?.rowCount ?? null,
+    });
+    this.#running.set(handle.exportId, handle);
+    this.#exportsChanged();
+
+    try {
+      const result = await handle.done;
+      this.#updateJob(handle.exportId, {
+        status: 'done',
+        rows: result.rows,
+        bytes: result.bytes,
+      });
+    } catch (error) {
+      const cancelled = this.#cancelled.delete(handle.exportId);
+      this.#updateJob(handle.exportId, {
+        status: cancelled ? 'cancelled' : 'failed',
+        ...(cancelled ? {} : { error: error instanceof Error ? error.message : String(error) }),
+      });
+      if (!cancelled) throw error;
+    } finally {
+      this.#running.delete(handle.exportId);
+    }
+  }
+
+  /**
+   * Stops an export. The half-written file is discarded rather than left under
+   * the name the user chose — a truncated Parquet file has no footer and a
+   * truncated workbook has no directory, so neither would open.
+   */
+  cancelExport(id: number): void {
+    const handle = this.#running.get(id);
+    if (handle === undefined) return;
+    this.#cancelled.add(id);
+    handle.cancel();
+  }
+
+  /** Forgets a finished export; a running one is left alone. */
+  dismissExport(id: number): void {
+    if (this.#running.has(id)) return;
+    this.#jobs.delete(id);
+    this.#exportsChanged();
+  }
+
+  /**
+   * Opens a SQL editor connected to a table.
+   *
+   * The box starts as an editor rather than a result: it has no statement worth
+   * running yet, and a table shaped by a query nobody has written would have no
+   * columns to show. Toggling it back later reveals the same editor.
+   */
+  async openQuery(baseTableId: EntityId): Promise<QueryTableOpened> {
+    const base = this.core.world.entities.get(baseTableId);
+    if (base === undefined || !isTableEntity(base)) {
+      throw new Error(`No table with id ${baseTableId}`);
+    }
+    if (!canRunSql(base)) throw new Error(`${tableDisplayName(base)} is not backed by a database`);
+
+    const sql = defaultQueryFor(base);
+    const entity = buildTableEntity(this.core.ids, {
+      source: {
+        kind: 'query',
+        connectionId: this.#connectionId,
+        sql,
+        label: `${tableDisplayName(base)} · SQL`,
+        // What `derived_table` means in this box, and what a change to that
+        // table has to refresh.
+        derivedFrom: baseTableId,
+      },
+      mode: 'editing',
+      // No columns yet, so the editor is sized for text rather than for data.
+      columns: [],
+      size: { width: EDITOR_WIDTH, height: EDITOR_HEIGHT },
+      position: {
+        ...this.#besideTable(base, { width: EDITOR_WIDTH, height: EDITOR_HEIGHT }),
+        z: 0,
+      },
+    });
+    const created = this.core.dispatch({ type: 'CreateTableEntity', entity });
+    if (!created.ok) throw new Error(created.error.message);
+
+    const binding: Binding = {
+      id: this.core.ids.binding(),
+      kind: 'connector',
+      fromId: baseTableId,
+      toId: entity.id,
+      from: AUTO_ANCHOR,
+      to: AUTO_ANCHOR,
+      directed: true,
+      // The label is what the marker reveals on demand, so it is the statement
+      // rather than the word "SQL" — which the mark already says.
+      label: summariseSql(sql),
+      meta: { kind: 'query' },
+    };
+    const boundTo = this.core.dispatch({ type: 'CreateBinding', binding });
+    if (!boundTo.ok) throw new Error(boundTo.error.message);
+
+    this.#drafts.set(entity.id, sql);
+    this.core.dispatchSession({ type: 'SetSelection', ids: [entity.id] });
+    return { tableId: entity.id, bindingId: binding.id };
+  }
+
+  // --- Charts ------------------------------------------------------------
+
+  /**
+   * Opens a chart of a table.
+   *
+   * Starts in setup rather than showing something, because a chart of columns
+   * nobody chose is a chart of nothing — but the setup starts already filled in
+   * with a guess, so the first thing the user sees is a picture and the controls
+   * that made it.
+   */
+  async openChart(baseTableId: EntityId): Promise<QueryTableOpened> {
+    const base = this.core.world.entities.get(baseTableId);
+    if (base === undefined || !isTableEntity(base)) {
+      throw new Error(`No table with id ${baseTableId}`);
+    }
+    if (isChartTable(base)) throw new Error('A chart cannot be charted');
+    const spec = defaultChartSpec(base.columns.map((column) => chartColumnHint(column)));
+    const entity = buildTableEntity(this.core.ids, {
+      source: {
+        kind: 'chart',
+        connectionId: this.#connectionId,
+        spec,
+        label: `${tableDisplayName(base)} · Chart`,
+        derivedFrom: baseTableId,
+      },
+      mode: 'editing',
+      // A chart draws; it has no columns to list.
+      columns: [],
+      size: { width: CHART_WIDTH, height: CHART_HEIGHT },
+      position: {
+        ...this.#besideTable(base, { width: CHART_WIDTH, height: CHART_HEIGHT }),
+        z: 0,
+      },
+    });
+    const created = this.core.dispatch({ type: 'CreateTableEntity', entity });
+    if (!created.ok) throw new Error(created.error.message);
+
+    const binding: Binding = {
+      id: this.core.ids.binding(),
+      kind: 'connector',
+      fromId: baseTableId,
+      toId: entity.id,
+      from: AUTO_ANCHOR,
+      to: AUTO_ANCHOR,
+      directed: true,
+      label: describeChartSpec(spec),
+      meta: { kind: 'chart' },
+    };
+    const bound = this.core.dispatch({ type: 'CreateBinding', binding });
+    if (!bound.ok) throw new Error(bound.error.message);
+
+    this.#chartDrafts.set(entity.id, spec);
+    this.core.dispatchSession({ type: 'SetSelection', ids: [entity.id] });
+    // Started straight away, so the controls have something to be the controls
+    // of — but not waited for: opening a box must not block on a database.
+    void this.#loadChart(entity.id, baseTableId, spec);
+    return { tableId: entity.id, bindingId: binding.id };
+  }
+
+  /**
+   * Opens a table of the rows behind what has been picked out of a chart.
+   *
+   * Empty to begin with, which is the honest answer to "the rows behind nothing":
+   * a filter over no values matches none. It fills in as marks are picked out and
+   * empties again as they are let go of, so the table is a running answer to
+   * "which rows is that bar made of" rather than a snapshot of one.
+   *
+   * One per chart. Pressing the button again brings the existing one back into
+   * the selection rather than opening a second identical table beside it.
+   */
+  async openChartRows(chartId: EntityId): Promise<EntityId> {
+    const chart = this.core.world.entities.get(chartId);
+    if (chart === undefined || !isTableEntity(chart) || !isChartTable(chart)) {
+      throw new Error(`No chart with id ${chartId}`);
+    }
+    const existing = this.#rowsTableOf(chartId);
+    if (existing !== null) {
+      this.core.dispatchSession({ type: 'SetSelection', ids: [existing] });
+      return existing;
+    }
+    const base = this.core.world.entities.get(chart.source.derivedFrom);
+    if (base === undefined || !isTableEntity(base) || base.source.kind !== 'relation') {
+      // A chart of a written query has no stored relation to drill into; the
+      // statement would have to be filtered, which is a different feature.
+      throw new Error('Only a chart of a stored table can show its rows');
+    }
+
+    const tableId = await this.openTable({
+      schema: base.source.schema,
+      table: base.source.table,
+      anchor: rightEdgeAnchor(chart.transform, LINKED_TABLE_GAP),
+      // Nothing picked out yet, so nothing to show yet.
+      filter: this.#selectionFilter(chartId),
+    });
+    const marked = this.core.dispatch({
+      type: 'SetTableSource',
+      tableId,
+      source: { ...base.source, selectionOf: chartId },
+    });
+    if (!marked.ok) throw new Error(marked.error.message);
+
+    const binding: Binding = {
+      id: this.core.ids.binding(),
+      kind: 'connector',
+      fromId: chartId,
+      toId: tableId,
+      from: AUTO_ANCHOR,
+      to: AUTO_ANCHOR,
+      directed: true,
+      label: 'rows behind the selection',
+      meta: { kind: 'rows' },
+    };
+    const bound = this.core.dispatch({ type: 'CreateBinding', binding });
+    if (!bound.ok) throw new Error(bound.error.message);
+    return tableId;
+  }
+
+  /** The table showing this chart's selection, if one is open. */
+  #rowsTableOf(chartId: EntityId): EntityId | null {
+    for (const entity of this.core.world.entities.values()) {
+      if (!isTableEntity(entity) || !isSelectionTable(entity)) continue;
+      if (entity.source.selectionOf === chartId) return entity.id;
+    }
+    return null;
+  }
+
+  /**
+   * The predicate for whatever is picked out of a chart.
+   *
+   * By the category's own value rather than its label: a label is for reading and
+   * cannot be compared against a numeric column. Marks of different series over
+   * the same category are one value, not two — the rows behind "Sweden" are the
+   * same rows whichever measure was clicked.
+   */
+  #selectionFilter(chartId: EntityId): RowFilter {
+    const chart = this.core.world.entities.get(chartId);
+    const state = this.#charts.get(chartId);
+    // No chart, no category column, and therefore nothing to filter by. A
+    // predicate naming no column would be nonsense; an empty one is the truth.
+    if (chart === undefined || !isTableEntity(chart) || !isChartTable(chart)) {
+      return { column: '', values: [] };
+    }
+    const values: CellValue[] = [];
+    if (state?.status === 'ready') {
+      for (const mark of selectedMarksOf(this.core.session, chartId)) {
+        const value = state.data.values[mark.data];
+        // A category is one value however many of its marks were picked: the
+        // rows behind "Sweden" are the same rows whichever measure was clicked.
+        if (value === undefined || values.includes(value)) continue;
+        values.push(value);
+      }
+    }
+    const type = this.#categoryType(chartId);
+    return { column: chart.source.spec.category, values, ...(type === undefined ? {} : { type }) };
+  }
+
+  /** The declared type of the charted column, so the literal is formed right. */
+  #categoryType(chartId: EntityId): ColumnDataType | undefined {
+    const chart = this.core.world.entities.get(chartId);
+    if (chart === undefined || !isTableEntity(chart) || !isChartTable(chart)) return undefined;
+    const base = this.core.world.entities.get(chart.source.derivedFrom);
+    if (base === undefined || !isTableEntity(base)) return undefined;
+    return base.columns.find((column) => column.sourceColumn.name === chart.source.spec.category)
+      ?.sourceColumn.type;
+  }
+
+  /**
+   * Keeps every drill-down table showing the rows its chart's selection names.
+   *
+   * Derived from the selection every frame rather than fired from whatever
+   * changed it — the same reason column summaries are: one place decides what
+   * each table should be showing, and no new gesture can bypass it.
+   */
+  syncChartRows(): void {
+    for (const entity of this.core.world.entities.values()) {
+      if (!isTableEntity(entity) || !isSelectionTable(entity)) continue;
+      const chartId = entity.source.selectionOf;
+      const wanted = this.#selectionFilter(chartId);
+      const key = filterKey(wanted);
+      if (this.#rowFilters.get(entity.id) === key) continue;
+      this.#rowFilters.set(entity.id, key);
+      void this.#refilter(entity.id, entity.source, wanted);
+    }
+  }
+
+  /** Reopens a drill-down table's rows under a new predicate. */
+  async #refilter(
+    tableId: EntityId,
+    source: { readonly schema: string; readonly table: string },
+    filter: RowFilter,
+  ): Promise<void> {
+    const existing = this.#views.get(tableId);
+    if (existing !== undefined) {
+      this.#views.delete(tableId);
+      await existing.close().catch(() => undefined);
+    }
+    try {
+      await this.#attachView(tableId, this.#columnCountOf(tableId), {
+        schema: source.schema,
+        table: source.table,
+        filter,
+      });
+      this.#fitToRows(tableId);
+    } catch {
+      // The table keeps its chrome and shows nothing, which is what a failed
+      // body always does here. The next selection will try again.
+    }
+    this.#options.onDataChanged?.();
+  }
+
+  #columnCountOf(tableId: EntityId): number {
+    const entity = this.core.world.entities.get(tableId);
+    return entity !== undefined && isTableEntity(entity) ? entity.columns.length : 1;
+  }
+
+  /** Charts currently showing their setup, in document order. */
+  editingCharts(): readonly EntityId[] {
+    const editing: EntityId[] = [];
+    for (const entity of this.core.world.entities.values()) {
+      if (isTableEntity(entity) && isChartTable(entity) && entity.mode === 'editing') {
+        editing.push(entity.id);
+      }
+    }
+    return editing;
+  }
+
+  /** The specification as it is currently being set up. */
+  chartDraft(tableId: EntityId): ChartSpec | null {
+    const draft = this.#chartDrafts.get(tableId);
+    if (draft !== undefined) return draft;
+    const entity = this.core.world.entities.get(tableId);
+    return entity !== undefined && isTableEntity(entity) && isChartTable(entity)
+      ? entity.source.spec
+      : null;
+  }
+
+  /**
+   * Records a change to a control and redraws.
+   *
+   * Not a command: turning a dial should not leave a history entry per notch, the
+   * same split that keeps typing a query out of the DAG. The picture updates as
+   * the controls move, which is the whole point of having them side by side.
+   */
+  setChartDraft(tableId: EntityId, spec: ChartSpec): void {
+    this.#chartDrafts.set(tableId, spec);
+    const entity = this.core.world.entities.get(tableId);
+    if (entity === undefined || !isTableEntity(entity) || !isChartTable(entity)) return;
+    // Whatever was picked out was picked out of a different picture: the third
+    // bar of a chart sorted by size is not the third bar of one sorted by name,
+    // and keeping the position would silently move the choice to another
+    // category.
+    this.#releaseMarks(tableId);
+    void this.#loadChart(tableId, entity.source.derivedFrom, spec);
+  }
+
+  /** Lets go of the marks picked out in one chart, and of the pointer's. */
+  #releaseMarks(tableId: EntityId): void {
+    const session = this.core.session;
+    if (session.selectedMarks.some((mark) => mark.entityId === tableId)) {
+      this.core.dispatchSession({
+        type: 'SetSelectedMarks',
+        targets: session.selectedMarks.filter((mark) => mark.entityId !== tableId),
+      });
+    }
+    if (session.hoveredMark?.entityId === tableId) {
+      this.core.dispatchSession({ type: 'SetHoveredMark', target: null });
+    }
+  }
+
+  /** The columns a chart has to choose between: its base table's. */
+  chartColumns(tableId: EntityId): readonly ChartColumnChoice[] {
+    const entity = this.core.world.entities.get(tableId);
+    if (entity === undefined || !isTableEntity(entity) || !isChartTable(entity)) return [];
+    const base = this.core.world.entities.get(entity.source.derivedFrom);
+    if (base === undefined || !isTableEntity(base)) return [];
+    return base.columns.map((column) => ({
+      ...chartColumnHint(column),
+      type: column.sourceColumn.type.name,
+    }));
+  }
+
+  /** How charts look here. The shell may override it; most will not. */
+  get chartTheme(): ChartTheme {
+    return this.#options.chartTheme ?? DEFAULT_CHART_THEME;
+  }
+
+  /** What a chart is drawing, or how far it has got towards it. */
+  chartState(tableId: EntityId): ChartState | undefined {
+    return this.#charts.get(tableId);
+  }
+
+  /**
+   * Commits the setup and switches the box to showing the chart.
+   *
+   * One command for the whole specification: what the user did was set this chart
+   * up, and history should say that once.
+   */
+  showChart(tableId: EntityId): void {
+    const spec = this.chartDraft(tableId);
+    if (spec === null) throw new Error(`No chart with id ${tableId}`);
+    if (!isChartSpecDrawable(spec)) throw new Error('Choose a column to chart');
+    const committed = this.core.dispatch({ type: 'SetChartSpec', tableId, spec });
+    if (!committed.ok) throw new Error(committed.error.message);
+    const shown = this.core.dispatch({ type: 'SetTableMode', tableId, mode: 'result' });
+    if (!shown.ok) throw new Error(shown.error.message);
+    for (const binding of this.core.world.bindings.values()) {
+      if (binding.toId !== tableId || binding.meta?.['kind'] !== 'chart') continue;
+      this.core.dispatch({
+        type: 'SetBindingLabel',
+        bindingId: binding.id,
+        label: describeChartSpec(spec),
+      });
+    }
+  }
+
+  /** Reopens the setup of a chart that is showing one. */
+  editChart(tableId: EntityId): void {
+    const changed = this.core.dispatch({ type: 'SetTableMode', tableId, mode: 'editing' });
+    if (!changed.ok) throw new Error(changed.error.message);
+  }
+
+  /**
+   * Reads the numbers for a chart.
+   *
+   * From the table it was opened on, through that table's own session — so a
+   * chart of a followed key or of a written query is a chart of what that table
+   * is showing, not of the relation underneath it.
+   */
+  async #loadChart(id: EntityId, baseId: EntityId, spec: ChartSpec): Promise<void> {
+    if (!isChartSpecDrawable(spec)) {
+      this.#charts.set(id, { status: 'unset' });
+      this.#options.onDataChanged?.();
+      return;
+    }
+    this.#charts.set(id, { status: 'loading' });
+    const settle = (state: ChartState): void => {
+      // Only if this is still the specification being asked about: a control
+      // moved again while the last answer was in flight should not be overwritten
+      // by it.
+      if (this.#chartDrafts.get(id) !== spec && this.chartDraft(id) !== spec) return;
+      this.#charts.set(id, state);
+      this.#options.onDataChanged?.();
+    };
+    try {
+      const data = await this.#client.chartData(baseId, spec);
+      settle(data === null ? { status: 'empty' } : { status: 'ready', data });
+    } catch (error) {
+      settle({
+        status: 'failed',
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
+   * Writes a chart to a file.
+   *
+   * Small, synchronous work on geometry that is already in hand, so there is no
+   * worker, no streaming and no progress to report: by the time the save dialog
+   * has been answered the bytes exist. What reaches the file is the *box* — title,
+   * chart, and the line saying what it was drawn from — because a picture without
+   * those is one nobody can place afterwards.
+   */
+  async exportChart(tableId: EntityId, format: ChartExportFormat): Promise<void> {
+    const entity = this.core.world.entities.get(tableId);
+    if (entity === undefined || !isTableEntity(entity) || !isChartTable(entity)) {
+      throw new Error(`No chart with id ${tableId}`);
+    }
+    const figure = this.chartFigure(entity);
+    if (figure === null) throw new Error('There is no chart to export yet');
+    const descriptor = CHART_EXPORT_FORMATS[format];
+    const open = this.#options.openExportSink;
+    if (open === undefined) throw new Error('This build cannot save files');
+    const sink = await open({
+      tableId,
+      tableName: tableDisplayName(entity),
+      fileName: `${chartFileStem(entity)}${descriptor.extension}`,
+      format: descriptor,
+    });
+    // Dismissed, which is not a failure: nothing was asked for after all.
+    if (sink === null) return;
+    try {
+      await sink.write(await this.#encodeChart(figure, format));
+      await sink.close();
+    } catch (error) {
+      await abandon(sink, error);
+      throw error;
+    }
+  }
+
+  /**
+   * The chart's geometry with the pointer and the selection applied.
+   *
+   * Cached against what it was applied for, so a frame in which the pointer has
+   * not crossed a boundary costs one comparison. The unemphasised geometry stays
+   * separate because that is what an export writes: a file should not carry
+   * whatever happened to be under the pointer when it was written.
+   */
+  #emphasised(chartId: EntityId): ChartDrawList {
+    const layout = this.#chartLayouts.get(chartId) as ChartLayout;
+    const session = this.core.session;
+    const hovered = hoveredMarkOf(session, chartId);
+    const selected = selectedMarksOf(session, chartId);
+    const key = `${hovered === null ? '-' : `${hovered.series}:${hovered.data}`}|${selected
+      .map((mark) => `${mark.series}:${mark.data}`)
+      .join(',')}`;
+    const cached = this.#emphasis.get(chartId);
+    if (cached !== undefined && cached.key === key && cached.base === layout.chart) {
+      return cached.chart;
+    }
+    const chart = emphasiseChart(layout.chart, { hovered, selected });
+    this.#emphasis.set(chartId, { key, base: layout.chart, chart });
+    return chart;
+  }
+
+  /** The piece of a chart at a point in the box's own coordinates. */
+  chartMarkAt(
+    tableId: EntityId,
+    localX: number,
+    localY: number,
+  ): { readonly series: number; readonly data: number } | null {
+    const entity = this.core.world.entities.get(tableId);
+    const layout = this.#chartLayouts.get(tableId);
+    if (entity === undefined || !isTableEntity(entity) || layout === undefined) return null;
+    const box = chartBoxLayout(
+      entity.transform.width,
+      entity.transform.height,
+      DEFAULT_TABLE_THEME,
+      entity.mode === 'editing',
+    );
+    // Into the chart's own coordinates: the box holds a title bar, padding, and
+    // possibly a column of controls before the picture starts.
+    return chartMarkAt(layout.chart, localX - box.chart.x, localY - box.chart.y);
+  }
+
+  /** The figure a chart would be exported as, or `null` before it has drawn. */
+  chartFigure(entity: TableEntity & { readonly source: ChartSource }): ChartFigure | null {
+    const state = this.#charts.get(entity.id);
+    const layout = this.#chartLayouts.get(entity.id);
+    if (state?.status !== 'ready' || layout === undefined) return null;
+    const theme = this.chartTheme;
+    return {
+      title: tableDisplayName(entity),
+      note: chartDataNote(state.data),
+      chart: layout.chart,
+      width: layout.width,
+      height: layout.height,
+      background: theme.background,
+      text: theme.text,
+      fontFamily: layout.fontFamily,
+      fontSize: theme.fontSize,
+    };
+  }
+
+  async #encodeChart(figure: ChartFigure, format: ChartExportFormat): Promise<Uint8Array> {
+    if (format === 'pdf') return chartFigureToPdf(figure);
+    const inner = this.#options.chartSurface?.toSvg();
+    if (inner === null || inner === undefined) {
+      throw new Error('There is no chart to export yet');
+    }
+    const svg = chartFigureToSvg(figure, inner);
+    if (format === 'svg') return new TextEncoder().encode(svg);
+    // A PNG is that SVG, rasterised by whatever can rasterise — which is the
+    // browser, and therefore the shell's business rather than the workspace's.
+    const rasterise = this.#options.rasteriseSvg;
+    if (rasterise === undefined) throw new Error('This build cannot write a PNG');
+    return rasterise(svg, figureLayout(figure));
+  }
+
+  /** Query boxes currently showing their editor, in document order. */
+  editingQueryTables(): readonly EntityId[] {
+    const editing: EntityId[] = [];
+    for (const entity of this.core.world.entities.values()) {
+      if (isTableEntity(entity) && isQueryTable(entity) && entity.mode === 'editing') {
+        editing.push(entity.id);
+      }
+    }
+    return editing;
+  }
+
+  /** True once a query box has run at least once and has rows to go back to. */
+  hasQueryResult(tableId: EntityId): boolean {
+    return this.#views.has(tableId);
+  }
+
+  /** The statement as it is currently being typed. */
+  queryDraft(tableId: EntityId): string {
+    const existing = this.#drafts.get(tableId);
+    if (existing !== undefined) return existing;
+    const entity = this.core.world.entities.get(tableId);
+    return entity !== undefined && isTableEntity(entity) && isQueryTable(entity)
+      ? entity.source.sql
+      : '';
+  }
+
+  /**
+   * Records a keystroke. Deliberately *not* a command: a query written one
+   * character at a time would otherwise leave one history entry per character.
+   */
+  setQueryDraft(tableId: EntityId, sql: string): void {
+    this.#drafts.set(tableId, sql);
+  }
+
+  /**
+   * Runs the draft and turns the box into its result.
+   *
+   * The columns are not known until the statement has run, so the entity is
+   * reshaped from the result set the query produced — this is the one kind of
+   * table whose schema is discovered rather than described.
+   *
+   * Everything built on top of this box is then run again. A box holds one step
+   * and a reference to its input, so changing this step changes what the steps
+   * above it read: leaving them as they were would leave them showing rows that
+   * no longer come from anywhere.
+   */
+  async runQuery(tableId: EntityId, sql?: string): Promise<void> {
+    const statement = (sql ?? this.queryDraft(tableId)).trim();
+    const entity = this.core.world.entities.get(tableId);
+    if (entity === undefined || !isTableEntity(entity) || !isQueryTable(entity)) {
+      throw new Error(`No query table with id ${tableId}`);
+    }
+    if (statement === '') throw new Error('Enter a statement to run');
+
+    const committed = this.core.dispatch({ type: 'SetTableQuery', tableId, sql: statement });
+    if (!committed.ok) throw new Error(committed.error.message);
+    this.#drafts.set(tableId, statement);
+
+    // The box as the commit above left it. Built rather than read back, because
+    // reading it back would need a check for something that cannot have happened.
+    await this.#executeQuery({ ...entity, source: { ...entity.source, sql: statement } });
+    await this.#refreshDerived(tableId);
+  }
+
+  /**
+   * The statement a box actually sends: its own step, with every step behind it.
+   *
+   * Exposed so that the composed SQL can be seen — by a test, by an agent asking
+   * what a box runs, and by anyone wondering what `derived_table` stood for.
+   */
+  /**
+   * What a box's statement should read from: a name where there is one.
+   *
+   * The same choice `defaultQueryFor` makes when it seeds an editor, asked as a
+   * question — because anything else writing a statement for this box, an agent
+   * included, has to make it too, and `derived_table` where a relation has a
+   * name is a step of indirection for nothing.
+   */
+  readsFrom(tableId: EntityId): string {
+    const entity = this.core.world.entities.get(tableId);
+    const parentId =
+      entity !== undefined && isTableEntity(entity) ? derivedFromOf(entity) : undefined;
+    const parent = parentId === undefined ? undefined : this.core.world.entities.get(parentId);
+    if (parent === undefined || !isTableEntity(parent) || parent.source.kind !== 'relation') {
+      return DERIVED_TABLE;
+    }
+    return qualifiedName(parent.source.schema, parent.source.table);
+  }
+
+  /**
+   * Renames a box, so a canvas of them can be told apart.
+   *
+   * A command like any other, because a name is authored content: it belongs in
+   * history beside the statement it titles.
+   */
+  setTableLabel(tableId: EntityId, label: string): void {
+    const applied = this.core.dispatch({ type: 'SetTableLabel', tableId, label });
+    if (!applied.ok) throw new Error(applied.error.message);
+  }
+
+  /**
+   * Waits for a window of rows to be in the cache.
+   *
+   * A table is a window onto a result set and the rows behind it arrive when
+   * something asks for them — which, on a canvas, is the frame loop as it draws.
+   * Anything that is not the frame loop has to ask, and then wait: that is what
+   * this is. It is the difference between reading a result and reading whatever
+   * the renderer happened to have fetched.
+   */
+  async ensureRows(tableId: EntityId, from: number, count: number): Promise<boolean> {
+    const view = this.#views.get(tableId);
+    if (view === undefined || count <= 0) return false;
+    const first = Math.max(0, Math.trunc(from));
+    if (view.controller.isRangeLoaded(first, count)) return true;
+    // Asked for as a viewport, which is the one way blocks are requested: the
+    // frame loop will set its own back the moment it draws, and the blocks
+    // already in flight land in the cache either way.
+    view.controller.setViewport({
+      firstVisibleRow: first,
+      visibleRowCount: count,
+      velocityY: 0,
+    });
+    const deadline = Date.now() + (this.#options.rowWaitMs ?? ROW_WAIT_MS);
+    while (Date.now() < deadline) {
+      if (view.controller.isRangeLoaded(first, count)) return true;
+      await new Promise((resolve) => setTimeout(resolve, ROW_POLL_MS));
+    }
+    return view.controller.isRangeLoaded(first, count);
+  }
+
+  /**
+   * What the canvas actually drew, for whoever cannot see it.
+   *
+   * Read from the layout the renderer last asked for rather than laid out again:
+   * these are the real numbers, measured with the real glyph atlas, at the size
+   * the box really is. Which is the only way this is worth having — an
+   * approximation would report overflow that is not there and miss the overflow
+   * that is.
+   *
+   * A written option can put a label anywhere, including off the edge. Nothing
+   * here can say whether a chart is *good*, but it can say whether what it drew
+   * fits, which is the difference between iterating and guessing.
+   */
+  chartGeometry(tableId: EntityId): ChartGeometry | null {
+    const laid = this.#chartLayouts.get(tableId);
+    if (laid === undefined) return null;
+    const { width, height, chart } = laid;
+    const corners = chart.polygons.flatMap((polygon) => polygon.corners);
+    const xs = [
+      ...corners.filter((_, index) => index % 2 === 0),
+      ...chart.texts.flatMap((run) => [run.x, run.x + run.width]),
+    ];
+    const ys = [
+      ...corners.filter((_, index) => index % 2 === 1),
+      ...chart.texts.flatMap((run) => [run.y, run.y + run.height]),
+    ];
+    const past = (value: number, limit: number): boolean => value < -0.5 || value > limit + 0.5;
+    return {
+      width,
+      height,
+      polygons: chart.polygons.length,
+      texts: chart.texts.length,
+      bounds:
+        xs.length === 0
+          ? null
+          : {
+              x: Math.min(...xs),
+              y: Math.min(...ys),
+              width: Math.max(...xs) - Math.min(...xs),
+              height: Math.max(...ys) - Math.min(...ys),
+            },
+      // Named, because "a label is clipped" is only actionable if you know which.
+      clipped: chart.texts
+        .filter(
+          (run) =>
+            past(run.x, width) ||
+            past(run.x + run.width, width) ||
+            past(run.y, height) ||
+            past(run.y + run.height, height),
+        )
+        .map((run) => run.text),
+    };
+  }
+
+  composedQuery(tableId: EntityId): string {
+    // A name, not a statement: the reference is swapped for an identifier so it
+    // stays valid wherever the user put it.
+    const composed = composeQuery(this.core.world, tableId, (source) =>
+      qualifiedName(source.schema, source.table),
+    );
+    if (!composed.ok) throw new Error(composed.error.message);
+    return composed.value;
+  }
+
+  /**
+   * Sends the composed statement and reshapes the box around what came back.
+   *
+   * Takes the box rather than its id: every caller has already established that
+   * it is one, and a second check here would be a check nothing can fail.
+   */
+  async #executeQuery(box: QueryStep): Promise<void> {
+    const tableId = box.id;
+    const statement = this.composedQuery(tableId);
+
+    // A previous result set for this box is replaced, not accumulated.
+    const existing = this.#views.get(tableId);
+    if (existing !== undefined) {
+      this.#views.delete(tableId);
+      await existing.close().catch(() => undefined);
+    }
+
+    const spec: TableOpenSpec = {
+      // A statement has no schema or table of its own; these only label the
+      // result set, and the statement itself decides what it reads.
+      schema: QUERY_SCHEMA_LABEL,
+      table: box.source.label,
+      sql: statement,
+    };
+    // A query's shape is only knowable from the result it produced.
+    const { schema } = await this.#attachView(tableId, QUERY_BLOCK_COLUMNS, spec);
+    const columns = buildTableColumns(
+      this.core.ids,
+      schema.columns.map((column) => ({ name: column.name, type: column.type })),
+    );
+    const reshaped = this.core.dispatch({ type: 'SetTableColumns', tableId, columns });
+    if (!reshaped.ok) throw new Error(reshaped.error.message);
+
+    const shown = this.core.dispatch({ type: 'SetTableMode', tableId, mode: 'result' });
+    if (!shown.ok) throw new Error(shown.error.message);
+    this.#resizeToColumns(tableId, columns);
+    this.#fitToRows(tableId);
+    this.#retitleQueryBinding(tableId, box.source.sql);
+  }
+
+  /**
+   * Runs everything built on top of a box again, nearest first.
+   *
+   * Only the boxes that have a result: one still being written has nothing to
+   * bring up to date. A step that no longer works against the new shape — a
+   * column it named has gone — is reported by name rather than silently left
+   * showing the old rows, and the others are still refreshed.
+   */
+  async #refreshDerived(tableId: EntityId): Promise<void> {
+    const failures: string[] = [];
+    for (const derived of derivedTreeOf(this.core.world, tableId)) {
+      // A chart is refreshed by re-reading its rows; a query box by running its
+      // statement again. Both are things built on the table that changed.
+      const refresh = isChartTable(derived)
+        ? this.#loadChart(derived.id, derived.source.derivedFrom, derived.source.spec)
+        : isQueryTable(derived) && this.#views.has(derived.id)
+          ? this.#executeQuery(derived)
+          : null;
+      if (refresh === null) continue;
+      try {
+        await refresh;
+      } catch (error) {
+        failures.push(
+          `${tableDisplayName(derived)}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+    if (failures.length > 0) {
+      throw new Error(
+        `Could not refresh ${failures.length === 1 ? 'a view' : 'views'} built on this one — ${failures.join('; ')}`,
+      );
+    }
+  }
+
+  /**
+   * Keeps the line's label in step with the statement behind it. A connector
+   * that describes a query the box no longer runs is worse than no label.
+   */
+  #retitleQueryBinding(tableId: EntityId, statement: string): void {
+    for (const binding of this.core.world.bindings.values()) {
+      if (binding.toId !== tableId || binding.meta?.['kind'] !== 'query') continue;
+      this.core.dispatch({
+        type: 'SetBindingLabel',
+        bindingId: binding.id,
+        label: summariseSql(statement),
+      });
+    }
+  }
+
+  /** Turns a result back into its editor so the statement can be refined. */
+  editQuery(tableId: EntityId): void {
+    const changed = this.core.dispatch({ type: 'SetTableMode', tableId, mode: 'editing' });
+    if (!changed.ok) throw new Error(changed.error.message);
+  }
+
+  /**
+   * Leaves the editor without running anything, which is what abandoning an
+   * edit means. Only possible once there is a result to go back to.
+   */
+  showQueryResult(tableId: EntityId): void {
+    if (!this.hasQueryResult(tableId)) return;
+    const changed = this.core.dispatch({ type: 'SetTableMode', tableId, mode: 'result' });
+    if (!changed.ok) throw new Error(changed.error.message);
+  }
+
+  /** Widens a query box to its new columns, without ever shrinking below the editor. */
+  #resizeToColumns(tableId: EntityId, columns: readonly TableColumnView[]): void {
+    const entity = this.core.world.entities.get(tableId);
+    if (entity === undefined || !isTableEntity(entity)) return;
+    const width = Math.min(MAX_QUERY_WIDTH, Math.max(EDITOR_WIDTH, tableContentWidth(columns)));
+    if (width === entity.transform.width) return;
+    this.core.dispatch({
+      type: 'ResizeEntity',
+      id: tableId,
+      width,
+      height: entity.transform.height,
+    });
   }
 
   /** Reopens every result set after a reconnect. */
@@ -343,6 +2044,11 @@ export class Workspace implements TableViewProvider, InteractionHost {
       if (entity === undefined || !isTableEntity(entity)) continue;
       view.update(entity, deltaMs, now);
     }
+    // Derived every frame from the selection rather than fired from whatever
+    // changed it, which is the same reason bindings are: there is one place that
+    // decides what should be loaded, and it cannot be bypassed by a new gesture.
+    this.syncColumnSummaries();
+    this.syncChartRows();
   }
 
   // --- TableViewProvider -------------------------------------------------
@@ -356,6 +2062,79 @@ export class Workspace implements TableViewProvider, InteractionHost {
       rowCount: view.rowCount,
       data: { cell: (row, column): ReturnType<TableView['cell']> => view.cell(row, column) },
     };
+  }
+
+  /**
+   * Lays this box's chart out for the body it has to fill.
+   *
+   * Cached by size and specification, because laying a chart out is real work and
+   * a frame in which nothing changed should cost nothing. Everything the box has
+   * to admit about the rows it read — that it read only the first twenty
+   * thousand, that it gathered the long tail of categories into one — is passed
+   * alongside as a note, because a picture cannot say that about itself.
+   */
+  chartFor(
+    entity: TableEntity,
+    width: number,
+    height: number,
+    metrics: ChartMetrics,
+  ): ChartView | undefined {
+    if (!isChartTable(entity)) return undefined;
+    const state = this.#charts.get(entity.id);
+    // The draft, so every control redraws the picture the moment it moves. The
+    // committed specification is what a *closed* box draws, and while the box is
+    // open the draft is the closer truth.
+    const spec = this.chartDraft(entity.id) ?? entity.source.spec;
+    if (state === undefined || state.status !== 'ready') {
+      return {
+        chart: EMPTY_CHART_DRAW_LIST,
+        note: chartNoteFor(state),
+        ...(state?.status === 'failed' ? { caution: true } : {}),
+      };
+    }
+    const surface = this.#options.chartSurface;
+    if (surface === undefined) return undefined;
+    // Keyed by the size and by everything that decides how it looks, so a frame
+    // in which nothing changed costs nothing, and a colour changed without the
+    // rows changing still redraws.
+    const key = `${Math.round(width)}x${Math.round(height)}:${JSON.stringify(spec)}`;
+    const cached = this.#chartLayouts.get(entity.id);
+    if (cached === undefined || cached.key !== key || cached.data !== state.data) {
+      surface.update({
+        spec,
+        data: state.data,
+        width,
+        height,
+        theme: this.chartTheme,
+        typography: metrics,
+      });
+      this.#chartLayouts.set(entity.id, {
+        key,
+        data: state.data,
+        chart: surface.draw(),
+        width,
+        height,
+        fontFamily: metrics.fontFamily,
+      });
+    }
+    const data = state.data;
+    return {
+      chart: this.#emphasised(entity.id),
+      note: chartDataNote(data),
+      // A caveat only when there is one: a plain row count in the colour
+      // reserved for warnings would cry wolf.
+      ...(data.basis === 'sampled' || data.gathered !== undefined ? { caution: true } : {}),
+    };
+  }
+
+  columnSummariesFor(entity: TableEntity): ReadonlyMap<EntityId, SummaryPanelView> | undefined {
+    const views = new Map<EntityId, SummaryPanelView>();
+    for (const column of entity.columns) {
+      const state = this.#summaries.get(column.id);
+      if (state === undefined) continue;
+      views.set(column.id, summaryPanelView(state));
+    }
+    return views.size === 0 ? undefined : views;
   }
 
   // --- InteractionHost ---------------------------------------------------

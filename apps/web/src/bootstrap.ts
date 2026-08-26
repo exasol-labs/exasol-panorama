@@ -2,7 +2,9 @@ import { DataWorkerClient, createInProcessEndpointPair } from '@panorama/worker'
 import type { WorkerEndpoint } from '@panorama/worker';
 import { Workspace } from './panorama/workspace.js';
 import { DEMO_SCHEMA, demoSchema } from './panorama/demo.js';
+import { openSaveSink, rasteriseSvg } from './panorama/save-file.js';
 import { startDataWorker } from './panorama/start-data-worker.js';
+import { EChartsSurface } from '@panorama/chart-echarts';
 
 /**
  * Wiring.
@@ -37,6 +39,14 @@ export const createWorkspace = (options: BootstrapOptions = {}): Workspace =>
   new Workspace({
     client: new DataWorkerClient(createWorkerEndpoint(options)),
     resolveSchema: (schema, table) => (schema === DEMO_SCHEMA ? demoSchema(table) : undefined),
+    // Wired here rather than in the shell: choosing where a file goes is a
+    // browser dialog, and the workspace should not know that a DOM exists.
+    openExportSink: openSaveSink,
+    // The chart library enters here and nowhere else. Everything upstream —
+    // core, the renderer, the workspace — knows only the interface.
+    chartSurface: new EChartsSurface(),
+    // Rasterising is the browser's job: it has the fonts and the decoder.
+    rasteriseSvg,
   });
 
 /**

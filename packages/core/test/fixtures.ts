@@ -30,7 +30,7 @@ export const sampleColumns = [
 
 export const makeTable = (ids: IdFactory, overrides: Partial<TableEntitySpec> = {}): TableEntity =>
   buildTableEntity(ids, {
-    source: { connectionId: TEST_CONNECTION, schema: 'SALES', table: 'ORDERS' },
+    source: { kind: 'relation', connectionId: TEST_CONNECTION, schema: 'SALES', table: 'ORDERS' },
     columns: sampleColumns,
     ...overrides,
   });

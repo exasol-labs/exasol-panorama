@@ -73,7 +73,7 @@ describe('buildTableEntity', () => {
       type: dataType('varchar', 'VARCHAR(100)', { size: 100 }),
     }));
     const table = buildTableEntity(testIds(), {
-      source: { connectionId: TEST_CONNECTION, schema: 'S', table: 'WIDE' },
+      source: { kind: 'relation', connectionId: TEST_CONNECTION, schema: 'S', table: 'WIDE' },
       columns,
     });
     expect(table.transform.width).toBe(1100);
@@ -81,7 +81,7 @@ describe('buildTableEntity', () => {
 
   it('excludes hidden columns from the default width', () => {
     const table = buildTableEntity(testIds(), {
-      source: { connectionId: TEST_CONNECTION, schema: 'S', table: 'T' },
+      source: { kind: 'relation', connectionId: TEST_CONNECTION, schema: 'S', table: 'T' },
       columns: [
         { name: 'A', type: dataType('decimal', 'DECIMAL(9,0)'), width: 100 },
         { name: 'B', type: dataType('decimal', 'DECIMAL(9,0)'), width: 100, visible: false },
@@ -92,7 +92,7 @@ describe('buildTableEntity', () => {
 
   it('honours explicit position, size, view and row-count overrides', () => {
     const table = buildTableEntity(testIds(), {
-      source: { connectionId: TEST_CONNECTION, schema: 'S', table: 'T' },
+      source: { kind: 'relation', connectionId: TEST_CONNECTION, schema: 'S', table: 'T' },
       columns: sampleColumns,
       position: { x: 10, y: 20, z: 30 },
       size: { width: 640, height: 480 },
@@ -106,7 +106,7 @@ describe('buildTableEntity', () => {
 
   it('derives height from the preferred visible row count', () => {
     const table = buildTableEntity(testIds(), {
-      source: { connectionId: TEST_CONNECTION, schema: 'S', table: 'T' },
+      source: { kind: 'relation', connectionId: TEST_CONNECTION, schema: 'S', table: 'T' },
       columns: sampleColumns,
       preferredVisibleRows: 5,
     });

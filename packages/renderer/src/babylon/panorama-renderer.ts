@@ -1,8 +1,17 @@
-import type { EntityId, PanoramaCore, TableEntity, TableColumnView } from '@panorama/core';
+import type {
+  EntityActionId,
+  EntityId,
+  PanoramaCore,
+  TableEntity,
+  TableColumnView,
+} from '@panorama/core';
 import {
   ROW_NUMBER_GUTTER_WIDTH,
+  expandedActionOf,
   isBindingRevealed,
+  connectorObstacles,
   isEntityActivated,
+  isTableEntity,
   rectsIntersect,
   resolveBinding,
 } from '@panorama/core';
@@ -11,17 +20,24 @@ import { computeColumnLayout } from '@panorama/table';
 import type { AbstractEngine } from '@babylonjs/core/Engines/abstractEngine.js';
 import type { WebXRDefaultExperience } from '@babylonjs/core/XR/webXRDefaultExperience.js';
 import { CameraController } from '../camera/camera-controller.js';
+import { XrStage } from './xr-stage.js';
+
+/** Panorama is a seated/standing panel, not a room-scale experience. */
+const XR_SESSION_MODE = 'immersive-vr';
 import type { LodThresholds } from '../table/lod.js';
 import { lodForScale } from '../table/lod.js';
 import type { TableDataView } from '../table/table-draw.js';
-import { buildTableDrawList } from '../table/table-draw.js';
+import type { SummaryPanelView } from '../table/summary-panel.js';
+import { SUMMARY_PANEL_GAP, SUMMARY_PANEL_MAX_HEIGHT } from '../table/summary-panel.js';
+import { buildTableDrawList, chartBoxLayout } from '../table/table-draw.js';
 import { buildConnectorDrawList } from '../table/connector.js';
 import { previewEntity } from '../input/drag-preview.js';
 import { AtlasTextRenderer } from '../text/text-renderer.js';
 import type { TextSystem, TextSystemFactory } from './text-system.js';
 import { createCanvasTextSystem } from './text-system.js';
 import type { Rgba, TableTheme } from '../theme.js';
-import type { TextRun } from '../table/draw-list.js';
+import type { ChartDrawList, ChartMetrics, ClipRect, TextRun } from '../table/draw-list.js';
+import { DEFAULT_FONT_FAMILY } from '../text/canvas-rasterizer.js';
 import { DEFAULT_TABLE_THEME } from '../theme.js';
 import { PanoramaScene, toBabylonY } from './scene.js';
 import { QuadBatch } from './quad-batch.js';
@@ -47,6 +63,36 @@ export interface TableViewModel {
 export interface TableViewProvider {
   /** View state for a table, or `null` when its data session is not open yet. */
   viewFor(entity: TableEntity): TableViewModel | null;
+  /**
+   * Halo actions this table cannot perform. A capability of whatever backs the
+   * table rather than of the table itself, which is why it comes from the host
+   * and is not recorded on the entity.
+   */
+  disabledActionsFor?(entity: TableEntity): readonly EntityActionId[];
+  /**
+   * Statistics for this table's picked-out columns, keyed by column-view id.
+   *
+   * From the host because a summary is an answer from the data source, arriving
+   * over a worker boundary long after the click that asked for it.
+   */
+  columnSummariesFor?(entity: TableEntity): ReadonlyMap<EntityId, SummaryPanelView> | undefined;
+  /**
+   * The chart this box draws, laid out for the given body size, and anything it
+   * needs to admit about the rows it read.
+   */
+  chartFor?(
+    entity: TableEntity,
+    width: number,
+    height: number,
+    metrics: ChartMetrics,
+  ): ChartView | undefined;
+}
+
+export interface ChartView {
+  readonly chart: ChartDrawList;
+  readonly note?: string;
+  /** True when the note is a caveat rather than a statement of fact. */
+  readonly caution?: boolean;
 }
 
 export interface PanoramaRendererOptions {
@@ -80,6 +126,10 @@ export class PanoramaRenderer {
   readonly #core: PanoramaCore;
   readonly #options: PanoramaRendererOptions;
   readonly #views: TableViewProvider;
+  readonly #stage: XrStage;
+  #xr: WebXRDefaultExperience | null = null;
+  /** `null` until support has been probed; cached thereafter. */
+  #xrSupported: boolean | null = null;
   readonly #solid: QuadBatch;
   readonly #glyphs: QuadBatch;
   readonly #atlas: import('../text/glyph-atlas.js').GlyphAtlas;
@@ -113,6 +163,7 @@ export class PanoramaRenderer {
     this.#atlas = this.#textSystem.atlas;
     this.text = new AtlasTextRenderer(this.#atlas);
 
+    this.#stage = new XrStage(this.scene.scene);
     this.#solid = new QuadBatch({ name: 'panorama-solid', scene: this.scene.scene });
     this.#solid.setMaterial(createSolidMaterial(this.scene.scene));
     this.#glyphs = new QuadBatch({
@@ -123,6 +174,10 @@ export class PanoramaRenderer {
     this.#glyphs.setMaterial(this.#textSystem.material);
     // Glyphs draw after every solid quad, in one extra draw call.
     this.#glyphs.mesh.renderingGroupId = 1;
+    // Everything drawn hangs from the stage, so entering XR is one transform
+    // rather than a second copy of the geometry.
+    this.#solid.mesh.parent = this.#stage.root;
+    this.#glyphs.mesh.parent = this.#stage.root;
   }
 
   get stats(): FrameStats {
@@ -155,6 +210,79 @@ export class PanoramaRenderer {
       session.pointer?.world ?? null,
       this.#core.constraints,
     );
+  }
+
+  #disabledActions(entity: TableEntity): { disabledActions?: readonly EntityActionId[] } {
+    const disabled = this.#views.disabledActionsFor?.(entity);
+    return disabled === undefined || disabled.length === 0 ? {} : { disabledActions: disabled };
+  }
+
+  /**
+   * Every other table, in this table's coordinates.
+   *
+   * Only asked for when this table has a panel to place, so the cost lands on the
+   * one table with columns picked out rather than on every frame of every table.
+   */
+  #neighbours(entity: TableEntity): readonly ClipRect[] {
+    const rects: ClipRect[] = [];
+    for (const other of this.#core.world.entities.values()) {
+      if (other.id === entity.id || !isTableEntity(other)) continue;
+      rects.push({
+        x: other.transform.x - entity.transform.x,
+        y: other.transform.y - entity.transform.y,
+        width: other.transform.width,
+        height: other.transform.height,
+      });
+    }
+    return rects;
+  }
+
+  /**
+   * Asks the host to lay this box's chart out for the body it has to fill.
+   *
+   * The size is passed in rather than read back, because the box may be being
+   * dragged or resized and the chart has to be laid out for the rectangle that is
+   * about to be drawn, not the one that was committed.
+   */
+  readonly #chartMetrics: ChartMetrics = {
+    measureText: (text, fontSize, bold): number => this.text.measure(text, fontSize, bold),
+    fontFamily: DEFAULT_FONT_FAMILY,
+  };
+
+  #chart(entity: TableEntity): {
+    chart?: ChartDrawList;
+    chartNote?: string;
+    chartNoteCaution?: boolean;
+  } {
+    if (this.#views.chartFor === undefined || entity.source.kind !== 'chart') return {};
+    // The same split the drawing does, so the picture is laid out for the exact
+    // rectangle it ends up in — beside the controls while they are open, and the
+    // whole body once they are not.
+    const box = chartBoxLayout(
+      entity.transform.width,
+      entity.transform.height,
+      this.theme,
+      entity.mode === 'editing',
+    );
+    const view = this.#views.chartFor(
+      entity,
+      Math.max(1, box.chart.width),
+      Math.max(1, box.chart.height),
+      this.#chartMetrics,
+    );
+    if (view === undefined) return {};
+    return {
+      chart: view.chart,
+      ...(view.note === undefined ? {} : { chartNote: view.note }),
+      ...(view.caution === true ? { chartNoteCaution: true } : {}),
+    };
+  }
+
+  #columnSummaries(entity: TableEntity): {
+    columnSummaries?: ReadonlyMap<EntityId, SummaryPanelView>;
+  } {
+    const summaries = this.#views.columnSummariesFor?.(entity);
+    return summaries === undefined || summaries.size === 0 ? {} : { columnSummaries: summaries };
   }
 
   #hoveredRow(entity: TableEntity, view: TableViewModel | null): number | null {
@@ -193,6 +321,10 @@ export class PanoramaRenderer {
         resolved,
         theme: this.theme,
         scale: this.camera.scale,
+        // Every other table: the line goes round them where it can, because a
+        // line that passes behind one does not read as a line behind a table but
+        // as a line that stops and starts again somewhere else.
+        obstacles: connectorObstacles(world, binding, transformOf),
         highlighted:
           isEntityActivated(this.#core.session, binding.fromId) ||
           isEntityActivated(this.#core.session, binding.toId),
@@ -301,11 +433,18 @@ export class PanoramaRenderer {
       const margin = isEntityActivated(session, entity.id)
         ? (this.theme.haloButtonSize + this.theme.haloOffset) / Math.max(0.05, this.camera.scale)
         : 0;
+      // A statistics panel hangs off the table, below it or above it, so a table
+      // just past the edge of the view can still have something on screen.
+      const panelMargin = entity.columns.some((column) =>
+        session.selectedColumns.includes(column.id),
+      )
+        ? SUMMARY_PANEL_GAP + SUMMARY_PANEL_MAX_HEIGHT
+        : 0;
       const bounds = {
         x: entity.transform.x,
-        y: entity.transform.y - margin,
+        y: entity.transform.y - margin - panelMargin,
         width: entity.transform.width,
-        height: entity.transform.height + margin,
+        height: entity.transform.height + margin + panelMargin * 2,
       };
       if (!rectsIntersect(bounds, visibleRect)) continue;
 
@@ -326,10 +465,16 @@ export class PanoramaRenderer {
         gutterWidth: this.#gutterWidth,
         showHalo: isEntityActivated(session, entity.id),
         scale: this.camera.scale,
+        ...this.#disabledActions(entity),
         hoveredAction:
           session.hoveredAction?.entityId === entity.id ? session.hoveredAction.action : null,
         pressedAction:
           session.pressedAction?.entityId === entity.id ? session.pressedAction.action : null,
+        expandedAction: expandedActionOf(session, entity.id),
+        selectedColumns: session.selectedColumns,
+        ...this.#columnSummaries(entity),
+        ...this.#chart(entity),
+        ...(panelMargin === 0 ? {} : { panelObstacles: this.#neighbours(entity) }),
       });
 
       const originX = entity.transform.x;
@@ -344,6 +489,24 @@ export class PanoramaRenderer {
           quad.height,
           quad.color,
         );
+      }
+      // After the quads, never before: a chart's own marks are polygons and the
+      // body background behind them is a quad, so drawing them first would paint
+      // the background straight over the picture.
+      for (const polygon of drawList.polygons) {
+        this.#pushWorldPolygon({
+          corners: [
+            originX + (polygon.corners[0] as number),
+            originY + (polygon.corners[1] as number),
+            originX + (polygon.corners[2] as number),
+            originY + (polygon.corners[3] as number),
+            originX + (polygon.corners[4] as number),
+            originY + (polygon.corners[5] as number),
+            originX + (polygon.corners[6] as number),
+            originY + (polygon.corners[7] as number),
+          ],
+          color: polygon.color,
+        });
       }
       for (const run of drawList.texts) {
         for (const glyph of this.text.layout(run).quads) {
@@ -431,23 +594,94 @@ export class PanoramaRenderer {
    * renderer, viewed through an XR camera. Interaction is rudimentary by
    * design; what is being validated is that nothing depends on the DOM.
    */
-  async enterXR(): Promise<WebXRDefaultExperience | null> {
-    const { WebXRDefaultExperience } = await import('@babylonjs/core/XR/webXRDefaultExperience.js');
+  /**
+   * Builds the XR experience and reports whether immersive VR is on offer.
+   *
+   * Separate from entering, and worth calling early, because `requestSession`
+   * needs transient user activation: loading the XR chunk and probing support
+   * inside the button's own click can outlast the activation window and have
+   * the session refused. Warmed up here, the click is a single call.
+   *
+   * The answer is cached — support does not change while the page is open.
+   */
+  async prepareXR(): Promise<boolean> {
+    const known = this.#xrSupported;
+    if (known !== null) return known;
     try {
+      const { WebXRDefaultExperience } =
+        await import('@babylonjs/core/XR/webXRDefaultExperience.js');
+      const { WebXRState } = await import('@babylonjs/core/XR/webXRTypes.js');
       const experience = await WebXRDefaultExperience.CreateAsync(this.scene.scene, {
+        // Panorama drives its own entry, so no injected HTML button.
         disableDefaultUI: true,
+        // The panel is a fixed screen in front of the viewer, not a place to
+        // walk around in.
         disableTeleportation: true,
+        // Every quad is `isPickable = false` — the batches are one mesh each,
+        // so a ray could only ever hit "the table layer", never a cell. Left
+        // on, these features also drag in optional modules that are not
+        // registered under deep ES imports, and Babylon fails the whole
+        // initialisation with "feature not found".
+        disablePointerSelection: true,
+        disableNearInteraction: true,
+        disableHandTracking: true,
       });
+      const base = experience.baseExperience;
       // Babylon resolves even where WebXR is unavailable, leaving no base
-      // experience behind; report that as "not entered".
-      return experience.baseExperience === undefined ? null : experience;
+      // experience behind; report that as "not on offer".
+      if (base === undefined) {
+        this.#xrSupported = false;
+        return false;
+      }
+      const supported = await base.sessionManager.isSessionSupportedAsync(XR_SESSION_MODE);
+      this.#xrSupported = supported;
+      if (!supported) return false;
+      // Taking the headset off puts the world back on the desk at its own size.
+      base.onStateChangedObservable.add((state) => {
+        if (state === WebXRState.NOT_IN_XR) this.#stage.reset();
+      });
+      this.#xr = experience;
+      return true;
     } catch {
+      this.#xrSupported = false;
+      return false;
+    }
+  }
+
+  /**
+   * Enters immersive VR.
+   *
+   * Creating the experience is not entering it — Babylon builds the helper and
+   * waits to be asked — so this asks, having first shrunk the world to human
+   * scale. Resolves to `null` where immersive VR is not on offer.
+   */
+  async enterXR(): Promise<WebXRDefaultExperience | null> {
+    if (!(await this.prepareXR())) return null;
+    const experience = this.#xr;
+    if (experience?.baseExperience === undefined) return null;
+    // The camera keeps its place: whatever was on the canvas is what stands in
+    // front of the viewer in the headset.
+    const view = this.camera.visibleWorldRect();
+    this.#stage.place({ x: view.x + view.width / 2, y: view.y + view.height / 2 });
+    try {
+      // `local-floor` puts the origin on the floor, which is what the panel's
+      // height is measured from.
+      await experience.baseExperience.enterXRAsync(XR_SESSION_MODE, 'local-floor');
+    } catch {
+      this.#stage.reset();
       return null;
     }
+    return experience;
+  }
+
+  /** True while the world is shrunk onto the XR panel. */
+  get inXR(): boolean {
+    return this.#stage.placed;
   }
 
   dispose(): void {
     this.stop();
+    this.#stage.dispose();
     this.#solid.dispose();
     this.#glyphs.dispose();
     this.#textSystem.dispose();

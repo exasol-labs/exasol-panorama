@@ -1,7 +1,13 @@
 import type { ColumnDataType, ForeignKeyReference } from './data-types.js';
-import type { TableColumnView, TableEntity, TableSource, TableViewSettings } from './entities.js';
+import type {
+  TableColumnView,
+  TableEntity,
+  TableMode,
+  TableSource,
+  TableViewSettings,
+} from './entities.js';
 import { clamp, type Size2, type Vec3 } from './geometry.js';
-import type { IdFactory } from './ids.js';
+import type { EntityId, IdFactory } from './ids.js';
 
 /** Layout defaults for a freshly opened table. Deliberately conventional. */
 export const DEFAULT_TABLE_VIEW: TableViewSettings = Object.freeze({
@@ -62,6 +68,8 @@ export interface TableColumnSpec {
 
 export interface TableEntitySpec {
   readonly source: TableSource;
+  readonly mode?: TableMode;
+  readonly id?: EntityId;
   readonly columns: readonly TableColumnSpec[];
   readonly position?: Vec3;
   readonly size?: Size2;
@@ -78,9 +86,16 @@ const DEFAULT_MAX_WIDTH = 1100;
  * column view. Column identity is a *view* identity: it survives resizing and
  * reordering and is what commands address.
  */
-export const buildTableEntity = (ids: IdFactory, spec: TableEntitySpec): TableEntity => {
-  const view: TableViewSettings = { ...DEFAULT_TABLE_VIEW, ...spec.view };
-  const columns: TableColumnView[] = spec.columns.map((column) => ({
+/**
+ * Builds the column views for a table. Separate from `buildTableEntity`
+ * because a query table replaces its columns whenever its statement changes,
+ * and must produce them exactly the same way.
+ */
+export const buildTableColumns = (
+  ids: IdFactory,
+  specs: readonly TableColumnSpec[],
+): TableColumnView[] =>
+  specs.map((column) => ({
     id: ids.entity('column'),
     sourceColumn: {
       name: column.name,
@@ -91,9 +106,15 @@ export const buildTableEntity = (ids: IdFactory, spec: TableEntitySpec): TableEn
     visible: column.visible ?? true,
   }));
 
-  const contentWidth =
-    ROW_NUMBER_GUTTER_WIDTH +
-    columns.reduce((total, column) => (column.visible ? total + column.width : total), 0);
+/** Width at which every visible column is fully shown, gutter included. */
+export const tableContentWidth = (columns: readonly TableColumnView[]): number =>
+  ROW_NUMBER_GUTTER_WIDTH +
+  columns.reduce((total, column) => (column.visible ? total + column.width : total), 0);
+
+export const buildTableEntity = (ids: IdFactory, spec: TableEntitySpec): TableEntity => {
+  const view: TableViewSettings = { ...DEFAULT_TABLE_VIEW, ...spec.view };
+  const columns = buildTableColumns(ids, spec.columns);
+  const contentWidth = tableContentWidth(columns);
   const rows = spec.preferredVisibleRows ?? DEFAULT_VISIBLE_ROWS;
 
   const size: Size2 = spec.size ?? {
@@ -103,9 +124,10 @@ export const buildTableEntity = (ids: IdFactory, spec: TableEntitySpec): TableEn
   const position: Vec3 = spec.position ?? { x: 0, y: 0, z: 0 };
 
   return {
-    id: ids.entity('table'),
+    id: spec.id ?? ids.entity('table'),
     type: 'table',
     source: spec.source,
+    mode: spec.mode ?? 'result',
     transform: {
       x: position.x,
       y: position.y,

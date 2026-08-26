@@ -18,12 +18,15 @@ await page.waitForTimeout(900);
 
 const box = await page.locator('.pn-canvas').boundingBox();
 
-/** Screen position of the halo's close button, from the live world state. */
+/**
+ * World position of the halo's close button, from the live world state: it sits
+ * on the table's top-right corner, diagonally out from it.
+ */
 const target = await page.evaluate(() => {
   const workspace = globalThis.__panorama;
   const id = workspace.core.world.order[0];
   const entity = workspace.core.world.entities.get(id);
-  return { x: entity.transform.x + entity.transform.width - 11, y: entity.transform.y - 19 };
+  return { x: entity.transform.x + entity.transform.width + 19, y: entity.transform.y - 19 };
 });
 
 const before = await page.evaluate(() => globalThis.__panorama.openTableCount);

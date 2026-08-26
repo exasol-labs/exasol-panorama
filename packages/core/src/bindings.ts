@@ -1,4 +1,5 @@
 import type { Rect, Vec3 } from './geometry.js';
+import { clamp } from './geometry.js';
 import type { BindingId, EntityId } from './ids.js';
 import type { WorldState } from './world.js';
 
@@ -86,6 +87,25 @@ const centreOf = (rect: Rect): { x: number; y: number } => ({
   y: rect.y + rect.height / 2,
 });
 
+/**
+ * The entities a binding's line has to get past: everything except its own ends.
+ *
+ * One function so that drawing and hit testing are looking at the same
+ * obstacles. If they disagreed, the marker would be picked where the line is not.
+ */
+export const connectorObstacles = (
+  world: WorldState,
+  binding: Binding,
+  transformOf?: (id: EntityId) => (Vec3 & { width: number; height: number }) | undefined,
+): readonly Rect[] => {
+  const rects: Rect[] = [];
+  for (const entity of world.entities.values()) {
+    if (entity.id === binding.fromId || entity.id === binding.toId) continue;
+    rects.push(entityRect(transformOf?.(entity.id) ?? entity.transform));
+  }
+  return rects;
+};
+
 export interface Point2 {
   readonly x: number;
   readonly y: number;
@@ -144,6 +164,39 @@ const nearestEdgeNormal = (rect: Rect, point: Point2): Point2 => {
   return distances.reduce((best, entry) => (entry.distance < best.distance ? entry : best)).normal;
 };
 
+/** The four sides a connector can leave a table by. */
+export type RectSide = 'right' | 'left' | 'bottom' | 'top';
+
+export const RECT_SIDES: readonly RectSide[] = Object.freeze(['right', 'left', 'bottom', 'top']);
+
+/** Kept clear of the corners, so a line never leaves one. */
+const SIDE_INSET = 14;
+
+/**
+ * The anchor on one named side, as near as it can get to where it is going.
+ *
+ * Used to consider routes other than the straight-at-each-other one: when the
+ * obvious line would cross a third table, leaving by a different side is usually
+ * what a person would draw instead. Held away from the corners, because a line
+ * leaving exactly at one reads as leaving the wrong side.
+ */
+export const sideAnchor = (rect: Rect, side: RectSide, toward: Point2): AnchorResolution => {
+  const insetX = Math.min(SIDE_INSET, rect.width / 3);
+  const insetY = Math.min(SIDE_INSET, rect.height / 3);
+  const alongX = clamp(toward.x, rect.x + insetX, rect.x + rect.width - insetX);
+  const alongY = clamp(toward.y, rect.y + insetY, rect.y + rect.height - insetY);
+  switch (side) {
+    case 'right':
+      return { point: { x: rect.x + rect.width, y: alongY }, normal: OUTWARD[0] as Point2 };
+    case 'left':
+      return { point: { x: rect.x, y: alongY }, normal: OUTWARD[1] as Point2 };
+    case 'bottom':
+      return { point: { x: alongX, y: rect.y + rect.height }, normal: OUTWARD[2] as Point2 };
+    default:
+      return { point: { x: alongX, y: rect.y }, normal: OUTWARD[3] as Point2 };
+  }
+};
+
 export const resolveAnchor = (
   rect: Rect,
   anchor: BindingAnchor,
@@ -163,6 +216,14 @@ export interface ResolvedBinding {
   readonly toNormal: Point2;
   /** True when the two entities overlap so much the line has nowhere to go. */
   readonly degenerate: boolean;
+  /**
+   * The rectangles the ends sit on. Carried because whoever draws the line may
+   * want to consider a different way out of them, and re-deriving the rectangles
+   * from the world would risk disagreeing with the transforms these came from —
+   * a drag preview included.
+   */
+  readonly fromRect: Rect;
+  readonly toRect: Rect;
 }
 
 /**
@@ -196,5 +257,7 @@ export const resolveBinding = (
     fromNormal: from.normal,
     toNormal: to.normal,
     degenerate,
+    fromRect,
+    toRect,
   };
 };

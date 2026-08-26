@@ -46,14 +46,40 @@ export const filterLiteral = (value: CellValue, type?: ColumnDataType): string =
  * `SELECT * FROM "schema"."table" WHERE "column" = value` — the query behind
  * following a foreign key.
  */
-export const selectWhere = (schema: string, table: string, filter: RowFilter): string => {
+/**
+ * The predicate for a membership filter.
+ *
+ * `= x` for one value rather than `IN (x)`, because that is what a person reading
+ * the statement expects to see and what an optimiser is likeliest to recognise.
+ * Null is spelled out separately: SQL's `IN` does not match it, so a selection
+ * that includes the missing category has to say `IS NULL` as well.
+ *
+ * No values at all is `1 = 0`. A filter over nothing matches nothing, and saying
+ * so in the statement is clearer than an empty `IN ()` that half the parsers in
+ * the world reject.
+ */
+export const filterPredicate = (filter: RowFilter): string => {
   const column = quoteIdentifier(filter.column);
-  const predicate =
-    filter.value === null
-      ? `${column} IS NULL`
-      : `${column} = ${filterLiteral(filter.value, filter.type)}`;
-  return `SELECT * FROM ${qualifiedName(schema, table)} WHERE ${predicate}`;
+  const present = filter.values.filter((value) => value !== null);
+  const hasNull = present.length < filter.values.length;
+  const parts: string[] = [];
+  if (present.length === 1) {
+    parts.push(`${column} = ${filterLiteral(present[0] as CellValue, filter.type)}`);
+  } else if (present.length > 1) {
+    const list = present.map((value) => filterLiteral(value, filter.type)).join(', ');
+    parts.push(`${column} IN (${list})`);
+  }
+  if (hasNull) parts.push(`${column} IS NULL`);
+  if (parts.length === 0) return '1 = 0';
+  return parts.length === 1 ? (parts[0] as string) : `(${parts.join(' OR ')})`;
 };
+
+export const selectWhere = (schema: string, table: string, filter: RowFilter): string =>
+  `SELECT * FROM ${qualifiedName(schema, table)} WHERE ${filterPredicate(filter)}`;
+
+/** The same predicate over a statement's result rather than a stored relation. */
+export const selectWhereFrom = (statement: string, filter: RowFilter): string =>
+  `SELECT * FROM ${subquery(statement)} WHERE ${filterPredicate(filter)}`;
 
 /** A projection-only query used to read column metadata without moving rows. */
 export const describeQuery = (schema: string, table: string): string =>
@@ -77,3 +103,81 @@ export const foreignKeyQuery = (schema: string, table: string): string =>
   `  AND CONSTRAINT_SCHEMA = ${quoteLiteral(schema)}` +
   `  AND CONSTRAINT_TABLE = ${quoteLiteral(table)}` +
   '  GROUP BY CONSTRAINT_NAME HAVING COUNT(*) = 1)';
+
+/**
+ * Describing one column, in SQL a database will recognise.
+ *
+ * Two queries, both unremarkable: counts and extremes, then a distribution.
+ * Deliberately plain — `COUNT`, `MIN`, `MAX`, `AVG`, `GROUP BY`, `FLOOR` and
+ * arithmetic and nothing else. A column summary is the kind of feature that
+ * tempts one into a database's own statistics functions, and the moment it does
+ * it stops working anywhere else and starts being untestable without a live
+ * instance of exactly the right version.
+ *
+ * It aggregates the *statement*, not the table, so a followed key or a written
+ * query is summarised as it is shown rather than as it would be unfiltered. And
+ * it reads one column: a columnar engine then never touches the other four
+ * thousand, which is the whole reason to ask the database instead of the rows
+ * that happen to be on screen.
+ */
+/**
+ * A number as SQL sees it. `String` would sometimes produce `1e-7`, which is a
+ * literal some parsers accept and others do not; a fixed expansion is a literal
+ * every one of them does.
+ */
+export const numberLiteral = (value: number): string => {
+  if (!Number.isFinite(value)) return '0';
+  if (Number.isInteger(value) && Math.abs(value) < 1e15) return String(value);
+  return value.toFixed(12).replace(/0+$/u, '').replace(/\.$/u, '');
+};
+
+const subquery = (statement: string): string => `(${statement}) AS "panorama_source"`;
+
+export const summaryAggregateQuery = (
+  statement: string,
+  column: string,
+  numeric: boolean,
+): string => {
+  const quoted = quoteIdentifier(column);
+  const mean = numeric ? `, AVG(${quoted})` : ', CAST(NULL AS DOUBLE)';
+  return (
+    `SELECT COUNT(*), COUNT(${quoted}), COUNT(DISTINCT ${quoted})` +
+    `, MIN(${quoted}), MAX(${quoted})${mean}` +
+    ` FROM ${subquery(statement)}`
+  );
+};
+
+/** The most frequent values, which for few enough values is every value. */
+export const summaryFrequencyQuery = (statement: string, column: string, limit: number): string => {
+  const quoted = quoteIdentifier(column);
+  return (
+    `SELECT ${quoted}, COUNT(*) FROM ${subquery(statement)}` +
+    ` WHERE ${quoted} IS NOT NULL GROUP BY 1 ORDER BY 2 DESC, 1 ASC LIMIT ${Math.trunc(limit)}`
+  );
+};
+
+/**
+ * Rows per equal slice of a numeric column's range.
+ *
+ * The range comes from the aggregate query rather than from a second `MIN`/`MAX`,
+ * so the bins are cut against the same numbers the panel reports. Bins are
+ * counted by their index, which keeps the arithmetic to one subtraction and one
+ * division and the result to at most one row per bin.
+ */
+export const summaryHistogramQuery = (
+  statement: string,
+  column: string,
+  low: number,
+  high: number,
+  bins: number,
+): string => {
+  const quoted = quoteIdentifier(column);
+  const width = (high - low) / bins;
+  const index =
+    `LEAST(${Math.trunc(bins) - 1},` +
+    ` FLOOR((${quoted} - ${numberLiteral(low)}) / ${numberLiteral(width)}))`;
+  return (
+    `SELECT ${index}, COUNT(*) FROM ${subquery(statement)}` +
+    ` WHERE ${quoted} IS NOT NULL GROUP BY 1 ORDER BY 1`
+  );
+};

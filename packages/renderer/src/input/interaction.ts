@@ -1,5 +1,6 @@
 import type {
   Binding,
+  ChartMarkTarget,
   EntityActionId,
   EntityId,
   ForeignKeyReference,
@@ -10,8 +11,10 @@ import type { CellValue } from '@panorama/table';
 import {
   ROW_NUMBER_GUTTER_WIDTH,
   clamp,
+  expandedActionOf,
   isBindingRevealed,
   isEntityActivated,
+  connectorObstacles,
   resolveBinding,
 } from '@panorama/core';
 import type { ColumnLayout } from '@panorama/table';
@@ -20,8 +23,8 @@ import type { TableTheme } from '../theme.js';
 import type { TableHit } from './hit-test.js';
 import { hitTestTable, toTableLocal } from './hit-test.js';
 import { previewColumnWidth, previewEntity } from './drag-preview.js';
-import { computeHalo, withinHalo } from '../table/halo.js';
-import { connectorMarker } from '../table/connector.js';
+import { actionsForTable, computeHalo, withinHalo } from '../table/halo.js';
+import { connectorMarker, routeConnector } from '../table/connector.js';
 import { tableMetrics } from '../table/table-draw.js';
 import type { NormalizedWheel, WheelSample } from './wheel.js';
 import { normalizeWheel, wheelZoomFactor } from './wheel.js';
@@ -71,6 +74,24 @@ export interface InteractionHost {
   scrollBy(tableId: EntityId, deltaX: number, deltaY: number): void;
   /** Scrolls to an absolute fraction, used by scrollbar drags. */
   scrollToFraction(tableId: EntityId, axis: 'vertical' | 'horizontal', fraction: number): void;
+  /**
+   * Actions this table cannot perform — a sample table has no SQL engine
+   * behind it. The controller greys them out rather than hiding them, and
+   * refuses to fire them.
+   */
+  disabledActionsFor?(tableId: EntityId): readonly EntityActionId[];
+  /**
+   * The piece of a chart at a point in the box's own coordinates, or `null`.
+   *
+   * Asked of the host because the geometry lives with whatever laid the chart
+   * out; the controller's part is knowing that the pointer is over a chart's body
+   * and where in it. Absent on a host that has no charts.
+   */
+  chartMarkAt?(
+    tableId: EntityId,
+    localX: number,
+    localY: number,
+  ): { readonly series: number; readonly data: number } | null;
 }
 
 export interface InteractionOptions {
@@ -96,6 +117,25 @@ export interface InteractionOptions {
   readonly onFollowForeignKey?: (follow: ForeignKeyFollow) => void;
 }
 
+/** A column selection being swept out with the pointer. */
+interface ColumnDrag {
+  readonly tableId: EntityId;
+  readonly anchorColumnId: EntityId;
+  headColumnId: EntityId;
+  /** The selection the gesture began from; every step is applied to this. */
+  readonly base: readonly EntityId[];
+  /**
+   * Whether the sweep gives columns or takes them away.
+   *
+   * Decided once, by the column the gesture began on: start on one that is not
+   * picked out and the sweep picks out; start on one that is and the sweep puts
+   * back. That is the same rule a single click follows, which makes a click the
+   * shortest possible sweep rather than a case of its own — and it means a sweep
+   * never has to guess, column by column, which of the two the user meant.
+   */
+  readonly mode: 'add' | 'remove';
+}
+
 export class InteractionController {
   readonly #core: PanoramaCore;
   readonly #camera: CameraController;
@@ -109,6 +149,14 @@ export class InteractionController {
   #lastPointer: PointerInput | null = null;
   /** The followable cell a press started on; a click must end on the same one. */
   #pressedCell: ForeignKeyFollow | null = null;
+  /**
+   * A column selection being swept out.
+   *
+   * Kept here rather than in session state, like the scrollbar drag: the
+   * selection it produces *is* the session state, applied as the pointer moves,
+   * so there is nothing left to preview.
+   */
+  #columnDrag: ColumnDrag | null = null;
   #scrollbarDrag: { tableId: EntityId; axis: 'vertical' | 'horizontal' } | null = null;
 
   constructor(options: InteractionOptions) {
@@ -173,14 +221,25 @@ export class InteractionController {
    */
   bindingMarkerAt(worldX: number, worldY: number): Binding | null {
     const world = this.#core.world;
+    const transformOf = (id: EntityId): TableEntity['transform'] | undefined => {
+      const stored = world.entities.get(id);
+      return stored === undefined ? undefined : this.#drawn(stored).transform;
+    };
     for (const binding of world.bindings.values()) {
-      const resolved = resolveBinding(world, binding, (id) => {
-        const stored = world.entities.get(id);
-        return stored === undefined ? undefined : this.#drawn(stored).transform;
-      });
+      const resolved = resolveBinding(world, binding, transformOf);
       if (resolved === null) continue;
-      const marker = connectorMarker(
+      // Routed, not merely resolved: a line that had to go round a table put its
+      // marker on the way it actually went.
+      const route = routeConnector(
         resolved,
+        this.#theme,
+        this.#camera.scale,
+        connectorObstacles(world, binding, transformOf),
+      );
+      if (route === null) continue;
+      const marker = connectorMarker(
+        route.path,
+        binding,
         this.#theme,
         this.#camera.scale,
         isBindingRevealed(this.#core.session, binding.id),
@@ -198,8 +257,79 @@ export class InteractionController {
     return null;
   }
 
+  /**
+   * Picks a mark out, or lets it go.
+   *
+   * Additive, because comparing two bars is the reason anybody picks one out —
+   * and pressing the background clears the lot, which is the way out that every
+   * other selection here offers.
+   */
+  #toggleMark(entity: TableEntity, world: { readonly x: number; readonly y: number }): void {
+    const mark =
+      this.#host.chartMarkAt?.(
+        entity.id,
+        world.x - entity.transform.x,
+        world.y - entity.transform.y,
+      ) ?? null;
+    const current = this.#core.session.selectedMarks;
+    if (mark === null) {
+      if (current.length > 0) {
+        this.#core.dispatchSession({ type: 'SetSelectedMarks', targets: [] });
+      }
+      return;
+    }
+    const target: ChartMarkTarget = { entityId: entity.id, ...mark };
+    const already = current.some(
+      (entry) =>
+        entry.entityId === target.entityId &&
+        entry.series === target.series &&
+        entry.data === target.data,
+    );
+    this.#core.dispatchSession({
+      type: 'SetSelectedMarks',
+      targets: already
+        ? current.filter(
+            (entry) =>
+              !(
+                entry.entityId === target.entityId &&
+                entry.series === target.series &&
+                entry.data === target.data
+              ),
+          )
+        : [...current, target],
+    });
+  }
+
+  /**
+   * The chart mark under the pointer, in whichever box the pointer is over.
+   *
+   * Only over a body: the title bar, the halo and the chrome are not the picture.
+   */
+  #markUnder(
+    target: { readonly entity: TableEntity; readonly hit: TableHit } | null,
+    world: { readonly x: number; readonly y: number },
+  ): ChartMarkTarget | null {
+    if (target === null || target.hit.kind !== 'body') return null;
+    if (this.#host.chartMarkAt === undefined || target.entity.source.kind !== 'chart') return null;
+    const mark = this.#host.chartMarkAt(
+      target.entity.id,
+      world.x - target.entity.transform.x,
+      world.y - target.entity.transform.y,
+    );
+    return mark === null ? null : { entityId: target.entity.id, ...mark };
+  }
+
   #showsHalo(entityId: EntityId): boolean {
     return isEntityActivated(this.#core.session, entityId);
+  }
+
+  /**
+   * Spread into the hit-test input, so a host that reports nothing leaves the
+   * optional field absent rather than present-and-undefined.
+   */
+  #disabledActions(tableId: EntityId): { disabledActions?: readonly EntityActionId[] } {
+    const disabled = this.#host.disabledActionsFor?.(tableId);
+    return disabled === undefined || disabled.length === 0 ? {} : { disabledActions: disabled };
   }
 
   #haloOf(entity: TableEntity): ReturnType<typeof computeHalo> {
@@ -214,6 +344,7 @@ export class InteractionController {
       ),
       this.#theme,
       this.#camera.scale,
+      actionsForTable(entity, expandedActionOf(this.#core.session, entity.id)),
     );
   }
 
@@ -247,6 +378,8 @@ export class InteractionController {
         gutterWidth: this.#gutterWidth,
         scale: this.#camera.scale,
         showHalo: this.#showsHalo(entity.id) || inBand,
+        expandedAction: expandedActionOf(this.#core.session, entity.id),
+        ...this.#disabledActions(entity.id),
       },
       local.x,
       local.y,
@@ -297,7 +430,7 @@ export class InteractionController {
     // A halo press must not re-select or start a drag: it is a button. A press
     // in the band between the table and its buttons does nothing at all.
     if (hit.kind === 'halo') {
-      if (hit.action !== null) {
+      if (hit.action !== null && !hit.disabled) {
         this.#core.dispatchSession({
           type: 'SetPressedAction',
           target: { entityId: entity.id, action: hit.action },
@@ -362,10 +495,42 @@ export class InteractionController {
         this.#scrollbarDrag = { tableId: entity.id, axis: hit.axis };
         this.#applyScrollbarDrag(entity, hit.axis, world);
         return;
-      case 'body':
+      case 'header': {
+        // The header above the gutter names no column, so there is nothing to
+        // pick out there.
+        if (hit.column === null) {
+          this.#cursor = hit.cursor;
+          return;
+        }
+        const base = this.#core.session.selectedColumns;
+        const drag: ColumnDrag = {
+          tableId: entity.id,
+          anchorColumnId: hit.column.id,
+          headColumnId: hit.column.id,
+          base,
+          mode: base.includes(hit.column.id) ? 'remove' : 'add',
+        };
+        this.#columnDrag = drag;
+        // Applied on the way down, so the gesture answers under the finger
+        // straight away and keeps answering as it sweeps. Nothing is undone on
+        // release, so there is nothing to flicker.
+        this.#applyColumnSweep(drag, [hit.column.id]);
+        this.#cursor = hit.cursor;
+        return;
+      }
+      case 'body': {
+        // A chart's body is a picture, not a grid: a press picks a mark out
+        // rather than following a key, and pressing the background lets go of
+        // whatever was picked.
+        if (entity.source.kind === 'chart') {
+          this.#toggleMark(entity, world);
+          this.#cursor = hit.cursor;
+          return;
+        }
         this.#pressedCell = this.#followableCell(entity, hit.row, hit.column);
         this.#cursor = hit.cursor;
         return;
+      }
       default:
         this.#cursor = hit.cursor;
     }
@@ -401,6 +566,11 @@ export class InteractionController {
     const world = this.#setPointer(event);
     const drag = this.#core.session.drag;
 
+    if (this.#columnDrag !== null) {
+      this.#extendColumnDrag(world);
+      return;
+    }
+
     if (this.#scrollbarDrag !== null) {
       const entity = this.#core.world.entities.get(this.#scrollbarDrag.tableId);
       if (entity !== undefined) {
@@ -433,13 +603,71 @@ export class InteractionController {
       type: 'SetHovered',
       id: target?.entity.id ?? null,
     });
+    const mark = this.#markUnder(target, world);
+    this.#core.dispatchSession({ type: 'SetHoveredMark', target: mark });
+    // A mark can be picked out, so it says so under the pointer — the same
+    // affordance a followable cell gets.
+    if (mark !== null) this.#cursor = 'pointer';
     this.#core.dispatchSession({
       type: 'SetHoveredAction',
       target:
-        target !== null && target.hit.kind === 'halo' && target.hit.action !== null
+        target !== null &&
+        target.hit.kind === 'halo' &&
+        target.hit.action !== null &&
+        !target.hit.disabled
           ? { entityId: target.entity.id, action: target.hit.action }
           : null,
     });
+  }
+
+  #selectColumns(ids: readonly EntityId[]): void {
+    this.#core.dispatchSession({ type: 'SetSelectedColumns', ids });
+  }
+
+  /**
+   * Applies a sweep's range to the selection it began from.
+   *
+   * Always from `base` rather than from whatever the last step left, so a sweep
+   * that runs out too far and comes back leaves what is between its ends —
+   * whichever direction it is painting in.
+   */
+  #applyColumnSweep(drag: ColumnDrag, swept: readonly EntityId[]): void {
+    this.#selectColumns(
+      drag.mode === 'remove'
+        ? drag.base.filter((id) => !swept.includes(id))
+        : [...drag.base, ...swept.filter((id) => !drag.base.includes(id))],
+    );
+  }
+
+  /**
+   * Grows the sweep to the column under the pointer.
+   *
+   * The range runs between the column the gesture began on and the one it is
+   * over now, in the order the columns are laid out — so sweeping right and then
+   * back left leaves what is between them, rather than everything the pointer
+   * has ever touched.
+   */
+  #extendColumnDrag(world: { x: number; y: number }): void {
+    const drag = this.#columnDrag;
+    if (drag === null) return;
+    const target = this.#hitAt(world.x, world.y);
+    if (target === null || target.entity.id !== drag.tableId) return;
+    const hit = target.hit;
+    // A header or a cell will do: a pointer sweeping sideways drifts out of the
+    // header band, and losing the gesture there would be unforgiving.
+    const column = hit.kind === 'header' || hit.kind === 'body' ? hit.column : null;
+    if (column === null || column.id === drag.headColumnId) return;
+
+    const placements = this.#host.viewOf(drag.tableId)?.layout.placements ?? [];
+    const from = placements.findIndex((placement) => placement.id === drag.anchorColumnId);
+    const to = placements.findIndex((placement) => placement.id === column.id);
+    if (from < 0 || to < 0) return;
+
+    drag.headColumnId = column.id;
+    this.#applyColumnSweep(
+      drag,
+      placements.slice(Math.min(from, to), Math.max(from, to) + 1).map((placement) => placement.id),
+    );
   }
 
   #previousScreen(event: PointerInput): { x: number; y: number } {
@@ -472,6 +700,13 @@ export class InteractionController {
       ) {
         this.#options.onAction?.(pressed.entityId, pressed.action);
       }
+      return;
+    }
+
+    // A column sweep has nothing left to do on release: every step of it was
+    // applied as the pointer moved, and the shortest sweep is the click.
+    if (this.#columnDrag !== null) {
+      this.#columnDrag = null;
       return;
     }
 
@@ -554,10 +789,12 @@ export class InteractionController {
 
   onPointerLeave(): void {
     this.#pressedCell = null;
+    this.#columnDrag = null;
     this.#core.dispatchSession({ type: 'SetHoveredBinding', id: null });
     this.#core.dispatchSession({ type: 'SetPressedBinding', id: null });
     this.#core.dispatchSession({ type: 'SetPointer', pointer: null });
     this.#core.dispatchSession({ type: 'SetHovered', id: null });
+    this.#core.dispatchSession({ type: 'SetHoveredMark', target: null });
     this.#core.dispatchSession({ type: 'SetHoveredAction', target: null });
     this.#core.dispatchSession({ type: 'SetPressedAction', target: null });
     this.#cursor = 'default';

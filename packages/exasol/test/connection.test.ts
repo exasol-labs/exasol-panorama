@@ -172,16 +172,44 @@ describe('ExasolConnection metadata', () => {
     const { connection, server } = await connect({
       tables: {
         SALES: [
-          { name: 'ORDERS', kind: 'TABLE', comment: 'fact table' },
+          { name: 'ORDERS', kind: 'TABLE', comment: 'fact table', rows: 2_830_000 },
           { name: 'ORDERS_V', kind: 'VIEW', comment: null },
         ],
       },
     });
     await expect(connection.listTables('SALES')).resolves.toEqual([
-      { schema: 'SALES', name: 'ORDERS', kind: 'TABLE', comment: 'fact table' },
+      {
+        schema: 'SALES',
+        name: 'ORDERS',
+        kind: 'TABLE',
+        comment: 'fact table',
+        rowCount: 2_830_000,
+      },
+      // A view has no count in the catalogue, and none is invented for it.
       { schema: 'SALES', name: 'ORDERS_V', kind: 'VIEW' },
     ]);
     expect(server.executed.at(-1)).toContain("TABLE_SCHEMA = 'SALES'");
+    expect(server.executed.at(-1)).toContain('TABLE_ROW_COUNT');
+  });
+
+  it('reads a row count Exasol sent as digits, and reports an unknown one as absent', async () => {
+    const { connection } = await connect({
+      tables: {
+        SALES: [
+          // Eighteen digits is past what a double is trusted with, so Exasol
+          // sends the figure as text.
+          { name: 'HUGE', kind: 'TABLE', comment: null, rows: '123456789012345678' },
+          // A table whose statistics have never been gathered.
+          { name: 'FRESH', kind: 'TABLE', comment: null, rows: null },
+          { name: 'EMPTY', kind: 'TABLE', comment: null, rows: 0 },
+        ],
+      },
+    });
+    const listed = await connection.listTables('SALES');
+    expect(listed.find((entry) => entry.name === 'HUGE')?.rowCount).toBe(123_456_789_012_345_678);
+    // Absent, not zero: "unknown" and "empty" are different facts.
+    expect(listed.find((entry) => entry.name === 'FRESH')).not.toHaveProperty('rowCount');
+    expect(listed.find((entry) => entry.name === 'EMPTY')?.rowCount).toBe(0);
   });
 
   it('escapes schema names in metadata queries', async () => {

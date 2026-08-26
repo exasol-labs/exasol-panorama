@@ -7,7 +7,7 @@ const noop = (): void => {};
 describe('ConnectionDialog', () => {
   it('submits a password connection request', () => {
     const onConnect = vi.fn();
-    render(<ConnectionDialog status="disconnected" onConnect={onConnect} onDisconnect={noop} />);
+    render(<ConnectionDialog status="disconnected" onConnect={onConnect} />);
 
     fireEvent.change(screen.getByLabelText('Database URL'), {
       target: { value: 'wss://exasol.example:8563' },
@@ -23,7 +23,7 @@ describe('ConnectionDialog', () => {
   });
 
   it('clears the secret from its own state once submitted', () => {
-    render(<ConnectionDialog status="disconnected" onConnect={noop} onDisconnect={noop} />);
+    render(<ConnectionDialog status="disconnected" onConnect={noop} />);
     const password = screen.getByLabelText('Password') as HTMLInputElement;
     fireEvent.change(password, { target: { value: 's3cret' } });
     fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
@@ -32,7 +32,7 @@ describe('ConnectionDialog', () => {
 
   it('submits a personal access token', () => {
     const onConnect = vi.fn();
-    render(<ConnectionDialog status="disconnected" onConnect={onConnect} onDisconnect={noop} />);
+    render(<ConnectionDialog status="disconnected" onConnect={onConnect} />);
 
     fireEvent.click(screen.getByLabelText('Access token'));
     fireEvent.change(screen.getByLabelText('Personal access token'), {
@@ -47,7 +47,7 @@ describe('ConnectionDialog', () => {
   });
 
   it('switches back to password authentication', () => {
-    render(<ConnectionDialog status="disconnected" onConnect={noop} onDisconnect={noop} />);
+    render(<ConnectionDialog status="disconnected" onConnect={noop} />);
     fireEvent.click(screen.getByLabelText('Access token'));
     fireEvent.click(screen.getByLabelText('User & password'));
     expect(screen.getByLabelText('User')).toBeDefined();
@@ -60,7 +60,6 @@ describe('ConnectionDialog', () => {
         defaultUrl="wss://demo:8563"
         defaultUsername="demo"
         onConnect={noop}
-        onDisconnect={noop}
       />,
     );
     expect((screen.getByLabelText('Database URL') as HTMLInputElement).value).toBe(
@@ -71,48 +70,35 @@ describe('ConnectionDialog', () => {
 
   it('shows progress and refuses a second submit while connecting', () => {
     const onConnect = vi.fn();
-    render(<ConnectionDialog status="connecting" onConnect={onConnect} onDisconnect={noop} />);
+    render(<ConnectionDialog status="connecting" onConnect={onConnect} />);
     const button = screen.getByRole('button', { name: 'Connecting…' });
     expect((button as HTMLButtonElement).disabled).toBe(true);
     fireEvent.submit(button);
     expect(onConnect).not.toHaveBeenCalled();
   });
 
-  it('offers disconnect once connected', () => {
-    const onDisconnect = vi.fn();
-    render(<ConnectionDialog status="connected" onConnect={noop} onDisconnect={onDisconnect} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
-    expect(onDisconnect).toHaveBeenCalledTimes(1);
-    expect((screen.getByLabelText('Database URL') as HTMLInputElement).disabled).toBe(true);
-  });
-
-  it('does not reconnect while already connected', () => {
-    const onConnect = vi.fn();
-    const { container } = render(
-      <ConnectionDialog status="connected" onConnect={onConnect} onDisconnect={noop} />,
-    );
-    const form = container.querySelector('form');
-    if (form === null) throw new Error('expected a form');
-    fireEvent.submit(form);
-    expect(onConnect).not.toHaveBeenCalled();
-  });
-
   it('shows connection errors', () => {
-    render(
-      <ConnectionDialog
-        status="failed"
-        error="Authentication failed"
-        onConnect={noop}
-        onDisconnect={noop}
-      />,
-    );
+    render(<ConnectionDialog status="failed" error="Authentication failed" onConnect={noop} />);
     expect(screen.getByRole('alert').textContent).toBe('Authentication failed');
   });
 
+  it('makes the certificate advice clickable rather than something to retype', () => {
+    // The driver's wording, which its own test pins; this dialog only renders it.
+    const message =
+      'Cannot reach wss://localhost:8563. If the database uses a self-signed ' +
+      'certificate, open https://localhost:8563 in a browser tab and accept the ' +
+      'warning first, then reconnect.';
+    render(<ConnectionDialog status="failed" error={message} onConnect={noop} />);
+    // The whole message is still there, and the URL in it can be opened.
+    expect(screen.getByRole('alert').textContent).toBe(message);
+    const link = screen.getByRole('link');
+    expect(link.getAttribute('href')).toBe('https://localhost:8563');
+    // Somewhere else, so the tables and the statement being written survive.
+    expect(link.getAttribute('target')).toBe('_blank');
+  });
+
   it('hides the error region when there is nothing to report', () => {
-    render(
-      <ConnectionDialog status="disconnected" error="" onConnect={noop} onDisconnect={noop} />,
-    );
+    render(<ConnectionDialog status="disconnected" error="" onConnect={noop} />);
     expect(screen.queryByRole('alert')).toBeNull();
   });
 });

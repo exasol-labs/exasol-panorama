@@ -155,7 +155,7 @@ describe('DataWorkerClient', () => {
     const client = new DataWorkerClient(endpoint);
     void client.connect('wss://x', { kind: 'token', token: 't' });
     void client.disconnect();
-    void client.openTable(TABLE, 'S', 'T');
+    void client.openTable({ tableId: TABLE, schema: 'S', table: 'T' });
     void client.reopenTable(TABLE);
     void client.closeTable(TABLE);
     expect((sent as Array<{ type: string }>).map((message) => message.type)).toEqual([

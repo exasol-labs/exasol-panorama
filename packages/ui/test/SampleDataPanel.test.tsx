@@ -15,7 +15,8 @@ describe('SampleDataPanel', () => {
     expect(screen.getAllByRole('listitem')).toHaveLength(4);
     expect(screen.getByText('100 × 4')).toBeDefined();
     expect(screen.getByText('2.83B × 4')).toBeDefined();
-    expect(screen.getByText('100 × 5.00K')).toBeDefined();
+    // Five thousand columns, not `5.00K` of them: the exact figure is no wider.
+    expect(screen.getByText('100 × 5,000')).toBeDefined();
     expect(screen.getByText('250K × 12')).toBeDefined();
   });
 

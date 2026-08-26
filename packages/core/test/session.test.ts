@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import type { BindingId, EntityId, SessionState } from '@panorama/core';
+import type { BindingId, ChartMarkTarget, EntityId, SessionState } from '@panorama/core';
 import {
   applySessionCommand,
+  hoveredMarkOf,
+  selectedMarksOf,
   emptySession,
   activatedEntity,
   isActionHovered,
   isBindingRevealed,
   isActionPressed,
+  isColumnSelected,
   isDragging,
   isEntityActivated,
   isSelected,
@@ -14,6 +17,49 @@ import {
 
 const a = 'table:a' as EntityId;
 const b = 'table:b' as EntityId;
+
+describe('selected columns', () => {
+  const first = 'column:1' as EntityId;
+  const second = 'column:2' as EntityId;
+
+  it('records what was picked out, and says so', () => {
+    const state = applySessionCommand(emptySession(), {
+      type: 'SetSelectedColumns',
+      ids: [first, second],
+    });
+    expect(state.selectedColumns).toEqual([first, second]);
+    expect(isColumnSelected(state, first)).toBe(true);
+    expect(isColumnSelected(state, 'column:3' as EntityId)).toBe(false);
+  });
+
+  it('copies the list rather than keeping the caller own', () => {
+    const ids = [first];
+    const state = applySessionCommand(emptySession(), { type: 'SetSelectedColumns', ids });
+    ids.push(second);
+    expect(state.selectedColumns).toEqual([first]);
+  });
+
+  it('returns the same state when nothing changed, so subscribers can skip', () => {
+    const state = applySessionCommand(emptySession(), {
+      type: 'SetSelectedColumns',
+      ids: [first],
+    });
+    expect(applySessionCommand(state, { type: 'SetSelectedColumns', ids: [first] })).toBe(state);
+    expect(applySessionCommand(state, { type: 'SetSelectedColumns', ids: [] })).not.toBe(state);
+  });
+
+  it('is untouched by picking a different table, or by hovering', () => {
+    const picked = applySessionCommand(emptySession(), {
+      type: 'SetSelectedColumns',
+      ids: [first],
+    });
+    const elsewhere = applySessionCommand(picked, { type: 'SetSelection', ids: [b] });
+    expect(elsewhere.selectedColumns).toEqual([first]);
+    expect(applySessionCommand(elsewhere, { type: 'SetHovered', id: a }).selectedColumns).toEqual([
+      first,
+    ]);
+  });
+});
 
 describe('session state', () => {
   it('starts empty', () => {
@@ -24,8 +70,12 @@ describe('session state', () => {
       hovered: null,
       drag: null,
       pointer: null,
+      selectedColumns: [],
+      hoveredMark: null,
+      selectedMarks: [],
       hoveredAction: null,
       pressedAction: null,
+      expandedAction: null,
       hoveredBinding: null,
       pressedBinding: null,
     });
@@ -225,5 +275,70 @@ describe('binding markers', () => {
     const pressed = applySessionCommand(emptySession(), { type: 'SetPressedBinding', id: first });
     expect(applySessionCommand(pressed, { type: 'SetPressedBinding', id: first })).toBe(pressed);
     expect(applySessionCommand(pressed, { type: 'SetPressedBinding', id: null })).not.toBe(pressed);
+  });
+});
+
+describe('pointing at a chart, and picking parts of it out', () => {
+  const mark = (entityId: EntityId, series: number, data: number): ChartMarkTarget => ({
+    entityId,
+    series,
+    data,
+  });
+
+  it('remembers the mark under the pointer', () => {
+    const state = applySessionCommand(emptySession(), {
+      type: 'SetHoveredMark',
+      target: mark(a, 0, 2),
+    });
+    expect(state.hoveredMark).toEqual({ entityId: a, series: 0, data: 2 });
+    expect(hoveredMarkOf(state, a)).toEqual({ entityId: a, series: 0, data: 2 });
+    // Only in the chart the pointer is actually in.
+    expect(hoveredMarkOf(state, b)).toBeNull();
+  });
+
+  it('does not churn when the pointer stays on the same mark', () => {
+    const state = applySessionCommand(emptySession(), {
+      type: 'SetHoveredMark',
+      target: mark(a, 0, 2),
+    });
+    expect(applySessionCommand(state, { type: 'SetHoveredMark', target: mark(a, 0, 2) })).toBe(
+      state,
+    );
+    expect(applySessionCommand(state, { type: 'SetHoveredMark', target: mark(a, 0, 3) })).not.toBe(
+      state,
+    );
+    expect(applySessionCommand(emptySession(), { type: 'SetHoveredMark', target: null })).toEqual(
+      emptySession(),
+    );
+  });
+
+  it('keeps the marks picked out, per chart', () => {
+    const state = applySessionCommand(emptySession(), {
+      type: 'SetSelectedMarks',
+      targets: [mark(a, 0, 1), mark(b, 1, 4)],
+    });
+    expect(selectedMarksOf(state, a)).toEqual([{ entityId: a, series: 0, data: 1 }]);
+    expect(selectedMarksOf(state, b)).toEqual([{ entityId: b, series: 1, data: 4 }]);
+  });
+
+  it('does not churn when the same marks are set again', () => {
+    const targets = [mark(a, 0, 1)];
+    const state = applySessionCommand(emptySession(), { type: 'SetSelectedMarks', targets });
+    expect(applySessionCommand(state, { type: 'SetSelectedMarks', targets: [...targets] })).toBe(
+      state,
+    );
+    expect(
+      applySessionCommand(state, { type: 'SetSelectedMarks', targets: [mark(a, 0, 2)] }),
+    ).not.toBe(state);
+    expect(applySessionCommand(state, { type: 'SetSelectedMarks', targets: [] })).not.toBe(state);
+  });
+
+  it('lets go of them all', () => {
+    const state = applySessionCommand(emptySession(), {
+      type: 'SetSelectedMarks',
+      targets: [mark(a, 0, 1)],
+    });
+    const cleared = applySessionCommand(state, { type: 'SetSelectedMarks', targets: [] });
+    expect(selectedMarksOf(cleared, a)).toEqual([]);
   });
 });

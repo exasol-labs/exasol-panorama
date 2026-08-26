@@ -1,4 +1,6 @@
 import type {
+  CellValue,
+  ColumnSummary,
   FetchRequest,
   ResultChunk,
   RowFilter,
@@ -7,7 +9,12 @@ import type {
   TableDataSource,
   TableSchema,
 } from '@panorama/table';
-import { TableDataError, buildVector, createResultChunk } from '@panorama/table';
+import {
+  ColumnSummaryBuilder,
+  TableDataError,
+  buildVector,
+  createResultChunk,
+} from '@panorama/table';
 import type { RelationShape } from './generators.js';
 import { generateValue, relationSchema } from './generators.js';
 import { seededRandom } from './random.js';
@@ -40,6 +47,12 @@ export interface MockFailure {
 /** Rows scanned when a filter is applied; beyond this the mock refuses. */
 export const MAX_FILTER_SCAN = 200_000;
 
+/**
+ * Rows a generated relation will walk to describe a column. Beyond this the
+ * answer is about the beginning of the relation, and says so.
+ */
+export const MAX_SUMMARY_SCAN = 200_000;
+
 export interface MockTableDataSourceOptions {
   readonly relation: RelationShape;
   /**
@@ -71,6 +84,10 @@ const normaliseLatency = (latency: MockLatency | number | undefined): MockLatenc
 const matchingRows = (options: MockTableDataSourceOptions): readonly number[] | null => {
   const filter = options.filter;
   if (filter === undefined) return null;
+  // A filter over no values matches no rows, and knows that without reading one
+  // or caring whether the column it names exists — which is what lets a
+  // drill-down table exist and be empty before anything has been chosen.
+  if (filter.values.length === 0) return [];
   const shape = options.relation;
   if (shape.rowCount > MAX_FILTER_SCAN) {
     throw new TableDataError(
@@ -87,7 +104,7 @@ const matchingRows = (options: MockTableDataSourceOptions): readonly number[] | 
   const matches: number[] = [];
   for (let row = 0; row < shape.rowCount; row += 1) {
     const value = valueFor(column.type, columnIndex, row) ?? null;
-    if (value === filter.value) matches.push(row);
+    if (filter.values.includes(value as CellValue)) matches.push(row);
   }
   return matches;
 };
@@ -153,6 +170,34 @@ class MockTableDataSession implements TableDataSession {
       if (attempts <= firstAttempts) return true;
     }
     return false;
+  }
+
+  /**
+   * Describes one column by generating its values.
+   *
+   * A generator has no `GROUP BY` to lean on, so it walks the rows — which is
+   * fine for a hundred and impossible for ten billion. So it walks at most
+   * `MAX_SUMMARY_SCAN` of them and says which it was: a summary of the first
+   * hundred thousand rows is a useful thing or a misleading one depending
+   * entirely on whether it admits to being one.
+   */
+  async summarise(column: string, signal?: AbortSignal): Promise<ColumnSummary> {
+    const index = this.#shape.columns.findIndex((entry) => entry.name === column);
+    const declared = this.#shape.columns[index];
+    if (index < 0 || declared === undefined) {
+      throw new TableDataError('not-found', `No column named ${column}`);
+    }
+    const total = this.#rows === null ? this.#shape.rowCount : this.#rows.length;
+    const scan = Math.min(total, MAX_SUMMARY_SCAN);
+    const valueFor = this.#shape.valueFor ?? generateValue;
+    const builder = new ColumnSummaryBuilder(column, declared.type);
+    for (let offset = 0; offset < scan; offset += 1) {
+      if (signal?.aborted === true) throw new TableDataError('aborted', 'Summary abandoned');
+      const source = this.#rows === null ? offset : (this.#rows[offset] as number);
+      const value = valueFor(declared.type, index, source);
+      builder.add(value === null || value === undefined ? null : (value as CellValue));
+    }
+    return builder.finish(scan < total ? 'sampled' : 'exact');
   }
 
   #buildChunk(startPosition: number, rowCount: number): ResultChunk {

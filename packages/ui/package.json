@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@panorama/core": "*",
+    "@panorama/export": "*",
     "@panorama/table": "*",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"

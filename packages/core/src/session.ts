@@ -55,8 +55,38 @@ export interface PointerState {
  *
  * Semantic, not visual: the halo the renderer draws, a keyboard shortcut and an
  * agent all name the same action.
+ *
+ * `export` is a *choice* rather than a deed: pressing it reveals the formats,
+ * and one of `export-csv`, `export-xlsx` or `export-parquet` is what actually
+ * writes a file. Naming the three separately rather than parameterising one is
+ * what lets an agent ask for a Parquet file in one message, and what keeps the
+ * halo's buttons and the session's pressed-action state the same vocabulary.
  */
-export type EntityActionId = 'close';
+export type EntityActionId =
+  | 'close'
+  | 'edit'
+  | 'sql'
+  | 'chart'
+  | 'rows'
+  | 'export'
+  | 'export-csv'
+  | 'export-xlsx'
+  | 'export-parquet'
+  | 'export-svg'
+  | 'export-png'
+  | 'export-pdf';
+
+/**
+ * One piece of one chart: which box, which series, which value.
+ *
+ * A chart's marks are not entities — they are a projection of rows, exactly as a
+ * table's cells are — so they are referred to by position rather than given ids.
+ */
+export interface ChartMarkTarget {
+  readonly entityId: EntityId;
+  readonly series: number;
+  readonly data: number;
+}
 
 export interface EntityActionTarget {
   readonly entityId: EntityId;
@@ -73,8 +103,39 @@ export interface SessionState {
   readonly hovered: EntityId | null;
   readonly drag: DragState | null;
   readonly pointer: PointerState | null;
+  /**
+   * Columns picked out by clicking their headers, by column-view id.
+   *
+   * A flat set rather than a selection scoped to one table: column ids are
+   * unique, so the set says which table each belongs to without being told, and
+   * two tables side by side can each have columns picked out while they are
+   * compared. Session state, like every other kind of selection — picking a
+   * column out is not an edit to the document.
+   */
+  readonly selectedColumns: readonly EntityId[];
+  /**
+   * The piece of a chart under the pointer, and the pieces picked out.
+   *
+   * Session state, like every other selection here: pointing at a bar and
+   * choosing one are not edits, and neither belongs in history. Holding them here
+   * rather than inside the charting library also means they survive the chart
+   * being re-laid-out — which happens whenever the box is resized or a dial
+   * moves, and would otherwise quietly forget what the user had chosen.
+   */
+  readonly hoveredMark: ChartMarkTarget | null;
+  readonly selectedMarks: readonly ChartMarkTarget[];
   readonly hoveredAction: EntityActionTarget | null;
   readonly pressedAction: EntityActionTarget | null;
+  /**
+   * The action whose choices are currently on show.
+   *
+   * Session state for the same reason a drag is: revealing the export formats
+   * is not an edit, and it must not survive a reload or appear in history. The
+   * halo grows the extra buttons rather than a menu opening over the canvas,
+   * so the disclosure needs no new geometry, no new hit testing, and works
+   * unchanged in a headset.
+   */
+  readonly expandedAction: EntityActionTarget | null;
   /** Binding whose marker is under the pointer; its detail is revealed. */
   readonly hoveredBinding: BindingId | null;
   readonly pressedBinding: BindingId | null;
@@ -86,8 +147,12 @@ export const emptySession = (): SessionState => ({
   hovered: null,
   drag: null,
   pointer: null,
+  selectedColumns: [],
+  hoveredMark: null,
+  selectedMarks: [],
   hoveredAction: null,
   pressedAction: null,
+  expandedAction: null,
   hoveredBinding: null,
   pressedBinding: null,
 });
@@ -121,6 +186,21 @@ export interface SetPointerCommand {
   readonly pointer: PointerState | null;
 }
 
+export interface SetSelectedColumnsCommand {
+  readonly type: 'SetSelectedColumns';
+  readonly ids: readonly EntityId[];
+}
+
+export interface SetHoveredMarkCommand {
+  readonly type: 'SetHoveredMark';
+  readonly target: ChartMarkTarget | null;
+}
+
+export interface SetSelectedMarksCommand {
+  readonly type: 'SetSelectedMarks';
+  readonly targets: readonly ChartMarkTarget[];
+}
+
 export interface SetHoveredActionCommand {
   readonly type: 'SetHoveredAction';
   readonly target: EntityActionTarget | null;
@@ -128,6 +208,11 @@ export interface SetHoveredActionCommand {
 
 export interface SetPressedActionCommand {
   readonly type: 'SetPressedAction';
+  readonly target: EntityActionTarget | null;
+}
+
+export interface SetExpandedActionCommand {
+  readonly type: 'SetExpandedAction';
   readonly target: EntityActionTarget | null;
 }
 
@@ -142,6 +227,10 @@ export interface SetPressedBindingCommand {
 }
 
 export type SessionCommand =
+  | SetSelectedColumnsCommand
+  | SetHoveredMarkCommand
+  | SetSelectedMarksCommand
+  | SetExpandedActionCommand
   | SetHoveredBindingCommand
   | SetPressedBindingCommand
   | SetHoveredActionCommand
@@ -159,6 +248,17 @@ const sameIds = (a: readonly EntityId[], b: readonly EntityId[]): boolean =>
 const sameTarget = (a: EntityActionTarget | null, b: EntityActionTarget | null): boolean =>
   a === b || (a !== null && b !== null && a.entityId === b.entityId && a.action === b.action);
 
+const sameMark = (a: ChartMarkTarget | null, b: ChartMarkTarget | null): boolean =>
+  a === b ||
+  (a !== null &&
+    b !== null &&
+    a.entityId === b.entityId &&
+    a.series === b.series &&
+    a.data === b.data);
+
+const sameMarks = (a: readonly ChartMarkTarget[], b: readonly ChartMarkTarget[]): boolean =>
+  a.length === b.length && a.every((mark, index) => sameMark(mark, b[index] ?? null));
+
 /**
  * Pure session reducer. Returns the identical object when nothing changed so
  * that subscribers can skip work cheaply.
@@ -172,8 +272,16 @@ export const applySessionCommand = (state: SessionState, command: SessionCommand
       const focusedTable = command.ids.length === 1 ? (command.ids[0] as EntityId) : null;
       return { ...state, selection: [...command.ids], focusedTable };
     }
-    case 'SetHovered':
-      return state.hovered === command.id ? state : { ...state, hovered: command.id };
+    case 'SetHovered': {
+      if (state.hovered === command.id) return state;
+      // Moving onto a *different* table folds the choices away: they belong to
+      // the table that offered them, and two open halos would be two menus.
+      const expanded =
+        command.id !== null && state.expandedAction?.entityId !== command.id
+          ? null
+          : state.expandedAction;
+      return { ...state, hovered: command.id, expandedAction: expanded };
+    }
     case 'SetFocusedTable':
       return state.focusedTable === command.id ? state : { ...state, focusedTable: command.id };
     case 'BeginDrag':
@@ -182,6 +290,18 @@ export const applySessionCommand = (state: SessionState, command: SessionCommand
       return state.drag === null ? state : { ...state, drag: null };
     case 'SetPointer':
       return { ...state, pointer: command.pointer };
+    case 'SetSelectedColumns':
+      return sameIds(state.selectedColumns, command.ids)
+        ? state
+        : { ...state, selectedColumns: [...command.ids] };
+    case 'SetHoveredMark':
+      return sameMark(state.hoveredMark, command.target)
+        ? state
+        : { ...state, hoveredMark: command.target };
+    case 'SetSelectedMarks':
+      return sameMarks(state.selectedMarks, command.targets)
+        ? state
+        : { ...state, selectedMarks: [...command.targets] };
     case 'SetHoveredAction':
       return sameTarget(state.hoveredAction, command.target)
         ? state
@@ -190,6 +310,10 @@ export const applySessionCommand = (state: SessionState, command: SessionCommand
       return sameTarget(state.pressedAction, command.target)
         ? state
         : { ...state, pressedAction: command.target };
+    case 'SetExpandedAction':
+      return sameTarget(state.expandedAction, command.target)
+        ? state
+        : { ...state, expandedAction: command.target };
     case 'SetHoveredBinding':
       return state.hoveredBinding === command.id ? state : { ...state, hoveredBinding: command.id };
     case 'SetPressedBinding':
@@ -228,6 +352,27 @@ export const isActionHovered = (state: SessionState, target: EntityActionTarget)
 
 export const isActionPressed = (state: SessionState, target: EntityActionTarget): boolean =>
   sameTarget(state.pressedAction, target);
+
+export const isColumnSelected = (state: SessionState, columnId: EntityId): boolean =>
+  state.selectedColumns.includes(columnId);
+
+/** The action a table is currently showing the choices for, if any. */
+/** The marks picked out in one chart, as that chart's own geometry names them. */
+export const selectedMarksOf = (
+  state: SessionState,
+  entityId: EntityId,
+): readonly { readonly series: number; readonly data: number }[] =>
+  state.selectedMarks.filter((mark) => mark.entityId === entityId);
+
+/** The mark under the pointer in one chart, if the pointer is in that one. */
+export const hoveredMarkOf = (
+  state: SessionState,
+  entityId: EntityId,
+): { readonly series: number; readonly data: number } | null =>
+  state.hoveredMark?.entityId === entityId ? state.hoveredMark : null;
+
+export const expandedActionOf = (state: SessionState, id: EntityId): EntityActionId | null =>
+  state.expandedAction?.entityId === id ? state.expandedAction.action : null;
 
 export const isDragging = (state: SessionState): boolean => state.drag !== null;
 

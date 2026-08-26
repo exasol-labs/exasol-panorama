@@ -1,5 +1,6 @@
 import type { ColumnDataType } from '@panorama/core';
 import type { CellValue, ResultChunk } from './result-chunk.js';
+import type { ColumnSummary } from './summary.js';
 import type { TableSchema } from './schema.js';
 
 /**
@@ -12,15 +13,21 @@ import type { TableSchema } from './schema.js';
  */
 
 /**
- * An equality predicate on one column.
+ * A membership predicate on one column: the rows where it is one of these.
  *
- * Stage 1 has no filtering UI and does not want one; this exists so a cell can
- * be *followed* to the rows a foreign key points at, which is a navigation act
- * rather than a query-building one.
+ * Not a filtering UI, and still not wanting one. It exists so that a *navigation*
+ * act can narrow a result set — following a foreign key to the rows it points at,
+ * or drilling into the marks somebody picked out of a chart. One value is the
+ * ordinary case and the reason it is a list is the second one: picking three bars
+ * out of a chart is one predicate over three values, not three predicates.
+ *
+ * An empty list matches nothing, deliberately. It is the honest reading of "the
+ * rows behind nothing at all", and it is what lets a drill-down table exist and
+ * be empty before anything has been chosen.
  */
 export interface RowFilter {
   readonly column: string;
-  readonly value: CellValue;
+  readonly values: readonly CellValue[];
   /**
    * Type of the column being compared, so the literal is formed correctly. A
    * foreign key column and its referent are type-compatible by definition, so
@@ -47,6 +54,17 @@ export interface TableDataSession {
   /** Total rows in the result set, or `null` when the source cannot report it. */
   readonly rowCount: number | null;
   fetch(request: FetchRequest, signal?: AbortSignal): Promise<ResultChunk>;
+  /**
+   * Describes one column: how much is missing, how varied it is, how it spreads.
+   *
+   * Optional because not every source can answer it, and the ones that can
+   * answer it in very different ways — a database aggregates one column without
+   * touching the others, while a generator has to walk its own rows. A source
+   * that cannot say returns nothing at all rather than guessing from the rows
+   * that happen to have been read for the screen, which would be a statement
+   * about the scroll position dressed up as a statement about the data.
+   */
+  summarise?(column: string, signal?: AbortSignal): Promise<ColumnSummary>;
   close(): Promise<void>;
 }
 

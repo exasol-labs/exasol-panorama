@@ -1,11 +1,5 @@
 import type { EntityId } from '@panorama/core';
-import type {
-  CellValue,
-  RetryPolicy,
-  RowCacheStats,
-  RowFilter,
-  TableSchema,
-} from '@panorama/table';
+import type { CellValue, RetryPolicy, RowCacheStats, TableSchema } from '@panorama/table';
 import {
   DEFAULT_BLOCK_SIZE,
   RowCache,
@@ -14,6 +8,7 @@ import {
   shouldRetryBlock,
 } from '@panorama/table';
 import type { BlockFailure, RowsAvailable, TableDataGateway } from './client.js';
+import type { OpenTableRequest } from './messages.js';
 
 /**
  * The render-thread view of one table's data.
@@ -23,6 +18,9 @@ import type { BlockFailure, RowsAvailable, TableDataGateway } from './client.js'
  * scheduling) lives in the worker; this side only ever does map lookups, so a
  * cell read during a frame is synchronous and free.
  */
+
+/** What to open, minus the table id the controller already knows. */
+export type TableOpenSpec = Omit<OpenTableRequest, 'tableId'>;
 
 export interface TableDataControllerOptions {
   readonly tableId: EntityId;
@@ -115,8 +113,8 @@ export class TableDataController {
     return this.#cache.blockSize;
   }
 
-  async open(schema: string, table: string, filter?: RowFilter): Promise<TableSchema> {
-    const result = await this.#gateway.openTable(this.tableId, schema, table, filter);
+  async open(spec: TableOpenSpec): Promise<TableSchema> {
+    const result = await this.#gateway.openTable({ tableId: this.tableId, ...spec });
     this.#schema = result.schema;
     this.#rowCount = result.rowCount;
     this.#generation = result.generation;

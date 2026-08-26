@@ -1,4 +1,5 @@
-import type { EntityId } from '@panorama/core';
+import type { ChartSpec, EntityId } from '@panorama/core';
+import type { ChartData } from '@panorama/chart';
 import type {
   DesiredBlock,
   ResultChunk,
@@ -7,8 +8,9 @@ import type {
   TableInfo,
   TableSchema,
 } from '@panorama/table';
-import type { TableDataErrorCode } from '@panorama/table';
+import type { ColumnSummary, TableDataErrorCode } from '@panorama/table';
 import type { ExasolCredentials } from '@panorama/exasol';
+import type { ExportFormat } from '@panorama/export';
 
 /**
  * The main thread ↔ data worker protocol.
@@ -56,14 +58,23 @@ export interface DescribeTableMessage {
   readonly table: string;
 }
 
-export interface OpenTableMessage {
-  readonly type: 'openTable';
-  readonly requestId: number;
+/** Everything needed to produce a table's rows. */
+export interface OpenTableRequest {
   readonly tableId: EntityId;
   readonly schema: string;
   readonly table: string;
   /** Restricts the result set; set when following a foreign key. */
   readonly filter?: RowFilter;
+  /**
+   * Runs this statement instead of selecting from `table`; set for a query
+   * table. `schema` and `table` then only label the result.
+   */
+  readonly sql?: string;
+}
+
+export interface OpenTableMessage extends OpenTableRequest {
+  readonly type: 'openTable';
+  readonly requestId: number;
 }
 
 export interface CloseTableMessage {
@@ -88,6 +99,81 @@ export interface RequestBlocksMessage {
   readonly blocks: readonly DesiredBlock[];
 }
 
+/**
+ * Writes a table to a file.
+ *
+ * The export is encoded *in the worker* — that is where the connection lives,
+ * and encoding a gigabyte on the render thread would break the one promise
+ * Panorama makes about frames. The encoded bytes come back as `exportChunk`
+ * messages rather than the worker writing the file itself: the file handle
+ * belongs to a save dialog, which is a main-thread affair, and posting a
+ * transferred buffer costs nothing while `FileSystemFileHandle` cloning is not
+ * something every browser can do.
+ *
+ * The export reads its *own* result set for the same statement. Sharing the one
+ * the table is browsing would mean two readers seeking a single cursor against
+ * each other — the export would drag the scroll about, and the scroll would
+ * drag the export.
+ */
+export interface StartExportMessage {
+  readonly type: 'startExport';
+  readonly requestId: number;
+  readonly exportId: number;
+  readonly tableId: EntityId;
+  readonly format: ExportFormat;
+}
+
+/**
+ * Permission to send the next chunk.
+ *
+ * Without it the worker would encode as fast as it can read and queue the whole
+ * file in the main thread's message port — an out-of-memory failure dressed up
+ * as a fast export. One ack per chunk is one round trip per 64 KiB, which is
+ * far more throughput than a disk or a database will ever supply.
+ */
+export interface ExportAckMessage {
+  readonly type: 'exportAck';
+  readonly exportId: number;
+  readonly sequence: number;
+}
+
+/**
+ * Describes one column of an open table.
+ *
+ * Asked for when a column is picked out, answered by whatever is behind the
+ * table — a database aggregates the one column and leaves the others alone; a
+ * generated relation walks its own rows and says how many it managed. Either
+ * way it happens in the worker, because either way it is work the render thread
+ * must not wait for.
+ */
+export interface SummariseColumnMessage {
+  readonly type: 'summariseColumn';
+  readonly requestId: number;
+  readonly tableId: EntityId;
+  readonly column: string;
+}
+
+/**
+ * Asks for the few dozen numbers a chart draws.
+ *
+ * Reduced on this side of the boundary: a chart of a billion rows is a handful of
+ * figures, and sending the rows over to work that out would be sending the whole
+ * table to draw a picture of it. `tableId` names the table being charted, not the
+ * chart — a chart has no result set of its own, it reads someone else's.
+ */
+export interface ChartDataMessage {
+  readonly type: 'chartData';
+  readonly requestId: number;
+  readonly tableId: EntityId;
+  readonly spec: ChartSpec;
+}
+
+export interface CancelExportMessage {
+  readonly type: 'cancelExport';
+  readonly requestId: number;
+  readonly exportId: number;
+}
+
 export type MainToWorkerMessage =
   | ConnectMessage
   | DisconnectMessage
@@ -97,7 +183,12 @@ export type MainToWorkerMessage =
   | OpenTableMessage
   | CloseTableMessage
   | ReopenTableMessage
-  | RequestBlocksMessage;
+  | RequestBlocksMessage
+  | StartExportMessage
+  | ExportAckMessage
+  | CancelExportMessage
+  | SummariseColumnMessage
+  | ChartDataMessage;
 
 export interface OpenTableResult {
   readonly schema: TableSchema;
@@ -129,6 +220,22 @@ export interface BlockFailedMessage {
   readonly error: SerializedError;
 }
 
+export interface ExportChunkMessage {
+  readonly type: 'exportChunk';
+  readonly exportId: number;
+  readonly sequence: number;
+  /** Transferred, so the bytes are moved rather than copied. */
+  readonly bytes: ArrayBuffer;
+}
+
+export interface ExportProgressMessage {
+  readonly type: 'exportProgress';
+  readonly exportId: number;
+  readonly rows: number;
+  readonly bytes: number;
+  readonly totalRows: number | null;
+}
+
 export interface ConnectionStatusMessage {
   readonly type: 'connectionStatus';
   readonly status: 'disconnected' | 'connecting' | 'connected' | 'failed';
@@ -136,8 +243,25 @@ export interface ConnectionStatusMessage {
 }
 
 export type WorkerToMainMessage =
-  ResultMessage | RowsAvailableMessage | BlockFailedMessage | ConnectionStatusMessage;
+  | ResultMessage
+  | RowsAvailableMessage
+  | BlockFailedMessage
+  | ExportChunkMessage
+  | ExportProgressMessage
+  | ConnectionStatusMessage;
+
+/** What a completed export reports back. */
+export interface ExportResultMessage {
+  readonly rows: number;
+  readonly bytes: number;
+}
 
 export type ListSchemasResult = readonly SchemaInfo[];
 export type ListTablesResult = readonly TableInfo[];
 export type DescribeTableResult = TableSchema;
+
+/** What a column summary comes back as; `null` when the source cannot say. */
+export type SummariseColumnResult = ColumnSummary | null;
+
+/** `null` when the table is open but has no rows to read yet. */
+export type ChartDataResult = ChartData | null;

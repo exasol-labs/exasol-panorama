@@ -1,13 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { computeColumnLayout } from '@panorama/table';
 import type { TableRenderInput } from '@panorama/renderer';
+import { ROW_NUMBER_GUTTER_WIDTH } from '@panorama/core';
 import {
+  TABLE_ACTIONS,
   DEFAULT_TABLE_THEME,
   buildTableDrawList,
   computeScrollbars,
   formatRowCount,
   maxScrollLeftOf,
   maxScrollTopOf,
+  rowNumberGutterWidth,
+  rowTextBand,
   tableMetrics,
   tableScrollBounds,
 } from '@panorama/renderer';
@@ -191,7 +195,239 @@ describe('buildTableDrawList', () => {
   });
 });
 
+describe('a column picked out by its header', () => {
+  const drawWith = (selectedColumns: readonly string[]): ReturnType<typeof buildTableDrawList> =>
+    buildTableDrawList({
+      entity: table,
+      layout,
+      theme: DEFAULT_TABLE_THEME,
+      lod: 'full',
+      scrollTop: 0,
+      scrollLeft: 0,
+      rowCount: 1_000,
+      data: dataView(),
+      selectedColumns: selectedColumns as never,
+    });
+
+  const washes = (list: ReturnType<typeof buildTableDrawList>): number =>
+    list.quads.filter((q) => q.color === DEFAULT_TABLE_THEME.columnSelectedBackground).length;
+
+  it('is washed over the body and marked on the header', () => {
+    const first = layout.placements[0]?.id as string;
+    const list = drawWith([first]);
+    expect(washes(list)).toBe(1);
+    expect(
+      list.quads.some((q) => q.color === DEFAULT_TABLE_THEME.columnSelectedHeaderBackground),
+    ).toBe(true);
+    // An edge either side, so two neighbours never read as one wide column.
+    expect(
+      list.quads.filter((q) => q.color === DEFAULT_TABLE_THEME.columnSelectedBorder),
+    ).toHaveLength(2);
+  });
+
+  it('is washed rather than repainted, so the values still show', () => {
+    const first = layout.placements[0]?.id as string;
+    const plain = buildTableDrawList({
+      entity: table,
+      layout,
+      theme: DEFAULT_TABLE_THEME,
+      lod: 'full',
+      scrollTop: 0,
+      scrollLeft: 0,
+      rowCount: 1_000,
+      data: dataView(),
+    });
+    // Not one glyph fewer: the wash is a quad, and quads go under the text. The
+    // panel below the table adds runs of its own, so every plain run must still
+    // be there rather than the count merely matching.
+    const washed = drawWith([first]);
+    for (const run of plain.texts) {
+      expect(washed.texts).toContainEqual(run);
+    }
+    // Translucent, which is what lets the striping through: alpha is the
+    // fourth channel of an Rgba tuple.
+    expect(DEFAULT_TABLE_THEME.columnSelectedBackground[3]).toBeLessThan(1);
+  });
+
+  it('washes each of several columns, and nothing when none is picked out', () => {
+    const ids = layout.placements.slice(0, 2).map((placement) => placement.id as string);
+    expect(washes(drawWith(ids))).toBe(2);
+    expect(washes(drawWith([]))).toBe(0);
+    // A column id belonging to some other table colours nothing here.
+    expect(washes(drawWith(['column:elsewhere']))).toBe(0);
+  });
+
+  it('draws nothing for a column scrolled out of sight', () => {
+    const last = layout.placements.at(-1)?.id as string;
+    const scrolledAway = buildTableDrawList({
+      entity: table,
+      layout,
+      theme: DEFAULT_TABLE_THEME,
+      lod: 'full',
+      scrollTop: 0,
+      // Far past the last column.
+      scrollLeft: layout.totalWidth + 1_000,
+      rowCount: 1_000,
+      data: dataView(),
+      selectedColumns: [last] as never,
+    });
+    expect(washes(scrolledAway)).toBe(0);
+  });
+});
+
+describe('rowTextBand', () => {
+  it('reports the band the glyphs ink, not the whole row', () => {
+    const band = rowTextBand(24, 12);
+    // Comfortably inside a 24-pixel row: text is centred on a baseline rather
+    // than filling its row, which is the slack a scrolling edge spends.
+    expect(band.top).toBeGreaterThan(0);
+    expect(band.bottom).toBeLessThan(24);
+    expect(band.bottom - band.top).toBeCloseTo(12 * (0.78 + 0.24), 6);
+  });
+
+  it('grows with the font rather than with the row', () => {
+    expect(rowTextBand(24, 16).bottom - rowTextBand(24, 16).top).toBeGreaterThan(
+      rowTextBand(24, 12).bottom - rowTextBand(24, 12).top,
+    );
+  });
+});
+
+describe('a partly visible row', () => {
+  const rowsOf = (height: number, scrollTop: number): TableRenderInput => ({
+    entity: { ...table, transform: { ...table.transform, height } },
+    layout,
+    theme: DEFAULT_TABLE_THEME,
+    lod: 'full',
+    scrollTop,
+    scrollLeft: 0,
+    rowCount: 10_000,
+    data: dataView(),
+  });
+
+  /**
+   * The gutter's own numbers. Picked out by their `x`, which is the row's left
+   * padding — a cell's text starts at the gutter's far edge or beyond, and the
+   * first column here is numeric and right-aligned too.
+   */
+  const numbers = (input: TableRenderInput): readonly string[] =>
+    buildTableDrawList(input)
+      .texts.filter((run) => run.x === DEFAULT_TABLE_THEME.cellPaddingX && run.align === 'right')
+      .map((run) => run.text);
+
+  it('keeps its background and loses its text, so no glyph is ever halved', () => {
+    // Scrolled by half a row: the rows at both edges are cut in two.
+    const halfway = rowsOf(400, 12);
+    const list = buildTableDrawList(halfway);
+    const shown = numbers(halfway);
+    // Every number drawn belongs to a row that is whole.
+    const band = rowTextBand(table.view.rowHeight, DEFAULT_TABLE_THEME.fontSize);
+    const header = table.view.headerHeight;
+    const bodyBottom =
+      header + tableMetrics(halfway.entity, layout, 10_000, DEFAULT_TABLE_THEME).bodyHeight;
+    for (const run of list.texts) {
+      if (!/^\d+$/u.test(run.text) || run.align !== 'right') continue;
+      expect(run.y + band.top).toBeGreaterThanOrEqual(header - 0.001);
+      expect(run.y + band.bottom).toBeLessThanOrEqual(bodyBottom + 0.001);
+    }
+    // The rows are still there, striped: only the letters waited.
+    expect(list.quads.length).toBeGreaterThan(shown.length);
+  });
+
+  it('holds back only the rows it has to', () => {
+    const aligned = numbers(rowsOf(400, 24 * 3));
+    const halved = numbers(rowsOf(400, 24 * 3 + 12));
+    // Halving the rows at the edges costs at most one number at each of them.
+    expect(aligned.length - halved.length).toBeGreaterThanOrEqual(0);
+    expect(aligned.length - halved.length).toBeLessThanOrEqual(2);
+    // The row at the top edge is the one that goes: its number is skipped and
+    // the next one leads instead.
+    expect(aligned[0]).toBe('4');
+    expect(halved[0]).toBe('5');
+  });
+
+  it('spends only a few pixels of patience, not a whole row', () => {
+    // Three pixels into the row is still short of its lettering, so the number
+    // stays — a whole-row rule would have dropped it and left a visible gap.
+    expect(numbers(rowsOf(400, 3))[0]).toBe('1');
+    expect(numbers(rowsOf(400, 0))[0]).toBe('1');
+    // Half a row in is past it.
+    expect(numbers(rowsOf(400, 12))[0]).toBe('2');
+  });
+});
+
+describe('rowNumberGutterWidth', () => {
+  const theme = DEFAULT_TABLE_THEME;
+
+  it('leaves the configured width alone for a table whose numbers fit', () => {
+    expect(rowNumberGutterWidth(100, theme)).toBe(ROW_NUMBER_GUTTER_WIDTH);
+    expect(rowNumberGutterWidth(1, theme)).toBe(ROW_NUMBER_GUTTER_WIDTH);
+    expect(rowNumberGutterWidth(0, theme)).toBe(ROW_NUMBER_GUTTER_WIDTH);
+  });
+
+  it('widens for a row number the configured width could not hold', () => {
+    // Eleven digits at eight pixels each, plus the padding either side.
+    expect(rowNumberGutterWidth(10_000_000_000, theme)).toBe(11 * 8 + theme.cellPaddingX * 2);
+    expect(rowNumberGutterWidth(1_000_000, theme)).toBe(7 * 8 + theme.cellPaddingX * 2);
+    // Wide enough for the widest digit of the fonts the atlas falls through: an
+    // eleven-digit number measures about 81 pixels, and this leaves room.
+    expect(rowNumberGutterWidth(10_000_000_000, theme) - theme.cellPaddingX * 2).toBeGreaterThan(
+      81,
+    );
+  });
+
+  it('grows with the digits rather than with the rows', () => {
+    // A ten-fold table is one digit wider, not ten times the gutter.
+    const million = rowNumberGutterWidth(1_000_000, theme);
+    const tenMillion = rowNumberGutterWidth(10_000_000, theme);
+    expect(tenMillion - million).toBe(8);
+  });
+
+  it('keeps the configured width when there is no row count to derive from', () => {
+    expect(rowNumberGutterWidth(null, theme)).toBe(ROW_NUMBER_GUTTER_WIDTH);
+    expect(rowNumberGutterWidth(null, theme, 40)).toBe(40);
+  });
+
+  it('takes whichever is wider: the configured width or what the digits need', () => {
+    // A generous configured gutter wins over eleven digits that fit inside it.
+    expect(rowNumberGutterWidth(10_000_000_000, theme, 200)).toBe(200);
+    // A mean one loses to them.
+    expect(rowNumberGutterWidth(10_000_000_000, theme, 40)).toBe(11 * 8 + theme.cellPaddingX * 2);
+  });
+});
+
 describe('tableMetrics', () => {
+  it('sizes the gutter to the row numbers, so none of them is cut short', () => {
+    const huge = tableMetrics(table, layout, 10_000_000_000, DEFAULT_TABLE_THEME);
+    const small = tableMetrics(table, layout, 100, DEFAULT_TABLE_THEME);
+    expect(small.gutterWidth).toBe(ROW_NUMBER_GUTTER_WIDTH);
+    expect(huge.gutterWidth).toBeGreaterThan(small.gutterWidth);
+    // The room comes out of the cells rather than out of the table.
+    expect(huge.width).toBe(small.width);
+    expect(huge.gutterWidth + huge.bodyWidth).toBeLessThanOrEqual(huge.width);
+  });
+
+  it('gives the row number more room than its digits need', () => {
+    const huge = tableMetrics(table, layout, 10_000_000_000, DEFAULT_TABLE_THEME);
+    const list = buildTableDrawList({
+      entity: table,
+      layout,
+      theme: DEFAULT_TABLE_THEME,
+      lod: 'full',
+      scrollTop: 0,
+      scrollLeft: 0,
+      rowCount: 10_000_000_000,
+      data: { cell: () => 'x' },
+    });
+    // The number is drawn in full: an ellipsis here would be a position that
+    // reads as a different position.
+    const numbers = list.texts.filter((run) => /^\d+$/u.test(run.text));
+    expect(numbers.length).toBeGreaterThan(0);
+    expect(numbers.every((run) => !run.text.includes('…'))).toBe(true);
+    expect(numbers[0]?.maxWidth).toBeGreaterThanOrEqual(
+      huge.gutterWidth - DEFAULT_TABLE_THEME.cellPaddingX * 2,
+    );
+  });
+
   it('reserves space so a scrollbar never covers a cell', () => {
     const tall = tableMetrics(table, layout, 1_000_000, DEFAULT_TABLE_THEME);
     expect(tall.verticalScrollbar).toBe(true);
@@ -336,23 +572,71 @@ describe('the action halo', () => {
     expect(icon?.align).toBe('center');
   });
 
-  it('draws a border and a face for each button', () => {
+  it('greys out an action the table cannot perform', () => {
+    const list = haloOf({ disabledActions: ['sql'] });
+    expect(
+      list.quads.some((quad) => quad.color === DEFAULT_TABLE_THEME.haloDisabledBackground),
+    ).toBe(true);
+    expect(
+      list.texts.find((run) => run.text === 'SQL')?.color === DEFAULT_TABLE_THEME.haloDisabledIcon,
+    ).toBe(true);
+    // The button is still laid out and drawn — only inert.
+    expect(list.quads.length).toBe(haloOf().quads.length);
+  });
+
+  it('will not highlight a disabled button even under the pointer', () => {
+    const list = haloOf({ disabledActions: ['sql'], hoveredAction: 'sql', pressedAction: 'sql' });
+    expect(list.quads.some((quad) => quad.color === DEFAULT_TABLE_THEME.haloAccentBackground)).toBe(
+      false,
+    );
+    expect(
+      list.quads.some((quad) => quad.color === DEFAULT_TABLE_THEME.haloAccentPressedBackground),
+    ).toBe(false);
+  });
+
+  it('tints an ordinary action with the accent and a destructive one with the warning', () => {
+    expect(
+      haloOf({ hoveredAction: 'sql' }).quads.some(
+        (quad) => quad.color === DEFAULT_TABLE_THEME.haloAccentBackground,
+      ),
+    ).toBe(true);
+    // Close is the destructive one; it must not borrow the accent.
+    expect(
+      haloOf({ hoveredAction: 'close' }).quads.some(
+        (quad) => quad.color === DEFAULT_TABLE_THEME.haloAccentBackground,
+      ),
+    ).toBe(false);
+  });
+
+  it('draws a border and a face for each button, and the bars on top', () => {
     const quiet = buildTableDrawList(input()).quads.length;
-    expect(haloOf().quads.length).toBe(quiet + 2);
+    // A drawn mark goes in the quads with the button it sits on, because the
+    // polygon batch is painted underneath them.
+    const bars = TABLE_ACTIONS.filter((spec) => spec.shape === 'bars').length * 3;
+    expect(bars).toBe(3);
+    expect(haloOf().quads.length).toBe(quiet + 2 * TABLE_ACTIONS.length + bars);
     expect(haloOf().quads.some((quad) => quad.color === DEFAULT_TABLE_THEME.haloBackground)).toBe(
       true,
     );
+    // The bars take the icon colour, and turn white with the rest of a hovered
+    // button rather than staying dark on the accent.
+    expect(haloOf().quads.some((quad) => quad.color === DEFAULT_TABLE_THEME.haloIcon)).toBe(true);
+    expect(
+      haloOf({ hoveredAction: 'chart' }).quads.some(
+        (quad) => quad.color === DEFAULT_TABLE_THEME.haloHoverIcon,
+      ),
+    ).toBe(true);
   });
 
   it('highlights on hover and again on press', () => {
     expect(
       haloOf({ hoveredAction: 'close' }).quads.some(
-        (quad) => quad.color === DEFAULT_TABLE_THEME.haloHoverBackground,
+        (quad) => quad.color === DEFAULT_TABLE_THEME.haloDangerBackground,
       ),
     ).toBe(true);
     expect(
       haloOf({ pressedAction: 'close' }).quads.some(
-        (quad) => quad.color === DEFAULT_TABLE_THEME.haloPressedBackground,
+        (quad) => quad.color === DEFAULT_TABLE_THEME.haloDangerPressedBackground,
       ),
     ).toBe(true);
     expect(haloOf({ hoveredAction: 'close' }).texts.find((run) => run.text === '×')?.color).toBe(

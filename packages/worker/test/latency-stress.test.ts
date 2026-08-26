@@ -37,7 +37,7 @@ const replayFling = async (latencyMs: number): Promise<Replay> => {
     maxBytes: 2_000_000,
     schedule: () => {},
   });
-  await controller.open('PANORAMA_TEST', 'VERY_TALL');
+  await controller.open({ schema: 'PANORAMA_TEST', table: 'VERY_TALL' });
 
   const scrollPositions: number[] = [];
   let renderedRows = 0;
@@ -124,7 +124,7 @@ describe('latency stress', () => {
         maxBytes: 1_000_000,
         schedule: () => {},
       });
-      await controller.open('PANORAMA_TEST', 'VERY_TALL');
+      await controller.open({ schema: 'PANORAMA_TEST', table: 'VERY_TALL' });
       for (let row = 0; row < 100_000; row += 2_000) {
         controller.setViewport({ firstVisibleRow: row, visibleRowCount: 34, velocityY: 2_500 });
         await harness.settle();

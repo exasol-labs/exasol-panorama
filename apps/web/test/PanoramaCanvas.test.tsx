@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, waitFor } from '@testing-library/react';
+import { isTableEntity } from '@panorama/core';
 import type { FrameStats } from '@panorama/renderer';
 import { PanoramaCanvas } from '../src/panorama/PanoramaCanvas.js';
 import { createAppHarness, firstTableId } from './harness.js';
@@ -169,12 +170,65 @@ describe('PanoramaCanvas', () => {
     unmount();
   });
 
+  it('leaves the keyboard alone while the user is typing', async () => {
+    const { harness, canvas, unmount } = await mount();
+    const id = firstTableId(harness);
+    act(() => {
+      fireEvent.pointerDown(canvas, { pointerId: 1, clientX: 600, clientY: 415 });
+      fireEvent.pointerMove(canvas, { pointerId: 1, clientX: 700, clientY: 415 });
+      fireEvent.pointerUp(canvas, { pointerId: 1, clientX: 700, clientY: 415 });
+    });
+    expect(harness.workspace.core.world.entities.get(id)?.transform.x).toBe(100);
+    expect(harness.workspace.core.session.selection).toHaveLength(1);
+
+    // The SQL editor is real DOM on top of the canvas. ⌘Z there means "undo my
+    // typing" and Escape means "leave the field" — neither is a canvas command.
+    const field = document.createElement('textarea');
+    document.body.append(field);
+    act(() => {
+      fireEvent.keyDown(field, { key: 'z', metaKey: true });
+      fireEvent.keyDown(field, { key: 'Escape' });
+    });
+    expect(harness.workspace.core.world.entities.get(id)?.transform.x).toBe(100);
+    expect(harness.workspace.core.session.selection).toHaveLength(1);
+
+    field.remove();
+    unmount();
+  });
+
   it('clears the selection with Escape', async () => {
     const { harness, canvas, unmount } = await mount();
     act(() => {
       fireEvent.pointerDown(canvas, { pointerId: 1, clientX: 600, clientY: 415 });
       fireEvent.pointerUp(canvas, { pointerId: 1, clientX: 600, clientY: 415 });
     });
+    expect(harness.workspace.core.session.selection).toHaveLength(1);
+
+    act(() => {
+      fireEvent.keyDown(globalThis, { key: 'Escape' });
+    });
+    expect(harness.workspace.core.session.selection).toEqual([]);
+    unmount();
+  });
+
+  it('lets go of the columns first, and the table only on a second Escape', async () => {
+    const { harness, canvas, unmount } = await mount();
+    act(() => {
+      fireEvent.pointerDown(canvas, { pointerId: 1, clientX: 600, clientY: 415 });
+      fireEvent.pointerUp(canvas, { pointerId: 1, clientX: 600, clientY: 415 });
+    });
+    const entity = [...harness.workspace.core.world.entities.values()][0];
+    if (entity === undefined || !isTableEntity(entity)) throw new Error('expected a table');
+    const columns = entity.columns.slice(0, 2).map((column) => column.id);
+    act(() => {
+      harness.workspace.core.dispatchSession({ type: 'SetSelectedColumns', ids: columns });
+    });
+
+    act(() => {
+      fireEvent.keyDown(globalThis, { key: 'Escape' });
+    });
+    // The columns go; the table stays active, so it can be worked on further.
+    expect(harness.workspace.core.session.selectedColumns).toEqual([]);
     expect(harness.workspace.core.session.selection).toHaveLength(1);
 
     act(() => {

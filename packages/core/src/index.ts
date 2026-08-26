@@ -1,5 +1,6 @@
 export * from './apply.js';
 export * from './bindings.js';
+export * from './chart-spec.js';
 export * from './commands.js';
 export * from './constraints.js';
 export * from './data-types.js';
@@ -8,6 +9,8 @@ export * from './entities.js';
 export * from './geometry.js';
 export * from './history.js';
 export * from './ids.js';
+export * from './placement.js';
+export * from './query-chain.js';
 export * from './result.js';
 export * from './session.js';
 export * from './table-entity.js';

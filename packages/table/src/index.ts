@@ -8,5 +8,6 @@ export * from './result-chunk.js';
 export * from './schema.js';
 export * from './scheduler.js';
 export * from './smooth-scroll.js';
+export * from './summary.js';
 export * from './velocity.js';
 export * from './viewport.js';

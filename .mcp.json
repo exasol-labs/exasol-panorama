@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "panorama": {
+      "type": "http",
+      "url": "http://localhost:5173/agent/mcp"
+    }
+  }
+}

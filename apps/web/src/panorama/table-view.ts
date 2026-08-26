@@ -1,12 +1,6 @@
 import type { EntityId, TableEntity } from '@panorama/core';
 import { ROW_NUMBER_GUTTER_WIDTH } from '@panorama/core';
-import type {
-  CellValue,
-  ColumnLayout,
-  RowFilter,
-  TableSchema,
-  TableViewport,
-} from '@panorama/table';
+import type { CellValue, ColumnLayout, TableSchema, TableViewport } from '@panorama/table';
 import {
   SmoothScroll,
   VelocityTracker,
@@ -21,7 +15,7 @@ import {
   maxScrollTopOf,
   tableMetrics,
 } from '@panorama/renderer';
-import type { TableDataGateway } from '@panorama/worker';
+import type { TableDataGateway, TableOpenSpec } from '@panorama/worker';
 import { TableDataController } from '@panorama/worker';
 
 /**
@@ -96,8 +90,9 @@ export class TableView {
     return this.#velocity.velocity;
   }
 
-  async open(schema: string, table: string, filter?: RowFilter): Promise<void> {
-    await this.controller.open(schema, table, filter);
+  /** Returns the schema the result set reported, which a query only learns here. */
+  async open(spec: TableOpenSpec): Promise<TableSchema> {
+    return this.controller.open(spec);
   }
 
   /** Reopens the result set after a reconnect and returns to the top. */

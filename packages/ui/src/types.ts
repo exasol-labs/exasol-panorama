@@ -35,6 +35,8 @@ export interface TableListing {
   readonly name: string;
   readonly kind: string;
   readonly comment?: string;
+  /** Rows the database's catalogue reports; absent where it has no figure. */
+  readonly rowCount?: number;
 }
 
 /**

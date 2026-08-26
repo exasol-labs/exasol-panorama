@@ -40,7 +40,7 @@ describe('TableDataController', () => {
       },
     );
 
-    await controller.open('PANORAMA_TEST', 'SALES');
+    await controller.open({ schema: 'PANORAMA_TEST', table: 'SALES' });
     expect(controller.rowCount).toBe(10_000);
     expect(controller.schema?.columns).toHaveLength(4);
     expect(controller.blockSize).toBe(256);
@@ -50,7 +50,7 @@ describe('TableDataController', () => {
   it('serves cells synchronously once blocks arrive', async () => {
     const harness = createWorkerHarness();
     const { controller, changes } = controllerWith(harness);
-    await controller.open('PANORAMA_TEST', 'SALES');
+    await controller.open({ schema: 'PANORAMA_TEST', table: 'SALES' });
 
     controller.setViewport({ firstVisibleRow: 1_024, visibleRowCount: 34, velocityY: 0 });
     expect(controller.cell(1_024, 0)).toBeUndefined();
@@ -67,7 +67,7 @@ describe('TableDataController', () => {
   it('prefetches ahead of a downward scroll', async () => {
     const harness = createWorkerHarness();
     const { controller } = controllerWith(harness, { aheadBlocks: 2, behindBlocks: 0 });
-    await controller.open('PANORAMA_TEST', 'SALES');
+    await controller.open({ schema: 'PANORAMA_TEST', table: 'SALES' });
 
     controller.setViewport({ firstVisibleRow: 1_024, visibleRowCount: 34, velocityY: 2_000 });
     await harness.settle();
@@ -82,7 +82,7 @@ describe('TableDataController', () => {
   it('does not re-request blocks it already has', async () => {
     const harness = createWorkerHarness();
     const { controller } = controllerWith(harness);
-    await controller.open('PANORAMA_TEST', 'SALES');
+    await controller.open({ schema: 'PANORAMA_TEST', table: 'SALES' });
     controller.setViewport({ firstVisibleRow: 0, visibleRowCount: 34, velocityY: 0 });
     await harness.settle();
     const fetchesAfterFirst = harness.sources.get('PANORAMA_TEST.SALES')?.stats().fetches ?? 0;
@@ -97,7 +97,7 @@ describe('TableDataController', () => {
       source: { relation: { ...harnessRelation(), rowCount: 10_000_000_000 } },
     });
     const { controller } = controllerWith(harness, { maxBytes: 400_000, aheadBlocks: 1 });
-    await controller.open('PANORAMA_TEST', 'SALES');
+    await controller.open({ schema: 'PANORAMA_TEST', table: 'SALES' });
 
     for (let row = 0; row < 200_000; row += 5_000) {
       controller.setViewport({ firstVisibleRow: row, visibleRowCount: 34, velocityY: 3_000 });
@@ -111,7 +111,7 @@ describe('TableDataController', () => {
   it('retries a failed block with backoff and recovers', async () => {
     const harness = createWorkerHarness({ source: { failure: { firstAttempts: 1 } } });
     const { controller, retries } = controllerWith(harness);
-    await controller.open('PANORAMA_TEST', 'SALES');
+    await controller.open({ schema: 'PANORAMA_TEST', table: 'SALES' });
 
     controller.setViewport({ firstVisibleRow: 0, visibleRowCount: 34, velocityY: 0 });
     await harness.settle();
@@ -131,7 +131,7 @@ describe('TableDataController', () => {
       aheadBlocks: 0,
       behindBlocks: 0,
     });
-    await controller.open('PANORAMA_TEST', 'SALES');
+    await controller.open({ schema: 'PANORAMA_TEST', table: 'SALES' });
     controller.setViewport({ firstVisibleRow: 0, visibleRowCount: 34, velocityY: 0 });
 
     for (let round = 0; round < 5; round += 1) {
@@ -147,7 +147,7 @@ describe('TableDataController', () => {
   it('ignores rows belonging to a superseded generation', async () => {
     const harness = createWorkerHarness({ source: { latency: 100 } });
     const { controller } = controllerWith(harness);
-    await controller.open('PANORAMA_TEST', 'SALES');
+    await controller.open({ schema: 'PANORAMA_TEST', table: 'SALES' });
     controller.setViewport({ firstVisibleRow: 0, visibleRowCount: 34, velocityY: 0 });
 
     await controller.reopen();
@@ -161,7 +161,7 @@ describe('TableDataController', () => {
   it('ignores events addressed to other tables', async () => {
     const gateway = stubGateway();
     const controller = new TableDataController({ tableId: TABLE_ID, gateway });
-    await controller.open('PANORAMA_TEST', 'SALES');
+    await controller.open({ schema: 'PANORAMA_TEST', table: 'SALES' });
 
     const chunk = createResultChunk(0, 2, [buildFloat64Vector([1, 2])]);
     gateway.emitRows({
@@ -194,7 +194,7 @@ describe('TableDataController', () => {
   it('reports status for instrumentation', async () => {
     const harness = createWorkerHarness({ source: { latency: 50 } });
     const { controller } = controllerWith(harness);
-    await controller.open('PANORAMA_TEST', 'SALES');
+    await controller.open({ schema: 'PANORAMA_TEST', table: 'SALES' });
     controller.setViewport({ firstVisibleRow: 0, visibleRowCount: 34, velocityY: 0 });
 
     const pending = controller.status();
@@ -213,7 +213,7 @@ describe('TableDataController', () => {
     controller.setViewport({ firstVisibleRow: 0, visibleRowCount: 34, velocityY: 0 });
     expect(controller.status().cache.loadedBlocks).toBe(0);
 
-    await controller.open('PANORAMA_TEST', 'SALES');
+    await controller.open({ schema: 'PANORAMA_TEST', table: 'SALES' });
     await controller.close();
     controller.setViewport({ firstVisibleRow: 0, visibleRowCount: 34, velocityY: 0 });
     await harness.settle();
@@ -233,7 +233,7 @@ describe('TableDataController', () => {
         aheadBlocks: 0,
         behindBlocks: 0,
       });
-      await controller.open('PANORAMA_TEST', 'SALES');
+      await controller.open({ schema: 'PANORAMA_TEST', table: 'SALES' });
       controller.setViewport({ firstVisibleRow: 0, visibleRowCount: 34, velocityY: 0 });
       await harness.settle();
       expect(controller.status().cache.failedBlocks).toBe(1);
@@ -249,7 +249,7 @@ describe('TableDataController', () => {
   it('uses real timers and defaults when none are injected', async () => {
     const harness = createWorkerHarness();
     const controller = new TableDataController({ tableId: TABLE_ID, gateway: harness.client });
-    await controller.open('PANORAMA_TEST', 'SALES');
+    await controller.open({ schema: 'PANORAMA_TEST', table: 'SALES' });
     controller.setViewport({ firstVisibleRow: 0, visibleRowCount: 10, velocityY: 0 });
     await harness.settle();
     expect(controller.cell(0, 0)).toBe(0);

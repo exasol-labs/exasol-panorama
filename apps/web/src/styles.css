@@ -65,6 +65,115 @@ body {
   color: var(--pn-muted);
 }
 
+/* A panel's title row, where the title shares a line with something small. */
+.pn-panel__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+/*
+ * The connection indicator: which database, and the way off it.
+ *
+ * A dot rather than the word "connected", because the word is only ever there
+ * when it is true — a caption that never varies is not information. The dot is
+ * the same green the dialog's status used, so the one that replaced the other
+ * reads as the same thing.
+ */
+.pn-connected {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--pn-muted);
+}
+
+.pn-connected__dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: #1f8a4c;
+}
+
+.pn-connected__host {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pn-connected__off {
+  display: flex;
+  flex: none;
+  align-items: center;
+  padding: 2px;
+  color: var(--pn-muted);
+  background: none;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.pn-connected__off:hover {
+  color: var(--pn-danger);
+  background: var(--pn-bg);
+}
+
+/*
+ * Settings: a panel that is a title row until it is asked for more.
+ *
+ * Closed it costs one line, which is what a settings panel should cost when
+ * nobody is looking at it.
+ */
+.pn-settings__gear {
+  display: flex;
+  padding: 2px;
+  color: var(--pn-muted);
+  background: none;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.pn-settings__gear:hover {
+  color: var(--pn-accent);
+  background: var(--pn-bg);
+}
+
+.pn-settings__row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.pn-settings__label {
+  flex: none;
+  width: 92px;
+  color: var(--pn-muted);
+}
+
+.pn-settings__value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--pn-mono);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* What the machine said, which is the only reason to press either button. */
+.pn-settings__said {
+  margin: 0;
+  padding-left: 14px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--pn-muted);
+}
+
 .pn-field {
   display: flex;
   flex-direction: column;
@@ -130,6 +239,24 @@ button:disabled {
   color: var(--pn-danger);
 }
 
+/*
+ * A URL inside a message. It keeps the message's colour rather than taking the
+ * accent: it is part of a sentence about what went wrong, and a blue word in
+ * the middle of a red one reads as a different thought. The underline is what
+ * says it can be clicked.
+ */
+.pn-error a,
+.pn-hint a {
+  color: inherit;
+  text-decoration: underline;
+  overflow-wrap: anywhere;
+}
+
+.pn-error a:hover,
+.pn-hint a:hover {
+  text-decoration-thickness: 2px;
+}
+
 .pn-hint {
   margin: 0;
   font-size: 12px;
@@ -165,6 +292,99 @@ button:disabled {
 .pn-list__kind {
   font-size: 10px;
   color: var(--pn-muted);
+}
+
+/*
+ * The explorer tree. Rows are one grid each so the icons line up down the
+ * column whatever the name beside them is, and the branch is indented by the
+ * width of a chevron so a table sits under its schema's name rather than under
+ * its arrow.
+ */
+
+.pn-tree,
+.pn-tree__children {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.pn-tree {
+  max-height: 46vh;
+  overflow-y: auto;
+}
+
+.pn-tree__branch {
+  padding-left: 13px;
+  margin-left: 6px;
+  border-left: 1px solid var(--pn-border);
+}
+
+.pn-tree__row {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  width: 100%;
+  padding: 3px 6px 3px 3px;
+  color: var(--pn-text);
+  text-align: left;
+  background: transparent;
+  border-radius: 3px;
+}
+
+.pn-tree__row:hover {
+  background: #eef3fd;
+}
+
+/* A schema is the thing being chosen between, so it carries the weight. */
+.pn-tree__row--schema {
+  font-weight: 500;
+}
+
+.pn-tree__icon {
+  flex: none;
+  color: var(--pn-muted);
+}
+
+.pn-tree__row:hover .pn-tree__icon {
+  color: var(--pn-accent);
+}
+
+.pn-tree__chevron {
+  flex: none;
+  color: var(--pn-muted);
+  transition: transform 120ms ease;
+}
+
+.pn-tree__chevron--open {
+  transform: rotate(90deg);
+}
+
+.pn-tree__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/*
+ * Captions at the end of a row: an unfamiliar kind, and the row count. Tabular
+ * figures so a column of counts lines up on its digits rather than drifting.
+ */
+.pn-tree__kind,
+.pn-tree__count {
+  flex: none;
+  font-size: 10px;
+  color: var(--pn-muted);
+}
+
+.pn-tree__count {
+  font-variant-numeric: tabular-nums;
+}
+
+.pn-tree__branch .pn-hint,
+.pn-tree__branch .pn-error {
+  padding: 2px 0 2px 3px;
 }
 
 .pn-stage {
@@ -240,4 +460,390 @@ button:disabled {
 
 .pn-xr {
   align-self: flex-start;
+}
+
+/*
+ * The SQL editor overlay.
+ *
+ * Positioned by an animation frame from the camera, so it needs no transition:
+ * a CSS transition would make it lag a pan by its own duration.
+ */
+.pn-sql-editor {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: top left;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  padding: 0.5em;
+  gap: 0.4em;
+  background: #f7f8fa;
+  overflow: hidden;
+}
+
+/*
+ * The field is the frame; the text lives twice inside it. The backdrop carries
+ * the colouring and the textarea carries the caret, so every property that
+ * decides where a character lands has to be identical on both — font, padding,
+ * line height, wrapping. A difference in any of them shows up as colour sliding
+ * off the word it belongs to.
+ */
+.pn-sql-field {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  border: 1px solid #c7ced6;
+  border-radius: 3px;
+  background: #ffffff;
+  overflow: hidden;
+}
+
+.pn-sql-field:focus-within {
+  outline: 2px solid #1a73e8;
+  outline-offset: -1px;
+}
+
+.pn-sql-backdrop,
+.pn-sql-input {
+  position: absolute;
+  inset: 0;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0.5em;
+  border: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 1em;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  tab-size: 2;
+}
+
+.pn-sql-backdrop {
+  color: #1f252b;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.pn-sql-input {
+  color: transparent;
+  caret-color: #1f252b;
+  background: transparent;
+  resize: none;
+  overflow: auto;
+}
+
+.pn-sql-input:focus {
+  outline: none;
+}
+
+/* Selection has to stay visible through transparent glyphs. */
+.pn-sql-input::selection {
+  background: #b6d4fe;
+}
+
+/*
+ * The name of the table a box was opened on. Not a real relation anywhere, which
+ * is the whole reason it is coloured.
+ */
+.pn-sql-reference {
+  color: #8a44c8;
+  background: #f4ecfb;
+  border-radius: 2px;
+  font-weight: 600;
+}
+
+.pn-sql-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5em;
+  flex: 0 0 auto;
+}
+
+.pn-sql-hint {
+  font-size: 0.85em;
+  color: #6b7480;
+}
+
+.pn-sql-editor .pn-button {
+  font-size: 0.9em;
+  padding: 0.25em 0.9em;
+}
+
+/*
+ * The controls of a chart box: the second DOM overlay, and the last.
+ *
+ * A column down the left of the box; the canvas draws the chart itself in the
+ * rest of it, so every control is a change you watch happen. Grouped and folded,
+ * because the settings a chart library offers do not fit in a flat list and a
+ * flat list of them is not a form.
+ */
+
+.pn-chart-editor {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: top left;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  padding: 0.5em 0.5em 0.4em;
+  gap: 0.4em;
+  background: #f7f8fa;
+  border-right: 1px solid #e3e6ea;
+  overflow: hidden;
+}
+
+.pn-chart-controls {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15em;
+}
+
+.pn-chart-group {
+  border-bottom: 1px solid #e8ebee;
+}
+
+.pn-chart-group:last-child {
+  border-bottom: 0;
+}
+
+/*
+ * A chevron of our own. The native marker is inconsistent across browsers and
+ * invisible against this background in some of them, and a group that does not
+ * look openable does not get opened.
+ */
+.pn-chart-group > summary {
+  cursor: pointer;
+  position: relative;
+  padding: 0.3em 0.1em 0.3em 1.05em;
+  color: #4a545f;
+  font-size: 0.88em;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  list-style: none;
+}
+
+.pn-chart-group > summary::-webkit-details-marker {
+  display: none;
+}
+
+.pn-chart-group > summary::before {
+  content: '';
+  position: absolute;
+  left: 0.2em;
+  top: 50%;
+  width: 0;
+  height: 0;
+  border-left: 0.34em solid #98a1ab;
+  border-top: 0.28em solid transparent;
+  border-bottom: 0.28em solid transparent;
+  transform: translateY(-50%);
+}
+
+.pn-chart-group[open] > summary::before {
+  transform: translateY(-50%) rotate(90deg);
+}
+
+.pn-chart-group > summary:focus-visible {
+  outline: 2px solid #1a73e8;
+  outline-offset: -2px;
+}
+
+.pn-chart-group-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35em;
+  padding: 0.1em 0 0.5em;
+}
+
+.pn-chart-field {
+  display: grid;
+  /* A fixed label column, so every control lines up down the group. */
+  grid-template-columns: 4.6em 1fr;
+  align-items: center;
+  gap: 0.4em;
+}
+
+.pn-chart-field > span {
+  color: #6b7480;
+  font-size: 0.88em;
+}
+
+.pn-chart-field select,
+.pn-chart-field input {
+  font: inherit;
+  min-width: 0;
+  padding: 0.15em 0.25em;
+  border: 1px solid #c7ced6;
+  border-radius: 3px;
+  background: #ffffff;
+  color: #1f252b;
+}
+
+.pn-chart-values {
+  margin: 0;
+  padding: 0.2em 0.4em 0.35em;
+  border: 1px solid #dde2e6;
+  border-radius: 3px;
+}
+
+.pn-chart-values legend {
+  color: #6b7480;
+  font-size: 0.88em;
+  padding: 0 0.25em;
+}
+
+/* Wraps rather than scrolls: a wide table has many measures and they are all
+   worth seeing at once. */
+.pn-chart-value-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.1em 0.7em;
+}
+
+.pn-chart-value,
+.pn-chart-check {
+  display: flex;
+  align-items: center;
+  gap: 0.3em;
+  font-size: 0.9em;
+  color: #1f252b;
+}
+
+.pn-chart-hint {
+  margin: 0 0 0.3em;
+  color: #6b7480;
+  font-size: 0.82em;
+  line-height: 1.35;
+}
+
+.pn-chart-extra {
+  box-sizing: border-box;
+  width: 100%;
+  resize: vertical;
+  border: 1px solid #c7ced6;
+  border-radius: 3px;
+  padding: 0.3em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.88em;
+  line-height: 1.4;
+  color: #1f252b;
+  background: #ffffff;
+}
+
+.pn-chart-error {
+  margin: 0.3em 0 0;
+  color: #b3261e;
+  font-size: 0.82em;
+  line-height: 1.35;
+}
+
+.pn-chart-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5em;
+  flex: 0 0 auto;
+}
+
+.pn-chart-editor .pn-button {
+  font-size: 0.9em;
+  padding: 0.25em 0.9em;
+}
+
+/* Exports. A progress bar and a way to stop it; nothing else is needed. */
+
+.pn-exports .pn-list {
+  gap: 8px;
+}
+
+.pn-export {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  background: #f8fafc;
+  border: 1px solid var(--pn-border);
+  border-radius: 4px;
+}
+
+.pn-export__head,
+.pn-export__foot {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.pn-export__head {
+  min-width: 0;
+}
+
+.pn-export__name {
+  overflow: hidden;
+  font-family: var(--pn-mono);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pn-export__format {
+  flex: none;
+  font-size: 10px;
+  color: var(--pn-muted);
+}
+
+.pn-export__bar {
+  height: 4px;
+  overflow: hidden;
+  background: var(--pn-border);
+  border-radius: 2px;
+}
+
+.pn-export__fill {
+  display: block;
+  height: 100%;
+  background: var(--pn-accent);
+  transition: width 120ms linear;
+}
+
+.pn-export__status {
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--pn-muted);
+}
+
+/*
+ * Overrides the list's full-width buttons: a row in this panel is a progress
+ * report with a control beside it, not a button that fills the row.
+ */
+.pn-export__foot button {
+  display: inline-block;
+  flex: none;
+  width: auto;
+  padding: 2px 6px;
+  font-size: 10px;
+  color: var(--pn-text);
+  background: var(--pn-panel);
+  border: 1px solid var(--pn-border);
+  border-radius: 3px;
+}
+
+.pn-export__foot button:hover {
+  background: #eef3fd;
+}
+
+.pn-export--done .pn-export__fill {
+  background: #1f8a4c;
+}
+
+.pn-export--failed .pn-export__fill,
+.pn-export--cancelled .pn-export__fill {
+  background: var(--pn-muted);
 }

@@ -1,0 +1,12 @@
+{
+  "name": "@panorama/chart-echarts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "dependencies": {
+    "@panorama/chart": "*",
+    "@panorama/core": "*",
+    "echarts": "^6.1.0"
+  }
+}

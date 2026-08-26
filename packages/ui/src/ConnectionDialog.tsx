@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { FormEvent } from 'react';
 import type { ConnectionCredentials, ConnectionRequest, ConnectionStatus } from './types.js';
+import { LinkedText } from './LinkedText.js';
 
 /**
  * The connection dialog.
@@ -8,6 +9,12 @@ import type { ConnectionCredentials, ConnectionRequest, ConnectionStatus } from 
  * Credentials live in this component's local state for exactly as long as it
  * takes to submit them, and are handed straight to the connection subsystem.
  * They never reach the world model, the history graph, or any log line.
+ *
+ * It is the form for when there is no connection, and nothing else. It used to
+ * stay on screen once one was made, with every field disabled and a button to
+ * undo itself — a quarter of the sidebar spent saying "connected". So the shell
+ * puts it away instead, and the way off a live connection is where the
+ * connection is now named: on the explorer's indicator.
  */
 
 export interface ConnectionDialogProps {
@@ -16,7 +23,6 @@ export interface ConnectionDialogProps {
   readonly defaultUrl?: string;
   readonly defaultUsername?: string;
   readonly onConnect: (request: ConnectionRequest) => void;
-  readonly onDisconnect: () => void;
 }
 
 type AuthMode = 'password' | 'token';
@@ -27,7 +33,6 @@ export const ConnectionDialog = ({
   defaultUrl = 'wss://localhost:8563',
   defaultUsername = 'sys',
   onConnect,
-  onDisconnect,
 }: ConnectionDialogProps): React.JSX.Element => {
   const [url, setUrl] = useState(defaultUrl);
   const [mode, setMode] = useState<AuthMode>('password');
@@ -36,11 +41,10 @@ export const ConnectionDialog = ({
   const [token, setToken] = useState('');
 
   const busy = status === 'connecting';
-  const connected = status === 'connected';
 
   const submit = (event: FormEvent): void => {
     event.preventDefault();
-    if (busy || connected) return;
+    if (busy) return;
     const credentials: ConnectionCredentials =
       mode === 'password' ? { kind: 'password', username, password } : { kind: 'token', token };
     onConnect({ url, credentials });
@@ -59,7 +63,6 @@ export const ConnectionDialog = ({
           type="text"
           value={url}
           spellCheck={false}
-          disabled={connected}
           onChange={(event) => setUrl(event.target.value)}
         />
       </label>
@@ -71,7 +74,6 @@ export const ConnectionDialog = ({
             name="auth-mode"
             value="password"
             checked={mode === 'password'}
-            disabled={connected}
             onChange={() => setMode('password')}
           />
           User &amp; password
@@ -82,7 +84,6 @@ export const ConnectionDialog = ({
             name="auth-mode"
             value="token"
             checked={mode === 'token'}
-            disabled={connected}
             onChange={() => setMode('token')}
           />
           Access token
@@ -97,7 +98,6 @@ export const ConnectionDialog = ({
               type="text"
               value={username}
               autoComplete="username"
-              disabled={connected}
               onChange={(event) => setUsername(event.target.value)}
             />
           </label>
@@ -107,7 +107,6 @@ export const ConnectionDialog = ({
               type="password"
               value={password}
               autoComplete="current-password"
-              disabled={connected}
               onChange={(event) => setPassword(event.target.value)}
             />
           </label>
@@ -119,7 +118,6 @@ export const ConnectionDialog = ({
             type="password"
             value={token}
             autoComplete="off"
-            disabled={connected}
             onChange={(event) => setToken(event.target.value)}
           />
         </label>
@@ -127,20 +125,20 @@ export const ConnectionDialog = ({
 
       {error !== null && error !== '' ? (
         <p className="pn-error" role="alert">
-          {error}
+          {/*
+            A connection failure is the one message that routinely tells the
+            user to go and open a URL — accepting a self-signed certificate is
+            done in another tab, not here — so the URL is a link rather than
+            something to retype.
+          */}
+          <LinkedText text={error} />
         </p>
       ) : null}
 
       <div className="pn-field pn-field--row">
-        {connected ? (
-          <button type="button" onClick={onDisconnect}>
-            Disconnect
-          </button>
-        ) : (
-          <button type="submit" disabled={busy}>
-            {busy ? 'Connecting…' : 'Connect'}
-          </button>
-        )}
+        <button type="submit" disabled={busy}>
+          {busy ? 'Connecting…' : 'Connect'}
+        </button>
         <span className={`pn-status pn-status--${status}`}>{status}</span>
       </div>
     </form>

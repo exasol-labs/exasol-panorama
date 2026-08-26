@@ -4,7 +4,7 @@ import { columnAtOffset, columnEdgeAtOffset } from '@panorama/table';
 import type { TableTheme } from '../theme.js';
 import { tableMetrics } from '../table/table-draw.js';
 import type { HaloButton } from '../table/halo.js';
-import { computeHalo, haloButtonAt, withinHalo } from '../table/halo.js';
+import { actionsForTable, computeHalo, haloButtonAt, withinHalo } from '../table/halo.js';
 
 /**
  * Hit testing.
@@ -60,6 +60,12 @@ export interface HaloHit extends TableHitBase {
   /** Null when the point is in the halo's band but not on a button. */
   readonly action: EntityActionId | null;
   readonly button: HaloButton | null;
+  /**
+   * The button is there but inert. Reported rather than suppressed so the halo
+   * still stays alive under the pointer — otherwise hovering a greyed-out
+   * button would dismiss the whole halo.
+   */
+  readonly disabled: boolean;
 }
 
 export type TableHit =
@@ -84,6 +90,10 @@ export interface TableHitInput {
   readonly scale?: number;
   /** The halo is only hit-testable while the table is activated. */
   readonly showHalo?: boolean;
+  /** Actions this table cannot perform; their buttons are inert. */
+  readonly disabledActions?: readonly EntityActionId[];
+  /** The action whose choices the halo is showing, if any. */
+  readonly expandedAction?: EntityActionId | null;
 }
 
 const RESIZE_CURSORS: Readonly<Record<ResizeHandle, string>> = Object.freeze({
@@ -137,15 +147,35 @@ export const hitTestTable = (
   // The halo sits outside the table's own rectangle, so it is tested before the
   // bounds check rather than after it.
   if (input.showHalo === true) {
-    const halo = computeHalo(metrics, theme, input.scale ?? 1);
+    const halo = computeHalo(
+      metrics,
+      theme,
+      input.scale ?? 1,
+      actionsForTable(entity, input.expandedAction ?? null),
+    );
     const button = haloButtonAt(halo, localX, localY);
     if (button !== null) {
-      return { kind: 'halo', action: button.action, button, tableId, cursor: 'pointer' };
+      const disabled = input.disabledActions?.includes(button.action) === true;
+      return {
+        kind: 'halo',
+        action: button.action,
+        button,
+        disabled,
+        tableId,
+        cursor: disabled ? 'not-allowed' : 'pointer',
+      };
     }
     // Still in the band: report a hit so the table stays activated while the
     // pointer crosses the gap towards a button.
     if (withinHalo(halo, localX, localY)) {
-      return { kind: 'halo', action: null, button: null, tableId, cursor: 'default' };
+      return {
+        kind: 'halo',
+        action: null,
+        button: null,
+        disabled: false,
+        tableId,
+        cursor: 'default',
+      };
     }
   }
 
@@ -171,6 +201,17 @@ export const hitTestTable = (
 
   if (localY < metrics.titleHeight) {
     return { kind: 'title', tableId, cursor: 'grab' };
+  }
+
+  /**
+   * A chart's body is the whole of it below the title.
+   *
+   * There is no gutter and no header in a picture — the drawing skips both — so
+   * hit testing must skip them too, or the left and top edges of a chart would
+   * be a row-number strip and a column header that are not there.
+   */
+  if (entity.source.kind === 'chart') {
+    return { kind: 'body', row: -1, column: null, tableId, cursor: 'default' };
   }
 
   const contentX = localX - gutterWidth + input.scrollLeft;

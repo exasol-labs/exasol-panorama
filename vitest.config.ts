@@ -7,14 +7,29 @@ const resolvePath = (relative: string): string => fileURLToPath(new URL(relative
 export const panoramaAliases: Record<string, string> = {
   '@panorama/core': resolvePath('./packages/core/src/index.ts'),
   '@panorama/table': resolvePath('./packages/table/src/index.ts'),
+  '@panorama/chart': resolvePath('./packages/chart/src/index.ts'),
+  '@panorama/chart-echarts': resolvePath('./packages/chart-echarts/src/index.ts'),
   '@panorama/exasol': resolvePath('./packages/exasol/src/index.ts'),
+  '@panorama/mcp': resolvePath('./packages/mcp/src/index.ts'),
+  '@panorama/export': resolvePath('./packages/export/src/index.ts'),
   '@panorama/worker': resolvePath('./packages/worker/src/index.ts'),
   '@panorama/renderer': resolvePath('./packages/renderer/src/index.ts'),
   '@panorama/ui': resolvePath('./packages/ui/src/index.ts'),
   '@panorama/test-support': resolvePath('./packages/test-support/src/index.ts'),
 };
 
-const logicPackages = ['core', 'table', 'exasol', 'worker', 'test-support', 'renderer'];
+const logicPackages = [
+  'core',
+  'table',
+  'chart',
+  'chart-echarts',
+  'exasol',
+  'export',
+  'mcp',
+  'worker',
+  'test-support',
+  'renderer',
+];
 const domPackages = ['ui'];
 
 export default defineConfig({

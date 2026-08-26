@@ -32,6 +32,13 @@ export interface TableInfo {
   /** `TABLE` or `VIEW`; databases may report other kinds. */
   readonly kind: string;
   readonly comment?: string;
+  /**
+   * Rows, as the database's own catalogue reports them — absent where it has no
+   * figure. It has none for a view, whose row count exists only once the view
+   * has been run, and none for a table whose statistics have never been
+   * gathered. Absent is not zero.
+   */
+  readonly rowCount?: number;
 }
 
 export const columnIndexByName = (schema: TableSchema, name: string): number =>

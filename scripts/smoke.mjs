@@ -77,7 +77,7 @@ await page.mouse.move(centre.x, centre.y + 120);
 await page.waitForTimeout(400);
 await page.screenshot({ path: `scripts/shots/halo${suffix}.png` });
 
-// Walk up to the halo, which hangs above the table's top-right corner.
+// Walk up to the halo, whose close button hangs off the table's top-right corner.
 const haloPoint = await page.evaluate(() => {
   const workspace = globalThis.__panorama;
   const id = workspace?.core?.world?.order?.[0];
@@ -85,7 +85,7 @@ const haloPoint = await page.evaluate(() => {
   return entity === undefined
     ? null
     : {
-        worldX: entity.transform.x + entity.transform.width - 11,
+        worldX: entity.transform.x + entity.transform.width + 19,
         worldY: entity.transform.y - 19,
       };
 });

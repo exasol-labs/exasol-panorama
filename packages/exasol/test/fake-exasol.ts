@@ -77,10 +77,21 @@ export interface FakeServerOptions {
   /** Maximum rows a single `fetch` may return, simulating the byte budget. */
   readonly rowsPerFetch?: number;
   readonly relations?: Record<string, FakeRelation>;
+  /**
+   * Canned answers matched before `relations`, for queries that mention a
+   * relation but do not return it — an aggregate over a subquery, say.
+   */
+  readonly queries?: Record<string, FakeRelation>;
   readonly schemas?: readonly string[];
   readonly tables?: Record<
     string,
-    ReadonlyArray<{ name: string; kind: string; comment: string | null }>
+    ReadonlyArray<{
+      name: string;
+      kind: string;
+      comment: string | null;
+      /** What the catalogue reports; a view has none, as the real one has none. */
+      rows?: number | string | null;
+    }>
   >;
   /** Single-column foreign keys, keyed by the table that declares them. */
   readonly foreignKeys?: Record<
@@ -247,6 +258,9 @@ export class FakeExasolServer {
         ],
       };
     }
+    for (const [pattern, relation] of Object.entries(this.#options.queries ?? {})) {
+      if (sqlText.includes(pattern)) return relation;
+    }
     const relations = this.#options.relations ?? {};
     for (const [pattern, relation] of Object.entries(relations)) {
       if (sqlText.includes(pattern)) return relation;
@@ -267,12 +281,14 @@ export class FakeExasolServer {
           { name: 'OBJECT_NAME', dataType: { type: 'VARCHAR', size: 128 } },
           { name: 'OBJECT_KIND', dataType: { type: 'VARCHAR', size: 8 } },
           { name: 'OBJECT_COMMENT', dataType: { type: 'VARCHAR', size: 256 } },
+          { name: 'OBJECT_ROWS', dataType: { type: 'DECIMAL', precision: 18, scale: 0 } },
         ],
         rowCount: entries.length,
         data: [
           entries.map((entry) => entry.name),
           entries.map((entry) => entry.kind),
           entries.map((entry) => entry.comment),
+          entries.map((entry) => entry.rows ?? null),
         ],
       };
     }

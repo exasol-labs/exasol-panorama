@@ -1,16 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import type { Binding, BindingId, TableEntity, WorldState } from '@panorama/core';
 import {
+  describeCommand,
   AUTO_ANCHOR,
   resolveAnchor,
   applyCommand,
   bindingsFrom,
   bindingsOf,
   borderPointToward,
+  connectorObstacles,
   emptyWorld,
   entityRect,
   getBinding,
+  RECT_SIDES,
   resolveBinding,
+  sideAnchor,
   unwrap,
   withEntity,
 } from '@panorama/core';
@@ -184,6 +188,41 @@ describe('entityRect', () => {
   });
 });
 
+describe('SetBindingLabel', () => {
+  it('retitles a binding, leaving everything else alone', () => {
+    const binding = connector(left, right);
+    const world = unwrap(applyCommand(worldWith(left, right), { type: 'CreateBinding', binding }));
+    const next = unwrap(
+      applyCommand(world, {
+        type: 'SetBindingLabel',
+        bindingId: binding.id,
+        label: 'SELECT 1',
+      }),
+    );
+    expect(getBinding(next, binding.id)).toEqual({ ...binding, label: 'SELECT 1' });
+  });
+
+  it('rejects a binding that is not there', () => {
+    const result = applyCommand(worldWith(left, right), {
+      type: 'SetBindingLabel',
+      bindingId: 'binding:gone' as BindingId,
+      label: 'x',
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe('binding-not-found');
+  });
+
+  it('describes itself for the history view', () => {
+    expect(
+      describeCommand({
+        type: 'SetBindingLabel',
+        bindingId: 'binding:1' as BindingId,
+        label: 'SELECT 1',
+      }),
+    ).toBe('Retitle connection');
+  });
+});
+
 describe('CreateBinding', () => {
   it('adds a binding between two entities', () => {
     const binding = connector(left, right);
@@ -303,5 +342,126 @@ describe('removing a bound entity', () => {
     // The binding record is untouched; only the resolved geometry differs.
     expect(moved.bindings.get(binding.id)).toBe(binding);
     expect(resolveBinding(moved, binding)?.from.x).toBe(-700);
+  });
+});
+
+describe('what a connector has to get past', () => {
+  it('is every entity except the two the line joins', () => {
+    const ids = testIds(21);
+    const left = makeTable(ids, {
+      position: { x: 0, y: 0, z: 0 },
+      size: { width: 100, height: 80 },
+    });
+    const right = makeTable(ids, {
+      position: { x: 400, y: 0, z: 0 },
+      size: { width: 100, height: 80 },
+    });
+    const between = makeTable(ids, {
+      position: { x: 200, y: 10, z: 0 },
+      size: { width: 60, height: 60 },
+    });
+    let world = emptyWorld();
+    for (const entity of [left, right, between]) {
+      const applied = applyCommand(world, { type: 'CreateTableEntity', entity });
+      if (!applied.ok) throw new Error(applied.error.message);
+      world = applied.value;
+    }
+    const line: Binding = {
+      id: 'binding:1' as BindingId,
+      kind: 'connector',
+      fromId: left.id,
+      toId: right.id,
+      from: AUTO_ANCHOR,
+      to: AUTO_ANCHOR,
+      directed: true,
+    };
+
+    // The rectangle as the world holds it, whatever size creation settled on.
+    const stored = world.entities.get(between.id) as TableEntity;
+    expect(connectorObstacles(world, line)).toEqual([entityRect(stored.transform)]);
+  });
+
+  it('reads the transforms it is given, so a dragged table is where it looks', () => {
+    const ids = testIds(22);
+    const left = makeTable(ids, {
+      position: { x: 0, y: 0, z: 0 },
+      size: { width: 100, height: 80 },
+    });
+    const right = makeTable(ids, {
+      position: { x: 400, y: 0, z: 0 },
+      size: { width: 100, height: 80 },
+    });
+    const dragged = makeTable(ids, {
+      position: { x: 200, y: 0, z: 0 },
+      size: { width: 60, height: 60 },
+    });
+    let world = emptyWorld();
+    for (const entity of [left, right, dragged]) {
+      const applied = applyCommand(world, { type: 'CreateTableEntity', entity });
+      if (!applied.ok) throw new Error(applied.error.message);
+      world = applied.value;
+    }
+    const line: Binding = {
+      id: 'binding:2' as BindingId,
+      kind: 'connector',
+      fromId: left.id,
+      toId: right.id,
+      from: AUTO_ANCHOR,
+      to: AUTO_ANCHOR,
+      directed: false,
+    };
+
+    // Mid-drag the table is not where it was committed, and the line has to go
+    // round where it is being drawn.
+    const obstacles = connectorObstacles(world, line, (id) =>
+      id === dragged.id ? { x: 900, y: 900, z: 0, width: 60, height: 60 } : undefined,
+    );
+    expect(obstacles).toEqual([{ x: 900, y: 900, width: 60, height: 60 }]);
+  });
+});
+
+describe('leaving a table by a named side', () => {
+  const rect = { x: 100, y: 200, width: 300, height: 400 };
+
+  it('meets the side it was asked for, facing outwards', () => {
+    expect(sideAnchor(rect, 'right', { x: 900, y: 400 })).toEqual({
+      point: { x: 400, y: 400 },
+      normal: { x: 1, y: 0 },
+    });
+    expect(sideAnchor(rect, 'left', { x: -900, y: 400 })).toEqual({
+      point: { x: 100, y: 400 },
+      normal: { x: -1, y: 0 },
+    });
+    expect(sideAnchor(rect, 'bottom', { x: 250, y: 900 })).toEqual({
+      point: { x: 250, y: 600 },
+      normal: { x: 0, y: 1 },
+    });
+    expect(sideAnchor(rect, 'top', { x: 250, y: -900 })).toEqual({
+      point: { x: 250, y: 200 },
+      normal: { x: 0, y: -1 },
+    });
+  });
+
+  it('slides along the side towards where it is going', () => {
+    expect(sideAnchor(rect, 'right', { x: 900, y: 250 }).point.y).toBe(250);
+    expect(sideAnchor(rect, 'right', { x: 900, y: 550 }).point.y).toBe(550);
+  });
+
+  it('stays clear of the corners, so a line never leaves at one', () => {
+    // Held back from the corner: a line leaving exactly there reads as leaving
+    // the wrong side.
+    expect(sideAnchor(rect, 'right', { x: 900, y: -5_000 }).point.y).toBe(214);
+    expect(sideAnchor(rect, 'right', { x: 900, y: 5_000 }).point.y).toBe(586);
+    expect(sideAnchor(rect, 'bottom', { x: -5_000, y: 900 }).point.x).toBe(114);
+  });
+
+  it('keeps the inset inside a very small table', () => {
+    const tiny = { x: 0, y: 0, width: 9, height: 9 };
+    const anchor = sideAnchor(tiny, 'top', { x: -100, y: -100 });
+    expect(anchor.point.x).toBeCloseTo(3, 6);
+  });
+
+  it('names all four sides', () => {
+    expect(RECT_SIDES).toEqual(['right', 'left', 'bottom', 'top']);
   });
 });

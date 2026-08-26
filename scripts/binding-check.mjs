@@ -7,6 +7,7 @@
  */
 import { mkdirSync } from 'node:fs';
 import { chromium } from 'playwright';
+import { connectorMidpoint } from './lib/connector-midpoint.mjs';
 
 mkdirSync('scripts/shots', { recursive: true });
 const browser = await chromium.launch({
@@ -101,47 +102,18 @@ await page.screenshot({ path: 'scripts/shots/fk-followed.png' });
 // mapping has to be derived again.
 const toScreenNow = await mapper();
 
-// The marker: compact by default, expanded on hover.
-const markerWorld = await page.evaluate(() => {
+// The marker: compact by default, expanded on hover. The two ends are read out
+// of the page; the curve is worked out here, from the same formula as the
+// renderer.
+const ends = await page.evaluate(() => {
   const core = globalThis.__panorama.core;
   const binding = [...core.world.bindings.values()][0];
-  const rect = (id) => {
-    const t = core.world.entities.get(id).transform;
-    return { cx: t.x + t.width / 2, cy: t.y + t.height / 2, hw: t.width / 2, hh: t.height / 2 };
-  };
-  // Mirrors the renderer: each end is the border point facing the other centre.
-  const border = (a, b) => {
-    const dx = b.cx - a.cx;
-    const dy = b.cy - a.cy;
-    const horizontal = dx === 0 ? Infinity : a.hw / Math.abs(dx);
-    const vertical = dy === 0 ? Infinity : a.hh / Math.abs(dy);
-    const scale = Math.min(horizontal, vertical);
-    const throughSide = horizontal <= vertical;
-    return {
-      x: a.cx + dx * scale,
-      y: a.cy + dy * scale,
-      nx: throughSide ? Math.sign(dx) : 0,
-      ny: throughSide ? 0 : Math.sign(dy),
-    };
-  };
-  const from = rect(binding.fromId);
-  const to = rect(binding.toId);
-  const start = border(from, to);
-  const end = border(to, from);
-  // The connector is a cubic leaving each border along its normal; the marker
-  // sits at t = 0.5, which is the average of the ends and the controls.
-  const gap = 4;
-  const a = { x: start.x + start.nx * gap, y: start.y + start.ny * gap };
-  const d = { x: end.x + end.nx * gap, y: end.y + end.ny * gap };
-  const span = Math.hypot(d.x - a.x, d.y - a.y);
-  const reach = Math.min(320, Math.max(36, span * 0.42));
-  const b = { x: a.x + start.nx * reach, y: a.y + start.ny * reach };
-  const c = { x: d.x + end.nx * reach, y: d.y + end.ny * reach };
   return {
-    x: (a.x + 3 * b.x + 3 * c.x + d.x) / 8,
-    y: (a.y + 3 * b.y + 3 * c.y + d.y) / 8,
+    from: core.world.entities.get(binding.fromId).transform,
+    to: core.world.entities.get(binding.toId).transform,
   };
 });
+const markerWorld = connectorMidpoint(ends.from, ends.to);
 await page.mouse.move(centre.x - 400, centre.y + 300);
 await page.waitForTimeout(200);
 await page.screenshot({ path: 'scripts/shots/marker-compact.png' });

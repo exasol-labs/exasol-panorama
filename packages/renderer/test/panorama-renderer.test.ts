@@ -2,11 +2,17 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { NullEngine } from '@babylonjs/core/Engines/nullEngine.js';
 import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial.js';
 import type { Scene } from '@babylonjs/core/scene.js';
-import type { TableEntity } from '@panorama/core';
-import { PanoramaCore, isEntityActivated } from '@panorama/core';
+import type { EntityId, TableEntity } from '@panorama/core';
+import { PanoramaCore, buildTableEntity, isEntityActivated } from '@panorama/core';
 import type { TextSystem, TableViewModel } from '@panorama/renderer';
-import { GlyphAtlas, PanoramaRenderer, buildTableDrawList, toBabylonY } from '@panorama/renderer';
-import { dataView, makeTable, testIds, testRasterizer } from './fixtures.js';
+import {
+  DEFAULT_TABLE_THEME,
+  GlyphAtlas,
+  PanoramaRenderer,
+  buildTableDrawList,
+  toBabylonY,
+} from '@panorama/renderer';
+import { TEST_CONNECTION, dataView, makeTable, testIds, testRasterizer } from './fixtures.js';
 
 /** A text system with deterministic metrics and no canvas. */
 const createTestTextSystem = (uploads: {
@@ -242,6 +248,112 @@ describe('PanoramaRenderer', () => {
       harness.renderer.scene.scene,
       expect.objectContaining({ disableDefaultUI: true }),
     );
+  });
+
+  it('turns off the interaction features its geometry cannot answer', () => {
+    // Every quad is `isPickable = false` and each batch is a single mesh, so a
+    // controller ray could only ever hit "the table layer". Left on, these
+    // features also pull in modules that are not registered under deep ES
+    // imports, and Babylon fails the whole initialisation.
+    const harness = setup();
+    expect(harness.renderer.scene.scene.meshes.every((mesh) => !mesh.isPickable)).toBe(true);
+  });
+
+  it('hangs everything it draws from one node, so XR is a transform', () => {
+    const harness = setup();
+    harness.renderer.renderFrame(16);
+    const parents = harness.renderer.scene.scene.meshes.map((mesh) => mesh.parent?.name);
+    expect(parents.length).toBeGreaterThan(0);
+    expect(parents.every((name) => name === 'panorama-stage')).toBe(true);
+    // And it starts life on the desktop, at its own size.
+    expect(harness.renderer.inXR).toBe(false);
+  });
+
+  it('probes for a headset once and remembers the answer', async () => {
+    const harness = setup();
+    const module = await import('@babylonjs/core/XR/webXRDefaultExperience.js');
+    const create = vi.spyOn(module.WebXRDefaultExperience, 'CreateAsync');
+    create.mockClear();
+
+    await expect(harness.renderer.prepareXR()).resolves.toBe(false);
+    const afterFirst = create.mock.calls.length;
+    await expect(harness.renderer.prepareXR()).resolves.toBe(false);
+    // Support does not change while the page is open, and the probe is on the
+    // path of a click that has a user-activation deadline.
+    expect(create.mock.calls.length).toBe(afterFirst);
+  });
+
+  it('leaves the world on the desk when a session will not start', async () => {
+    const harness = setup();
+    await expect(harness.renderer.enterXR()).resolves.toBeNull();
+    expect(harness.renderer.inXR).toBe(false);
+  });
+
+  /**
+   * There is no headset in Node, so the only way to cover entering one is to
+   * stand in for Babylon's experience. What is being checked is Panorama's own
+   * half: that it asks to enter, shrinks the world, and puts it back.
+   */
+  const withFakeHeadset = async (
+    options: { supported?: boolean; enterFails?: boolean } = {},
+  ): Promise<{ listeners: Array<(state: number) => void>; entered: string[] }> => {
+    const listeners: Array<(state: number) => void> = [];
+    const entered: string[] = [];
+    const module = await import('@babylonjs/core/XR/webXRDefaultExperience.js');
+    vi.spyOn(module.WebXRDefaultExperience, 'CreateAsync').mockResolvedValue({
+      baseExperience: {
+        sessionManager: {
+          isSessionSupportedAsync: async (): Promise<boolean> => options.supported ?? true,
+        },
+        onStateChangedObservable: {
+          add: (listener: (state: number) => void): void => {
+            listeners.push(listener);
+          },
+        },
+        enterXRAsync: async (mode: string, space: string): Promise<void> => {
+          if (options.enterFails === true) throw new Error('session refused');
+          entered.push(`${mode}/${space}`);
+        },
+      },
+    } as never);
+    return { listeners, entered };
+  };
+
+  it('enters immersive VR and stands the world in front of the viewer', async () => {
+    const harness = setup();
+    const { entered } = await withFakeHeadset();
+
+    await expect(harness.renderer.prepareXR()).resolves.toBe(true);
+    expect(await harness.renderer.enterXR()).not.toBeNull();
+    // Creating the experience is not entering it; Babylon waits to be asked.
+    expect(entered).toEqual(['immersive-vr/local-floor']);
+    expect(harness.renderer.inXR).toBe(true);
+  });
+
+  it('puts the world back on the desk when the headset comes off', async () => {
+    const harness = setup();
+    const { listeners } = await withFakeHeadset();
+    const { WebXRState } = await import('@babylonjs/core/XR/webXRTypes.js');
+    await harness.renderer.enterXR();
+    expect(harness.renderer.inXR).toBe(true);
+
+    for (const listener of listeners) listener(WebXRState.NOT_IN_XR);
+    expect(harness.renderer.inXR).toBe(false);
+  });
+
+  it('does not shrink the world when the session is refused', async () => {
+    const harness = setup();
+    await withFakeHeadset({ enterFails: true });
+    await expect(harness.renderer.enterXR()).resolves.toBeNull();
+    // Otherwise the desktop would be left rendering a world 0.2% of its size.
+    expect(harness.renderer.inXR).toBe(false);
+  });
+
+  it('reports a browser that has WebXR but no immersive headset', async () => {
+    const harness = setup();
+    await withFakeHeadset({ supported: false });
+    await expect(harness.renderer.prepareXR()).resolves.toBe(false);
+    await expect(harness.renderer.enterXR()).resolves.toBeNull();
   });
 
   it('reports XR as unavailable rather than throwing', async () => {
@@ -513,5 +625,191 @@ describe('connectors', () => {
     });
     harness.renderer.renderFrame();
     expect(harness.renderer.stats.connectors).toBe(0);
+  });
+});
+
+describe('the renderer and the statistics panels', () => {
+  const summary = {
+    column: 'COUNTRY',
+    rows: 100,
+    nulls: 0,
+    basis: 'exact',
+    distinct: 2,
+    frequencies: [
+      { value: 'DE', count: 60 },
+      { value: 'US', count: 40 },
+    ],
+    frequenciesComplete: true,
+  } as const;
+
+  const setupWithSummaries = (): {
+    readonly core: PanoramaCore;
+    readonly renderer: PanoramaRenderer;
+    readonly engine: NullEngine;
+    readonly table: TableEntity;
+    readonly asked: EntityId[];
+  } => {
+    const ids = testIds();
+    const core = new PanoramaCore({ ids });
+    const table = makeTable(ids, {
+      position: { x: 0, y: 0, z: 0 },
+      size: { width: 600, height: 400 },
+    });
+    core.dispatch({ type: 'CreateTableEntity', entity: table });
+    const stored = core.world.entities.get(table.id) as TableEntity;
+    const engine = new NullEngine();
+    const asked: EntityId[] = [];
+    const renderer = new PanoramaRenderer({
+      core,
+      engine,
+      views: {
+        viewFor: () => ({ scrollTop: 0, scrollLeft: 0, rowCount: 100, data: dataView() }),
+        columnSummariesFor: (entity) => {
+          asked.push(entity.id);
+          const first = entity.columns[0];
+          return first === undefined ? undefined : new Map([[first.id, { summary }]]);
+        },
+      },
+      createTextSystem: createTestTextSystem({ count: 0 }),
+      atlasSize: 256,
+    });
+    renderer.resize(1_000, 800);
+    created.push({ core, renderer, engine, table: stored, uploads: { count: 0 } });
+    return { core, renderer, engine, table: stored, asked };
+  };
+
+  it('draws a panel for a picked-out column and nothing for none', () => {
+    const harness = setupWithSummaries();
+    harness.renderer.renderFrame();
+    const plain = harness.renderer.stats.quads;
+
+    const first = harness.table.columns[0]?.id as EntityId;
+    harness.core.dispatchSession({ type: 'SetSelectedColumns', ids: [first] });
+    harness.renderer.renderFrame();
+
+    expect(harness.renderer.stats.quads).toBeGreaterThan(plain);
+    expect(harness.asked).toContain(harness.table.id);
+  });
+
+  it('keeps the panels out of a table parked below', () => {
+    const harness = setupWithSummaries();
+    const first = harness.table.columns[0]?.id as EntityId;
+    harness.core.dispatchSession({ type: 'SetSelectedColumns', ids: [first] });
+
+    const below = makeTable(testIds(2), {
+      position: { x: 0, y: 460, z: 0 },
+      size: { width: 600, height: 400 },
+    });
+    harness.core.dispatch({ type: 'CreateTableEntity', entity: below });
+    harness.renderer.renderFrame();
+
+    // Above the table, which is the only free side: a panel is opaque, and the
+    // rows underneath are data.
+    expect(harness.renderer.stats.quads).toBeGreaterThan(0);
+    const list = buildTableDrawList({
+      entity: harness.table,
+      layout: harness.renderer.layoutFor(harness.table),
+      theme: DEFAULT_TABLE_THEME,
+      lod: 'full',
+      scrollTop: 0,
+      scrollLeft: 0,
+      rowCount: 100,
+      data: dataView(),
+      selectedColumns: [first],
+      columnSummaries: new Map([[first, { summary }]]),
+      panelObstacles: [{ x: 0, y: 460, width: 600, height: 400 }],
+    });
+    expect(list.quads.some((quad) => quad.y < 0)).toBe(true);
+  });
+});
+
+describe('the renderer and a chart', () => {
+  const chartDrawList = {
+    polygons: [{ corners: [0, 0, 10, 0, 10, 10, 10, 10] as const, color: [0, 0, 1, 1] as const }],
+    texts: [
+      {
+        x: 2,
+        y: 4,
+        width: 30,
+        height: 12,
+        text: 'DE',
+        color: [0, 0, 0, 1] as const,
+        align: 'left' as const,
+        fontSize: 10,
+      },
+    ],
+  };
+
+  const setupWithChart = (): {
+    readonly core: PanoramaCore;
+    readonly renderer: PanoramaRenderer;
+    readonly asked: { width: number; height: number; measured: number }[];
+  } => {
+    const ids = testIds();
+    const core = new PanoramaCore({ ids });
+    const chart = buildTableEntity(ids, {
+      source: {
+        kind: 'chart',
+        connectionId: TEST_CONNECTION,
+        spec: { type: 'bar', category: 'C', values: ['V'], aggregate: 'sum' },
+        label: 'S.T · Chart',
+        derivedFrom: 'table:base' as EntityId,
+      },
+      mode: 'result',
+      columns: [],
+      position: { x: 0, y: 0, z: 0 },
+      size: { width: 420, height: 300 },
+    });
+    core.dispatch({ type: 'CreateTableEntity', entity: chart });
+    const engine = new NullEngine();
+    const asked: { width: number; height: number; measured: number }[] = [];
+    const renderer = new PanoramaRenderer({
+      core,
+      engine,
+      views: {
+        viewFor: () => null,
+        chartFor: (_entity, width, height, chartMetrics) => {
+          asked.push({ width, height, measured: chartMetrics.measureText('DE', 10, false) });
+          return { chart: chartDrawList, note: '100 rows' };
+        },
+      },
+      createTextSystem: createTestTextSystem({ count: 0 }),
+      atlasSize: 256,
+    });
+    renderer.resize(1_000, 800);
+    created.push({ core, renderer, engine, table: chart, uploads: { count: 0 } });
+    return { core, renderer, asked };
+  };
+
+  it('draws the chart geometry, and asks for the body it will fill', () => {
+    const harness = setupWithChart();
+    harness.renderer.renderFrame();
+
+    expect(harness.asked).toHaveLength(1);
+    // Narrower and shorter than the box: the title bar, the padding, and the row
+    // kept for the note all come off first.
+    expect(harness.asked[0]?.width).toBeLessThan(420);
+    expect(harness.asked[0]?.height).toBeLessThan(300 - 26);
+    // And it is handed the renderer's own text metrics, not a guess.
+    expect(harness.asked[0]?.measured).toBeGreaterThan(0);
+    expect(harness.renderer.stats.quads).toBeGreaterThan(0);
+  });
+
+  it('asks nothing of a host that cannot draw charts', () => {
+    const ids = testIds();
+    const core = new PanoramaCore({ ids });
+    const table = makeTable(ids, { position: { x: 0, y: 0, z: 0 } });
+    core.dispatch({ type: 'CreateTableEntity', entity: table });
+    const engine = new NullEngine();
+    const renderer = new PanoramaRenderer({
+      core,
+      engine,
+      views: { viewFor: () => null },
+      createTextSystem: createTestTextSystem({ count: 0 }),
+      atlasSize: 256,
+    });
+    renderer.resize(1_000, 800);
+    created.push({ core, renderer, engine, table, uploads: { count: 0 } });
+    expect(() => renderer.renderFrame()).not.toThrow();
   });
 });

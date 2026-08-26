@@ -1,11 +1,21 @@
 import { describe, expect, it } from 'vitest';
-import type { Binding, ResolvedBinding } from '@panorama/core';
+import type { Binding, Rect, ResolvedBinding } from '@panorama/core';
+import type { Point2 } from '@panorama/renderer';
 import {
   DEFAULT_TABLE_THEME,
   EMPTY_CONNECTOR,
   buildConnectorDrawList,
   connectorMarker,
   connectorPath,
+  shapedPath,
+  blockedLength,
+  routeConnector,
+  segmentHitsRect,
+  ROWS_ICON,
+  SQL_ICON,
+  SQL_ICON_FONT_SIZE,
+  barRects,
+  connectorIconKind,
   keyIcon,
 } from '@panorama/renderer';
 
@@ -28,6 +38,8 @@ const resolved = (overrides: Partial<ResolvedBinding> = {}): ResolvedBinding => 
   fromNormal: { x: 1, y: 0 },
   toNormal: { x: -1, y: 0 },
   degenerate: false,
+  fromRect: { x: -200, y: -100, width: 200, height: 200 },
+  toRect: { x: 300, y: -100, width: 200, height: 200 },
   ...overrides,
 });
 
@@ -160,6 +172,44 @@ describe('buildConnectorDrawList', () => {
     ).toBe(true);
   });
 
+  it('marks a line to a query box with the same SQL mark as the button', () => {
+    const list = build({
+      resolved: resolved({
+        binding: binding({ label: 'SQL', meta: { kind: 'query' } }),
+      }),
+    });
+    // The mark is the word, not a key: a query is not a foreign key.
+    expect(list.texts.map((run) => run.text)).toEqual([SQL_ICON]);
+    expect(list.texts[0]?.align).toBe('center');
+    expect(list.texts[0]?.bold).toBe(true);
+    // The chrome is still there — border and face — but no key geometry.
+    expect(list.markerPolygons).toHaveLength(2);
+    expect(
+      list.markerPolygons.some(
+        (polygon) => polygon.color === DEFAULT_TABLE_THEME.connectorMarkerIcon,
+      ),
+    ).toBe(false);
+  });
+
+  it('keeps the SQL mark inside the marker square', () => {
+    const marked = resolved({ binding: binding({ label: 'SQL', meta: { kind: 'query' } }) });
+    const list = build({ resolved: marked });
+    const path = connectorPath(marked, DEFAULT_TABLE_THEME);
+    if (path === null) throw new Error('expected a path');
+    const marker = connectorMarker(path, marked.binding, DEFAULT_TABLE_THEME);
+    const run = list.texts[0];
+    if (marker === null || run === undefined) throw new Error('expected a marked connector');
+    expect(run.x).toBeGreaterThanOrEqual(marker.x);
+    expect(run.x + run.maxWidth).toBeLessThanOrEqual(marker.x + marker.width + 1e-9);
+  });
+
+  it('reads the mark from the binding it was given', () => {
+    expect(connectorIconKind(binding({ meta: { kind: 'query' } }))).toBe('sql');
+    expect(connectorIconKind(binding({ meta: { kind: 'foreign-key' } }))).toBe('key');
+    // No metadata at all still means a key: that is what a bare connector was.
+    expect(connectorIconKind(binding())).toBe('key');
+  });
+
   it('spells the filter out only once revealed', () => {
     const list = build({
       resolved: resolved({ binding: binding({ label: 'COUNTRY = Germany' }) }),
@@ -246,17 +296,30 @@ describe('buildConnectorDrawList', () => {
 
 describe('connectorMarker', () => {
   const labelled = resolved({ binding: binding({ label: 'COUNTRY = Germany' }) });
+  /** The path the marker is asked to sit on, as the caller would supply it. */
+  const pathOf = (target = labelled, scale = 1): ReturnType<typeof connectorPath> =>
+    connectorPath(target, DEFAULT_TABLE_THEME, scale);
+  const markerOn = (
+    target = labelled,
+    scale = 1,
+    revealed = false,
+  ): ReturnType<typeof connectorMarker> => {
+    const path = pathOf(target, scale);
+    return path === null
+      ? null
+      : connectorMarker(path, target.binding, DEFAULT_TABLE_THEME, scale, revealed);
+  };
 
   it('sits at the middle of the line', () => {
-    const marker = connectorMarker(labelled, DEFAULT_TABLE_THEME);
+    const marker = markerOn();
     if (marker === null) throw new Error('expected a marker');
     expect(marker.x + marker.width / 2).toBeCloseTo(150, 6);
     expect(marker.y + marker.height / 2).toBeCloseTo(0, 6);
   });
 
   it('is a small square until revealed, then a chip', () => {
-    const compact = connectorMarker(labelled, DEFAULT_TABLE_THEME, 1, false);
-    const expanded = connectorMarker(labelled, DEFAULT_TABLE_THEME, 1, true);
+    const compact = markerOn(labelled, 1, false);
+    const expanded = markerOn(labelled, 1, true);
     expect(compact?.width).toBe(DEFAULT_TABLE_THEME.connectorMarkerSize);
     expect(compact?.height).toBe(DEFAULT_TABLE_THEME.connectorMarkerSize);
     expect(expanded?.width).toBeGreaterThan(compact?.width ?? 0);
@@ -269,33 +332,35 @@ describe('connectorMarker', () => {
   });
 
   it('keeps a constant screen size as the camera zooms out', () => {
-    const near = connectorMarker(labelled, DEFAULT_TABLE_THEME, 1);
-    const far = connectorMarker(labelled, DEFAULT_TABLE_THEME, 0.25);
+    const near = markerOn(labelled, 1);
+    const far = markerOn(labelled, 0.25);
     expect(far?.width).toBeCloseTo((near?.width ?? 0) * 4, 6);
   });
 
   it('carries the label only when revealed', () => {
-    expect(connectorMarker(labelled, DEFAULT_TABLE_THEME, 1, false)?.label).toBeNull();
-    expect(connectorMarker(labelled, DEFAULT_TABLE_THEME, 1, true)?.label?.text).toBe(
-      'COUNTRY = Germany',
-    );
+    expect(markerOn(labelled, 1, false)?.label).toBeNull();
+    expect(markerOn(labelled, 1, true)?.label?.text).toBe('COUNTRY = Germany');
   });
 
-  it('is absent without a label or for a degenerate line', () => {
-    expect(connectorMarker(resolved(), DEFAULT_TABLE_THEME)).toBeNull();
-    expect(
-      connectorMarker(resolved({ binding: binding({ label: '' }) }), DEFAULT_TABLE_THEME),
-    ).toBeNull();
-    expect(
-      connectorMarker(
-        resolved({ binding: binding({ label: 'x' }), degenerate: true }),
-        DEFAULT_TABLE_THEME,
-      ),
-    ).toBeNull();
+  it('is absent without a label, and there is no line for a degenerate binding', () => {
+    expect(markerOn(resolved())).toBeNull();
+    expect(markerOn(resolved({ binding: binding({ label: '' }) }))).toBeNull();
+    expect(pathOf(resolved({ binding: binding({ label: 'x' }), degenerate: true }))).toBeNull();
   });
 
   it('survives a degenerate camera scale', () => {
-    expect(connectorMarker(labelled, DEFAULT_TABLE_THEME, 0)?.width).toBeGreaterThan(0);
+    expect(markerOn(labelled, 0)?.width).toBeGreaterThan(0);
+  });
+
+  it('sits on the line that was drawn, not the line that would have been', () => {
+    // A table squarely in between, so the connector has to go round it. The
+    // marker has to follow: hit testing looks for it where the line went.
+    const between: Rect = { x: 60, y: -60, width: 180, height: 120 };
+    const route = routeConnector(labelled, DEFAULT_TABLE_THEME, 1, [between]);
+    if (route === null) throw new Error('expected a route');
+    expect(route.detoured).toBe(true);
+    const detoured = connectorMarker(route.path, labelled.binding, DEFAULT_TABLE_THEME);
+    expect(detoured?.y).not.toBeCloseTo(markerOn()?.y ?? 0, 3);
   });
 });
 
@@ -330,5 +395,263 @@ describe('keyIcon', () => {
         expect(part.corners[index + 1]).toBeLessThanOrEqual(70);
       }
     }
+  });
+});
+
+describe('routing a connector past other tables', () => {
+  const theme = DEFAULT_TABLE_THEME;
+  /** Two tables 300 apart, facing each other, with a 200-tall gap between. */
+  const pair = resolved({ binding: binding({ label: 'COUNTRY → CODE' }) });
+  const route = (obstacles: readonly Rect[] = [], scale = 1): ReturnType<typeof routeConnector> =>
+    routeConnector(pair, theme, scale, obstacles);
+
+  const hits = (points: readonly Point2[], rect: Rect): boolean => {
+    for (let index = 1; index < points.length; index += 1) {
+      if (segmentHitsRect(points[index - 1] as Point2, points[index] as Point2, rect)) return true;
+    }
+    return false;
+  };
+
+  it('goes straight when nothing is in the way', () => {
+    const clear = route();
+    expect(clear?.detoured).toBe(false);
+    expect(clear?.blocked).toBe(0);
+    expect(clear?.path.points).toEqual(connectorPath(pair, theme)?.points);
+  });
+
+  it('ignores a table nowhere near the line', () => {
+    const far = route([{ x: 4_000, y: 4_000, width: 200, height: 200 }]);
+    expect(far?.detoured).toBe(false);
+  });
+
+  it('still sees a table only a long way round would have reached', () => {
+    // Beyond the direct line by a wide margin, but squarely across the route a
+    // pair of far sides would take. Pruning to the direct span would have thrown
+    // it away and then scored that route as clear.
+    const between: Rect = { x: 100, y: -70, width: 100, height: 140 };
+    const outside: Rect = { x: -400, y: -400, width: 1_200, height: 260 };
+    const detour = route([between, outside]);
+    expect(hits(detour?.path.points ?? [], outside)).toBe(false);
+  });
+
+  it('goes round a table squarely in the way, and clears it', () => {
+    const between: Rect = { x: 100, y: -70, width: 100, height: 140 };
+    const detour = route([between]);
+    expect(detour?.detoured).toBe(true);
+    expect(detour?.blocked).toBe(0);
+    expect(hits(detour?.path.points ?? [], between)).toBe(false);
+  });
+
+  it('leaves visible room rather than shaving the corner', () => {
+    const between: Rect = { x: 100, y: -70, width: 100, height: 140 };
+    const detour = route([between]);
+    // Scored against a grown rectangle, so a route that merely touched the edge
+    // would still have counted as blocked.
+    expect(hits(detour?.path.points ?? [], { x: 96, y: -74, width: 108, height: 148 })).toBe(false);
+  });
+
+  it('passes on the side with room, when the two ways round cost the same', () => {
+    // A curve overshoots symmetrically, so over the top and under the bottom are
+    // exactly the same length. What separates them is how much room is left.
+    const above: Rect = { x: 100, y: -160, width: 100, height: 200 };
+    const below: Rect = { x: 100, y: -40, width: 100, height: 200 };
+    expect(route([above])?.path.midpoint.y).toBeGreaterThan(0);
+    expect(route([below])?.path.midpoint.y).toBeLessThan(0);
+    expect(route([above])?.blocked).toBe(0);
+    expect(route([below])?.blocked).toBe(0);
+  });
+
+  it('never buys room at the price of a longer way round', () => {
+    // Only one side is open at all, so there is nothing to weigh: it goes the
+    // way that works even though it ends up close to the obstacle.
+    const shelf: readonly Rect[] = [
+      { x: 60, y: -800, width: 180, height: 700 },
+      { x: 60, y: 120, width: 180, height: 800 },
+    ];
+    const detour = route(shelf);
+    expect(detour?.blocked).toBe(0);
+    expect(Math.abs(detour?.path.midpoint.y ?? 999)).toBeLessThan(120);
+  });
+
+  it('leans a curve sideways when that is what gets past', () => {
+    // Leaning bends the line without moving its ends or the direction it leaves
+    // by, so a route that has to go round is still one smooth curve.
+    const straight = shapedPath(
+      {
+        from: { x: 0, y: 0 },
+        fromNormal: { x: 1, y: 0 },
+        to: { x: 300, y: 0 },
+        toNormal: { x: -1, y: 0 },
+      },
+      theme,
+    );
+    const leaned = shapedPath(
+      {
+        from: { x: 0, y: 0 },
+        fromNormal: { x: 1, y: 0 },
+        to: { x: 300, y: 0 },
+        toNormal: { x: -1, y: 0 },
+        bow: 0.5,
+      },
+      theme,
+    );
+    expect(straight?.midpoint.y).toBeCloseTo(0, 6);
+    expect(Math.abs(leaned?.midpoint.y ?? 0)).toBeGreaterThan(50);
+    // Same ends, same tangents: only the middle moved.
+    expect(leaned?.points[0]).toEqual(straight?.points[0]);
+    expect(leaned?.points.at(-1)).toEqual(straight?.points.at(-1));
+  });
+
+  it('gives up gracefully on a table with nowhere clear to go', () => {
+    // Boxed in on every side: there is no route, so the honest answer is the
+    // line the binding asked for rather than a loop around the canvas.
+    const boxedIn: readonly Rect[] = [{ x: -2_000, y: -2_000, width: 4_000, height: 4_000 }];
+    const stuck = route(boxedIn);
+    expect(stuck?.blocked).toBeGreaterThan(0);
+    expect(stuck?.path.points.length).toBeGreaterThan(2);
+  });
+
+  it('keeps a fixed anchor where the user put it', () => {
+    const pinned = resolved({
+      binding: binding({ from: { mode: 'fixed', x: 1, y: 0.5 }, label: 'x' }),
+    });
+    const between: Rect = { x: 100, y: -70, width: 100, height: 140 };
+    const detour = routeConnector(pinned, theme, 1, [between]);
+    // The pinned end has not moved; only the other end and the lean may change.
+    expect(detour?.path.points[0]?.y).toBeCloseTo(pinned.from.y, 6);
+  });
+
+  it('routes the same way at any zoom, allowing for the clearance', () => {
+    const between: Rect = { x: 100, y: -70, width: 100, height: 140 };
+    expect(route([between], 0.4)?.blocked).toBe(0);
+    expect(route([between], 2)?.blocked).toBe(0);
+  });
+
+  it('has no route at all for a degenerate binding', () => {
+    expect(routeConnector(resolved({ degenerate: true }), theme, 1, [])).toBeNull();
+  });
+
+  it('draws the route it chose, not the one it scored', () => {
+    const between: Rect = { x: 100, y: -70, width: 100, height: 140 };
+    const list = build({ resolved: pair, obstacles: [between] });
+    // The drawn line is sampled far more finely than the scoring pass, so the
+    // curve is smooth rather than a chain of long facets.
+    expect(list.polygons.length).toBeGreaterThan(20);
+    expect(list.bounds.height).toBeGreaterThan(80);
+  });
+});
+
+describe('segmentHitsRect', () => {
+  const box: Rect = { x: 0, y: 0, width: 10, height: 10 };
+
+  it('finds a segment that passes clean through', () => {
+    expect(segmentHitsRect({ x: -5, y: 5 }, { x: 15, y: 5 }, box)).toBe(true);
+  });
+
+  it('finds a segment that only pokes in', () => {
+    expect(segmentHitsRect({ x: -5, y: 5 }, { x: 1, y: 5 }, box)).toBe(true);
+  });
+
+  it('rejects one that stops short, and one that goes past on either side', () => {
+    expect(segmentHitsRect({ x: -5, y: 5 }, { x: -1, y: 5 }, box)).toBe(false);
+    expect(segmentHitsRect({ x: -5, y: -5 }, { x: 15, y: -5 }, box)).toBe(false);
+    expect(segmentHitsRect({ x: -5, y: 15 }, { x: 15, y: 15 }, box)).toBe(false);
+    expect(segmentHitsRect({ x: -5, y: 5 }, { x: -5, y: 15 }, box)).toBe(false);
+  });
+
+  it('rejects a diagonal that passes outside the corner', () => {
+    expect(segmentHitsRect({ x: -5, y: 5 }, { x: 3, y: -5 }, box)).toBe(false);
+    // Exactly through the corner does touch it, which is the honest answer.
+    expect(segmentHitsRect({ x: -5, y: 5 }, { x: 5, y: -5 }, box)).toBe(true);
+  });
+
+  it('counts a segment entirely inside', () => {
+    expect(segmentHitsRect({ x: 2, y: 2 }, { x: 8, y: 8 }, box)).toBe(true);
+  });
+
+  it('counts a zero-length segment by where it sits', () => {
+    expect(segmentHitsRect({ x: 5, y: 5 }, { x: 5, y: 5 }, box)).toBe(true);
+    expect(segmentHitsRect({ x: 50, y: 5 }, { x: 50, y: 5 }, box)).toBe(false);
+  });
+});
+
+describe('blockedLength', () => {
+  it('is nothing at all when there is nothing to hit', () => {
+    expect(
+      blockedLength(
+        [
+          { x: 0, y: 0 },
+          { x: 10, y: 0 },
+        ],
+        [],
+      ),
+    ).toBe(0);
+  });
+
+  it('charges the segments that are in the way and no others', () => {
+    const points: readonly Point2[] = [
+      { x: 0, y: 0 },
+      { x: 10, y: 0 },
+      { x: 20, y: 0 },
+    ];
+    expect(blockedLength(points, [{ x: 12, y: -5, width: 4, height: 10 }])).toBe(10);
+  });
+
+  it('charges a segment once even when two obstacles overlap on it', () => {
+    const points: readonly Point2[] = [
+      { x: 0, y: 0 },
+      { x: 10, y: 0 },
+    ];
+    const overlapping: readonly Rect[] = [
+      { x: 2, y: -5, width: 6, height: 10 },
+      { x: 4, y: -5, width: 6, height: 10 },
+    ];
+    expect(blockedLength(points, overlapping)).toBe(10);
+  });
+});
+
+describe('the mark a line carries', () => {
+  const marked = (kind: string): ReturnType<typeof buildConnectorDrawList> =>
+    build({
+      resolved: resolved({ binding: binding({ label: 'x', meta: { kind } }) }),
+      revealed: false,
+    });
+
+  it('spells out a drill-down line the same way its button does', () => {
+    // Three lines, which is what a table looks like from a distance.
+    expect(marked('rows').texts.map((run) => run.text)).toContain(ROWS_ICON);
+    expect(marked('query').texts.map((run) => run.text)).toContain(SQL_ICON);
+    expect(marked('query').texts.find((run) => run.text === SQL_ICON)?.fontSize).toBe(
+      SQL_ICON_FONT_SIZE,
+    );
+  });
+
+  it("draws a charting line's bars from the same geometry as the button", () => {
+    // Bars rather than a word, and geometry rather than glyphs: three block
+    // characters touch, and at this size they were drawn as two and an ellipsis.
+    const chart = marked('chart');
+    expect(chart.texts).toHaveLength(0);
+    const bars = barRects(0, 0, DEFAULT_TABLE_THEME.connectorMarkerSize);
+    expect(bars).toHaveLength(3);
+    // Three ascending bars, each clear of the next.
+    expect(bars.map((bar) => bar.height)).toEqual(
+      [...bars.map((bar) => bar.height)].sort((a, b) => a - b),
+    );
+    for (let index = 1; index < bars.length; index += 1) {
+      const previous = bars[index - 1];
+      const current = bars[index];
+      if (previous === undefined || current === undefined) throw new Error('expected bars');
+      expect(current.x).toBeGreaterThan(previous.x + previous.width);
+    }
+    // Bottom-aligned, which is what makes them bars and not blocks.
+    expect(new Set(bars.map((bar) => bar.y + bar.height)).size).toBe(1);
+    // Two rectangles for the chip itself, and one per bar on top.
+    expect(chart.markerPolygons).toHaveLength(2 + bars.length);
+  });
+
+  it('draws a key for a foreign key, which is a shape rather than a word', () => {
+    const key = marked('foreign-key');
+    expect(key.texts.map((run) => run.text)).not.toContain(ROWS_ICON);
+    expect(key.markerPolygons.length).toBeGreaterThan(2);
   });
 });

@@ -29,7 +29,7 @@ export const testSchema: TableSchema = {
 
 export const makeTable = (ids: IdFactory, overrides: Partial<TableEntitySpec> = {}): TableEntity =>
   buildTableEntity(ids, {
-    source: { connectionId: TEST_CONNECTION, schema: 'SALES', table: 'ORDERS' },
+    source: { kind: 'relation', connectionId: TEST_CONNECTION, schema: 'SALES', table: 'ORDERS' },
     columns: testSchema.columns.map((column) => ({ name: column.name, type: column.type })),
     ...overrides,
   });

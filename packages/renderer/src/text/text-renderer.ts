@@ -1,5 +1,5 @@
 import type { Rgba } from '../theme.js';
-import type { ClipRect, TextRun } from '../table/draw-list.js';
+import type { ClipRect, TextRun, TextSpan } from '../table/draw-list.js';
 import type { GlyphAtlas } from './glyph-atlas.js';
 import type { AdvanceFn } from './metrics.js';
 import { alignOffset, baselineOffset, measureText, truncateToWidth } from './metrics.js';
@@ -75,6 +75,15 @@ export const clipGlyph = (quad: GlyphQuad, clip: ClipRect | undefined): GlyphQua
   };
 };
 
+/** The colour of one character: a span's, where one covers it, or the run's. */
+const colorAt = (run: TextRun, offset: number): Rgba => {
+  const spans: readonly TextSpan[] = run.spans ?? [];
+  for (const span of spans) {
+    if (offset >= span.from && offset < span.to) return span.color;
+  }
+  return run.color;
+};
+
 export class AtlasTextRenderer implements TextRenderer {
   readonly #atlas: GlyphAtlas;
   readonly #advance: AdvanceFn;
@@ -100,6 +109,9 @@ export class AtlasTextRenderer implements TextRenderer {
     const baseline = run.y + baselineOffset(run.height, run.fontSize);
     let penX = run.x + alignOffset(run.align, fitted.width, run.maxWidth);
     const quads: GlyphQuad[] = [];
+    // Offsets into the run's own text. Truncation only ever drops a tail, so a
+    // span over what survives still lands on the same characters.
+    let offset = 0;
 
     for (const char of fitted.text) {
       const slot = this.#atlas.slot({ char, fontSize: run.fontSize, bold });
@@ -117,13 +129,14 @@ export class AtlasTextRenderer implements TextRenderer {
             v0: slot.y / this.#atlas.height,
             u1: (slot.x + slot.width) / this.#atlas.width,
             v1: (slot.y + slot.height) / this.#atlas.height,
-            color: run.color,
+            color: colorAt(run, offset),
           },
           run.clip,
         );
         if (quad !== null) quads.push(quad);
       }
       penX += slot.advance / this.#atlas.scale;
+      offset += char.length;
     }
 
     return { quads, width: fitted.width, truncated: fitted.truncated };

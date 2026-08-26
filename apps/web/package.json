@@ -13,13 +13,16 @@
     "@babylonjs/core": "^9.22.1",
     "@panorama/core": "*",
     "@panorama/exasol": "*",
+    "@panorama/export": "*",
     "@panorama/renderer": "*",
     "@panorama/table": "*",
     "@panorama/test-support": "*",
     "@panorama/ui": "*",
     "@panorama/worker": "*",
     "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "react-dom": "^19.2.0",
+    "@panorama/chart": "*",
+    "@panorama/chart-echarts": "*"
   },
   "devDependencies": {
     "@types/react": "^19.2.18",

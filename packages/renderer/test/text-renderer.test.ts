@@ -219,3 +219,41 @@ describe('device pixel ratio', () => {
     expect(atlas.scale).toBe(2);
   });
 });
+
+describe('colouring part of a run', () => {
+  const RED: TextRun['color'] = [1, 0, 0, 1];
+
+  it('colours the characters a span covers and no others', () => {
+    const layout = renderer().layout(
+      run({ text: 'abcde', spans: [{ from: 1, to: 3, color: RED }] }),
+    );
+    expect(layout.quads.map((quad) => quad.color)).toEqual([
+      [0, 0, 0, 1],
+      RED,
+      RED,
+      [0, 0, 0, 1],
+      [0, 0, 0, 1],
+    ]);
+  });
+
+  it('leaves a run with no spans in one colour', () => {
+    const layout = renderer().layout(run({ text: 'abc' }));
+    expect(new Set(layout.quads.map((quad) => quad.color))).toHaveLength(1);
+  });
+
+  it('counts characters, not code units, so an emoji does not shift a span', () => {
+    // A surrogate pair is one character to a reader and two to `length`; the
+    // offsets have to agree with the text the caller measured them against.
+    const layout = renderer().layout(
+      run({ text: 'a\u{1F600}b', spans: [{ from: 3, to: 4, color: RED }] }),
+    );
+    expect(layout.quads.at(-1)?.color).toEqual(RED);
+  });
+
+  it('ignores a span that covers nothing that is drawn', () => {
+    const layout = renderer().layout(
+      run({ text: 'abc', spans: [{ from: 9, to: 12, color: RED }] }),
+    );
+    expect(layout.quads.every((quad) => quad.color[0] === 0)).toBe(true);
+  });
+});
