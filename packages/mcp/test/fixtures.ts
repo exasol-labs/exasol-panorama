@@ -282,9 +282,23 @@ export class FakeHost implements AgentHost {
   /** The data sets a chart holds, as the workspace would describe them. */
   reads: readonly FakeFrameReport[] = [];
 
+  /**
+   * Where the reduction has got to. Settable, because what an agent is told when
+   * there is no geometry depends entirely on this: "still arriving" and "the
+   * canvas is not running" are different problems with the same empty answer.
+   */
+  chartStatus = 'ready';
+
+  /** The reason a failed reduction gives. */
+  chartError: string | undefined = undefined;
+
+  /** A box the canvas has never taken up: attached to no page, or not yet drawn. */
+  chartUntouched = false;
+
   chartState():
     | {
         status: string;
+        error?: string;
         data?: {
           categories: readonly string[];
           series: readonly { name: string }[];
@@ -294,8 +308,10 @@ export class FakeHost implements AgentHost {
         frames?: readonly FakeFrameReport[];
       }
     | undefined {
+    if (this.chartUntouched) return undefined;
     return {
-      status: 'ready',
+      status: this.chartStatus,
+      ...(this.chartError === undefined ? {} : { error: this.chartError }),
       data: {
         categories: ['Germany', 'Denmark', 'France'],
         series: [{ name: 'REVENUE' }],

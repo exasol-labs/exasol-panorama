@@ -1016,12 +1016,66 @@ describe('editing', () => {
 
     // And nothing at all before the canvas has laid it out.
     host.geometry = null;
+    host.chartStatus = 'loading';
     const early = (await run(host, 'chart', { tableId: chart.id, spec: CHART_SPEC })) as Record<
       string,
       unknown
     >;
     expect(early['drawn']).toBeNull();
     expect(early['note']).toContain('Not drawn yet');
+  });
+
+  /**
+   * `status: "ready"` with `drawn: null` and "ask again once the canvas has laid
+   * it out" was a state an agent could not resolve, and for the case that caused
+   * it — a chart box parked outside the camera's view, culled before it was ever
+   * laid out — asking again could not have helped. The renderer now lays out a
+   * culled chart, and where geometry is still missing the reason is named instead
+   * of implying patience.
+   */
+  it('says why there is no geometry, and only says "ask again" when that would help', async () => {
+    const host = new FakeHost();
+    const chart = host.add(
+      makeTable(host.ids, {
+        source: {
+          kind: 'chart',
+          connectionId: TEST_CONNECTION,
+          spec: CHART_SPEC,
+          label: 'SALES.ORDERS · Chart',
+          derivedFrom: 'table:base' as never,
+        },
+        columns: [],
+      }),
+    );
+    host.geometry = null;
+    const noteFor = async (status: string, error?: string): Promise<string> => {
+      host.chartStatus = status;
+      host.chartError = error;
+      // Read rather than set: the question is what a *report* says, and asking
+      // twice is what an agent in this position actually does.
+      const answer = (await run(host, 'entity', { tableId: chart.id })) as Record<string, unknown>;
+      expect(answer['drawn']).toBeNull();
+      return String(answer['note']);
+    };
+
+    expect(await noteFor('loading')).toMatch(/still arriving.*Ask again/u);
+    expect(await noteFor('failed', 'no such column: REVENUE')).toContain('no such column: REVENUE');
+    // A failure that said nothing about itself still says it failed.
+    expect(await noteFor('failed')).toMatch(/the reduction failed\./u);
+    expect(await noteFor('empty')).toMatch(/came back empty/u);
+    expect(await noteFor('unset')).toMatch(/no chart specification yet/u);
+    // The one that used to say "not yet" and meant "not ever": ready, and nothing
+    // drawing it. It sends the reader to where the answer is.
+    const ready = await noteFor('ready');
+    expect(ready).toMatch(/no frame has been drawn/u);
+    expect(ready).toContain('overview');
+    expect(ready).not.toContain('Ask again');
+
+    // And a box the canvas has never taken up at all, which is a different
+    // problem again: nothing is attached to draw it.
+    host.chartUntouched = true;
+    const untouched = (await run(host, 'entity', { tableId: chart.id })) as Record<string, unknown>;
+    expect(String(untouched['note'])).toMatch(/no chart state.*page is attached/u);
   });
 
   it('names a chart box as it sets it up', async () => {

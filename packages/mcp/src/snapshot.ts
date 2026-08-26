@@ -81,6 +81,47 @@ export const entityBrief = (host: AgentHost, entity: TableEntity): Record<string
 };
 
 /**
+ * Why there is no geometry, which is not always "not yet".
+ *
+ * "Ask again once the canvas has laid it out" was one answer to several
+ * questions, and for one of them it was a lie: a chart parked outside the camera's
+ * view was culled before it was ever laid out, so asking again could not help and
+ * the reply said to keep asking. `status: "ready"` with no geometry and no reason
+ * is a state an agent cannot resolve, which is worse than either half alone.
+ *
+ * So the reason comes from the state of the reduction, and the one case that
+ * cannot be explained says that outright rather than implying patience.
+ */
+const notDrawnBecause = (host: AgentHost, entity: TableEntity): string => {
+  const state = host.chartState(entity.id);
+  switch (state?.status) {
+    case 'loading':
+      return 'Not drawn yet — the rows behind it are still arriving. Ask again.';
+    case 'failed':
+      return `Not drawn: the reduction failed${state.error === undefined ? '' : ` — ${state.error}`}. The geometry cannot exist until this does.`;
+    case 'empty':
+      return 'Not drawn: the reduction came back empty, so there is nothing to lay out. Check what the box behind it holds.';
+    case 'unset':
+      return 'Not drawn: this box has no chart specification yet. Set one with "chart".';
+    case 'ready':
+      /**
+       * Ready and not laid out. Since a culled chart is laid out too, what is
+       * left is a session with no canvas drawing at all — a page that has not
+       * finished starting, or one whose renderer failed. Both are visible in
+       * "overview", which is where to look rather than here.
+       */
+      return 'Not drawn: the reduction is ready but no frame has been drawn for it. The canvas is not running — check "overview" for the renderer, rather than asking this again.';
+    default:
+      /**
+       * No chart state at all, which is not the same as a chart that has not
+       * been drawn: the canvas has never taken this box up. A page that is not
+       * attached is the usual reason, and `overview` is where that shows.
+       */
+      return 'Not drawn: the canvas holds no chart state for this box, so nothing has taken it up. Check "overview" that a page is attached.';
+  }
+};
+
+/**
  * What the canvas made of a chart.
  *
  * The only feedback there is on a written option: a picture cannot be looked at
@@ -91,9 +132,7 @@ export const entityBrief = (host: AgentHost, entity: TableEntity): Record<string
  */
 export const chartDrawn = (host: AgentHost, entity: TableEntity): Record<string, unknown> => {
   const drawn = host.chartGeometry(entity.id);
-  if (drawn === null) {
-    return { drawn: null, note: 'Not drawn yet — ask again once the canvas has laid it out.' };
-  }
+  if (drawn === null) return { drawn: null, note: notDrawnBecause(host, entity) };
   const rounded = (value: number): number => Math.round(value);
   /**
    * A column a data set was asked for and the relation has not got.

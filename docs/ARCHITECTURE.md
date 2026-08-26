@@ -876,6 +876,25 @@ fetched, with a count of what has not. Null is a value a database can return.
 the columns come from a result set and the source needs a connection. The refusal
 names the tool that does the job properly.
 
+**A picture exists whether or not anybody is looking at it.** Culling skips
+entities outside the camera's view, which for a table is the whole of the story:
+what a table is can be read from the document. A chart is not like that — what it
+came out like exists only once it has been laid out, and that is the only feedback
+there is on a written option. So a chart box parked off-screen was culled before
+the host was ever asked to lay it out, and an agent reading its geometry got
+`null` with a note saying to ask again, forever, while the reduction said `ready`.
+The renderer now lays out a chart it is not going to draw. It costs one layout per
+change rather than one per frame — the host caches by specification, data and size
+— so an off-screen chart costs what an on-screen one costs, once.
+
+**A reason, not a "not yet".** `status: "ready"` with no geometry and "ask again
+once the canvas has laid it out" was one answer to five different questions, and
+for the one above it was false: no amount of asking would have helped. Now the
+reason is named — the rows are still arriving, the reduction failed and why, it
+came back empty, there is no specification, nothing is drawing at all — and only
+the case where waiting helps says to wait. A state an agent cannot resolve is
+worse than either half of it alone.
+
 **A picture can be asked what it came out like.** A chart reports the rectangle it
 was laid out for, what it drew, what that covers and — by name — any label that
 fell outside the box, read from the layout the renderer last asked for. It is the

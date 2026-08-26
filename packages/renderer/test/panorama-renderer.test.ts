@@ -814,6 +814,32 @@ describe('the renderer and a chart', () => {
     expect(harness.renderer.stats.quads).toBeGreaterThan(0);
   });
 
+  /**
+   * The defect this exists for, reported by an agent and blocking it: a chart box
+   * outside the camera's view was culled before the host was ever asked to lay it
+   * out, so the geometry an agent reads back — the only feedback there is on a
+   * written option — was `null` for as long as anybody kept asking, while the
+   * reduction said `ready`. Culling is about not *drawing*; a picture that has
+   * never been laid out does not exist to be asked about.
+   */
+  it('lays out a chart it is not going to draw, because that is the only record of it', () => {
+    const harness = setupWithChart();
+    harness.renderer.renderFrame();
+    const onScreen = harness.asked.length;
+    expect(onScreen).toBe(1);
+
+    // Far enough that nothing of the box, its halo or any panel is in view.
+    harness.renderer.camera.moveTo(80_000, 80_000);
+    harness.renderer.renderFrame();
+
+    expect(harness.asked.length).toBe(onScreen + 1);
+    // Laid out for the same rectangle it would have been drawn in: a picture
+    // measured for a different box would report an overflow that is not there.
+    expect(harness.asked.at(-1)).toEqual(harness.asked[0]);
+    // And it genuinely was not drawn — this is not culling quietly stopping.
+    expect(harness.renderer.stats.quads).toBe(0);
+  });
+
   it('asks nothing of a host that cannot draw charts', () => {
     const ids = testIds();
     const core = new PanoramaCore({ ids });

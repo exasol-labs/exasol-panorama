@@ -451,7 +451,27 @@ export class PanoramaRenderer {
         width: entity.transform.width,
         height: entity.transform.height + margin + panelMargin * 2,
       };
-      if (!rectsIntersect(bounds, visibleRect)) continue;
+      if (!rectsIntersect(bounds, visibleRect)) {
+        /**
+         * Culled, but a chart is laid out anyway.
+         *
+         * Culling is about not drawing, and for a table that is the whole of it:
+         * what a table is can be read from the document. A chart is different —
+         * what it came out like exists only once it has been laid out, and that is
+         * the only feedback there is on a written option. An agent reads it back
+         * and cannot move the camera, so a chart parked outside the view reported
+         * "not drawn yet" for as long as anybody cared to keep asking. It was a
+         * real answer to a question nobody had asked: not *yet* implied waiting
+         * would help, and nothing would.
+         *
+         * Laying it out costs one layout per change rather than one per frame —
+         * the host caches by specification, data and size, and this passes the
+         * same size the drawing would — so an off-screen chart costs what an
+         * on-screen one costs, once.
+         */
+        if (entity.source.kind === 'chart') this.#chart(entity);
+        continue;
+      }
 
       const view = this.#views.viewFor(entity);
       const drawList = buildTableDrawList({

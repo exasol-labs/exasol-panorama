@@ -423,6 +423,7 @@ await page.waitForTimeout(1200);
 const picked = await callTool('session');
 const drilled = await callTool('entity', { tableId: behind.opened?.[0]?.id });
 const settledKeyed = await callTool('entity', { tableId: chartId });
+const chartBefore = settledKeyed;
 report.whatAPickedMarkMeans = {
   // Read once it has settled: the `chart` call comes back while the rows are
   // still being read, and a data set nobody has built yet has no key to report.
@@ -434,6 +435,37 @@ report.whatAPickedMarkMeans = {
   // for, and what a heatmap could not do at all before.
   rowsBehindIt: drilled.rows,
 };
+
+/**
+ * 6f2. A picture exists whether or not anybody is looking at it.
+ *
+ * Reported by an agent, and it blocked it: a chart box outside the camera's view
+ * was culled before the host was ever asked to lay it out, so the geometry — the
+ * only feedback there is on a written option — came back `null` while the
+ * reduction said `ready`, and the note said to ask again. Asking again could never
+ * have helped. An agent has no camera, so this is not an unusual position for one
+ * to be in.
+ */
+await callTool('dispatch', {
+  command: { type: 'MoveEntities', ids: [chartId], position: { x: 90_000, y: 90_000, z: 0 } },
+});
+await page.waitForTimeout(1200);
+const parked = await callTool('entity', { tableId: chartId });
+report.aPictureNobodyIsLookingAt = {
+  status: parked.chart?.status,
+  // Present, and measured for the box it is really in rather than approximated.
+  polygons: parked.drawn?.polygons ?? null,
+  box: parked.drawn?.box ?? null,
+  note: parked.note ?? null,
+};
+await callTool('dispatch', {
+  command: {
+    type: 'MoveEntities',
+    ids: [chartId],
+    position: { x: chartBefore.at.x, y: chartBefore.at.y, z: 0 },
+  },
+});
+await page.waitForTimeout(800);
 
 // 6g. Cross-filtering: a statement that leaves a predicate to the chart, wired by
 //     an arrow. A cell is already picked out from the step above, so this shows the
