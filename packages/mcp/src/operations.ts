@@ -208,15 +208,15 @@ export const AGENT_HANDLERS: Readonly<Record<string, AgentHandler>> = {
           }
         : {}),
     };
-    // It ran; the note says why it could have been written more plainly. This
-    // box reads a relation with a name, and calling it `derived_table` is a step
-    // of indirection that hides which table is being read.
-    return reads === DERIVED_TABLE || !/\bderived_table\b/iu.test(sql)
-      ? detail
-      : {
-          ...detail,
-          note: `This box reads ${reads}; naming it is clearer than "derived_table".`,
-        };
+    // It ran; the notes say what could have been written more plainly, or what
+    // the database will have read differently from what was probably meant.
+    const notes = [
+      reads !== DERIVED_TABLE && /\bderived_table\b/iu.test(sql)
+        ? `This box reads ${reads}; naming it is clearer than "derived_table".`
+        : null,
+      escapeNote(sql),
+    ].filter((note): note is string => note !== null);
+    return notes.length === 0 ? detail : { ...detail, note: notes.join(' ') };
   },
   chart: (host, args) => {
     const tableId = str(args, 'tableId') as EntityId;
@@ -266,6 +266,24 @@ export const AGENT_HANDLERS: Readonly<Record<string, AgentHandler>> = {
       ...chartDrawn(host, entityOr(host, tableId)),
     };
   },
+};
+
+/**
+ * Whether a statement carries an escape the database will not read as one.
+ *
+ * Exasol takes a backslash inside a string literal as an ordinary character —
+ * doubling the quote is the whole of the escaping rule — so `\\u00b7` in a
+ * statement is six characters and not a middot. Which is fine when that is what
+ * was meant and silently the wrong column name when it was not, and the only
+ * moment anybody could notice is now.
+ *
+ * Said as a note rather than a refusal: it is legal SQL, and a statement that
+ * genuinely wants those six characters is entitled to them.
+ */
+const escapeNote = (sql: string): string | null => {
+  const found = /\\(u[0-9a-f]{4}|x[0-9a-f]{2}|n|t)/iu.exec(sql);
+  if (found === null) return null;
+  return `This statement contains \\${found[1] ?? ''}, and Exasol reads a backslash in a literal as an ordinary character — so that is ${(found[0] ?? '').length} characters rather than one. Put the character in directly, or use UNICODECHR.`;
 };
 
 /**

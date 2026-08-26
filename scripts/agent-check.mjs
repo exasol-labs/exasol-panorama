@@ -623,6 +623,101 @@ report.figuresWithoutNoise = {
   }, chartId),
 };
 
+// 6j. A live graph and a smoothed series: the two shapes an agent could not build
+//     without typing literals into the option, plus the refusal that used to be a
+//     silent drop.
+const graphed = await callTool('chart', {
+  tableId: chartId,
+  spec: {
+    type: 'custom',
+    category: 'COUNTRY',
+    values: ['REVENUE'],
+    aggregate: 'sum',
+    frames: [
+      { name: 'nodes', kind: 'rows', columns: ['COUNTRY'], rowLimit: 8 },
+      { name: 'edges', kind: 'rows', columns: ['COUNTRY', 'ORDER_DATE'], rowLimit: 8 },
+    ],
+    extra: JSON.stringify({
+      series: [
+        {
+          type: 'graph',
+          layout: 'circular',
+          data: { $rows: 'nodes' },
+          links: { $rows: 'edges' },
+        },
+      ],
+    }),
+  },
+});
+await page.waitForTimeout(1500);
+const graphRead = await callTool('entity', { tableId: chartId });
+report.aLiveGraph = {
+  refused: graphed.error ?? null,
+  // Nodes and links from two data sets, so nothing is a literal that goes stale.
+  series: graphRead.drawn?.series,
+  unresolved: graphRead.drawn?.unresolved ?? [],
+  reads: (graphRead.chart?.reads ?? []).map((frame) => frame.name),
+};
+
+const smoothed = await callTool('chart', {
+  tableId: chartId,
+  spec: {
+    type: 'custom',
+    category: 'COUNTRY',
+    values: ['REVENUE'],
+    aggregate: 'sum',
+    frames: [
+      {
+        name: 'line',
+        kind: 'resample',
+        x: 'ORDER_DATE',
+        values: ['REVENUE'],
+        rolling: 7,
+        points: 80,
+      },
+    ],
+    extra: JSON.stringify({
+      xAxis: { type: 'category' },
+      yAxis: { type: 'value' },
+      series: [
+        { type: 'line', datasetId: 'line', encode: { x: 'ORDER_DATE', y: 'REVENUE' } },
+        { type: 'line', datasetId: 'line', encode: { x: 'ORDER_DATE', y: 'REVENUE_mean7' } },
+      ],
+    }),
+  },
+});
+await page.waitForTimeout(1500);
+const smoothedRead = await callTool('entity', { tableId: chartId });
+report.aMovingAverage = {
+  refused: smoothed.error ?? null,
+  // The measure and its trailing average, side by side from one data set.
+  dimensions: smoothedRead.chart?.reads?.find((frame) => frame.name === 'line')?.dimensions,
+  series: smoothedRead.drawn?.series?.map((entry) => ({ y: entry.encode?.y, marks: entry.marks })),
+  unresolved: smoothedRead.drawn?.unresolved ?? [],
+};
+
+report.refusesAFieldFromAnotherKind = (
+  await callTool('chart', {
+    tableId: chartId,
+    spec: {
+      type: 'bar',
+      category: 'COUNTRY',
+      values: ['REVENUE'],
+      aggregate: 'sum',
+      frames: [
+        {
+          name: 'g',
+          kind: 'group',
+          category: 'COUNTRY',
+          values: ['REVENUE'],
+          aggregate: 'sum',
+          window: { by: 'position', from: 471, count: 120 },
+        },
+      ],
+    },
+  })
+).error;
+
 report.refusesAMisspeltSetting = (
   await callTool('chart', {
     tableId: chartId,

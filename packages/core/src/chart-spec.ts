@@ -237,6 +237,18 @@ export type ChartFrameSpec =
       /** The columns measured against it. */
       readonly values: readonly string[];
       readonly method?: ChartResampleMethod;
+      /**
+       * A trailing average over this many rows, beside the figures themselves.
+       *
+       * The commonest thing anybody asks of a time series and the one thing
+       * neither a window nor a bucket answers: a window says which part of the
+       * relation to look at, and `mean` averages *within* a bucket, so neither is
+       * a line that smooths as it goes. This is: one extra column per measure,
+       * named `<column>_mean<n>`, computed over the rows in order before they are
+       * reduced to points — so it is an average of the data and not of the
+       * picture.
+       */
+      readonly rolling?: number;
       /** Points to carry; a box's width in pixels is a good number. */
       readonly points?: number;
       readonly window?: ChartWindowSpec;
@@ -485,6 +497,9 @@ export const chartFramesProblem = (frames: readonly ChartFrameSpec[]): string | 
       if (frame.x.trim() === '') return `data set "${frame.name}" needs a column along the axis`;
       if (frame.values.length === 0) {
         return `data set "${frame.name}" needs at least one column to measure`;
+      }
+      if (frame.rolling !== undefined && (!Number.isFinite(frame.rolling) || frame.rolling < 2)) {
+        return `data set "${frame.name}" averages over at least two rows, or none`;
       }
     }
     if (frame.kind !== 'group' && frame.kind !== 'scalar' && frame.window !== undefined) {

@@ -124,11 +124,11 @@ const markCounts = (drawList: ChartDrawList): ReadonlyMap<number, number> => {
 };
 
 /**
- * Where a `{"$param": "name"}` survived into the option.
+ * Where a `{"$param": "name"}` or a `{"$rows": "name"}` survived into the option.
  *
  * Which means no data set answered to that name: the marker is left in place
- * rather than replaced by a nought, so it is here to be found and reported by the
- * name the author used.
+ * rather than replaced by a nought or an empty list, so it is here to be found and
+ * reported by the name the author used.
  */
 const unresolvedParams = (value: unknown, path: string): readonly string[] => {
   if (Array.isArray(value)) {
@@ -136,10 +136,17 @@ const unresolvedParams = (value: unknown, path: string): readonly string[] => {
   }
   if (typeof value !== 'object' || value === null) return [];
   const record = value as Record<string, unknown>;
+  const lone = Object.keys(record).length === 1;
   const asked = record['$param'];
-  if (typeof asked === 'string' && Object.keys(record).length === 1) {
+  if (typeof asked === 'string' && lone) {
     return [
       `${path} asks for the number from data set "${asked}", which there is no such data set for`,
+    ];
+  }
+  const wanted = record['$rows'];
+  if (typeof wanted === 'string' && lone) {
+    return [
+      `${path} asks for the rows of data set "${wanted}", which there is no such data set for`,
     ];
   }
   return Object.entries(record).flatMap(([key, entry]) =>

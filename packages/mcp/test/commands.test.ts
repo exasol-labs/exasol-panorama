@@ -405,6 +405,74 @@ describe('readChartSpec', () => {
     ).toThrow(/at least one column to measure/u);
   });
 
+  it('refuses a field that belongs to another kind of data set', () => {
+    // The defect this replaces, and every combination of it rather than the one
+    // that was reported: a `window` on a grouping was dropped as quietly as a
+    // misspelt field, and what came back was five hundred and ninety-one rows
+    // where a hundred and twenty had been asked for.
+    const frames =
+      (frame: unknown): (() => unknown) =>
+      (): unknown =>
+        readChartSpec({ ...base, frames: [frame] });
+    expect(
+      frames({
+        name: 'g',
+        kind: 'group',
+        category: 'C',
+        values: ['V'],
+        window: { by: 'position', from: 471, count: 120 },
+      }),
+    ).toThrow(/window is not part of a group data set/u);
+    // And it says which kinds do read it.
+    expect(
+      frames({
+        name: 'g',
+        kind: 'group',
+        category: 'C',
+        values: ['V'],
+        window: { by: 'position', from: 0, count: 1 },
+      }),
+    ).toThrow(/window belongs to rows and resample/u);
+    expect(frames({ name: 'r', kind: 'rows', columns: ['X'], aggregate: 'sum' })).toThrow(
+      /aggregate is not part of a rows data set/u,
+    );
+    expect(frames({ name: 's', kind: 'scalar', column: 'V', rolling: 7 })).toThrow(
+      /rolling is not part of a scalar data set/u,
+    );
+    expect(
+      frames({ name: 'l', kind: 'resample', x: 'T', values: ['V'], categoryLimit: 3 }),
+    ).toThrow(/categoryLimit is not part of a resample data set/u);
+    // What each kind does read is still read.
+    expect(() =>
+      readChartSpec({
+        ...base,
+        frames: [
+          {
+            name: 'r',
+            kind: 'rows',
+            columns: ['X'],
+            window: { by: 'position', from: 0, count: 9 },
+          },
+        ],
+      }),
+    ).not.toThrow();
+  });
+
+  it('reads a trailing average over the rows', () => {
+    const spec = readChartSpec({
+      ...base,
+      frames: [{ name: 'l', kind: 'resample', x: 'T', values: ['V'], rolling: 7 }],
+    });
+    expect(spec.frames?.[0]).toMatchObject({ rolling: 7 });
+    // A mean of one row is the row, and of none is nothing.
+    expect(() =>
+      readChartSpec({
+        ...base,
+        frames: [{ name: 'l', kind: 'resample', x: 'T', values: ['V'], rolling: 1 }],
+      }),
+    ).toThrow(/averages over at least two rows/u);
+  });
+
   it('refuses two data sets under one name, and the name the reduction has', () => {
     // A name is how an option reaches a data set. Two answering to one name is a
     // picture drawn from whichever won, and it cannot say which that was.

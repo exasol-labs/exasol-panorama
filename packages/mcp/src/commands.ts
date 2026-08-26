@@ -144,6 +144,42 @@ const CHART_FRAME_FIELDS: readonly string[] = Object.keys(
 );
 
 /**
+ * Which fields each kind of data set actually reads.
+ *
+ * A field that belongs to another kind used to be dropped as quietly as a
+ * misspelt one: a `window` on a `group` data set vanished, and what came back was
+ * five hundred and ninety-one rows where a hundred and twenty had been asked for,
+ * with nothing said. The same failure the top-level check was written for, one
+ * layer down — so this is the same rule one layer down, and every combination is
+ * covered rather than the one that was reported.
+ */
+const FRAME_FIELDS: Readonly<Record<ChartFrameSpec['kind'], readonly string[]>> = {
+  group: [
+    'name',
+    'kind',
+    'from',
+    'category',
+    'breakdown',
+    'values',
+    'aggregate',
+    'sort',
+    'categoryLimit',
+    'precision',
+  ],
+  rows: ['name', 'kind', 'from', 'columns', 'key', 'rowLimit', 'window'],
+  resample: ['name', 'kind', 'from', 'x', 'values', 'method', 'points', 'rolling', 'key', 'window'],
+  scalar: ['name', 'kind', 'from', 'column', 'aggregate'],
+};
+
+/** Which kinds do read a field, for a refusal that says where it belongs. */
+const describeFrameKinds = (field: string): string => {
+  const kinds = (Object.keys(FRAME_FIELDS) as ChartFrameSpec['kind'][]).filter((kind) =>
+    FRAME_FIELDS[kind].includes(field),
+  );
+  return kinds.length === 0 ? 'no kind' : `${kinds.join(' and ')}`;
+};
+
+/**
  * Which box each named data set was asked to read.
  *
  * Read apart from the shape, because they are different kinds of fact: the shape
@@ -187,6 +223,19 @@ const readChartFrames = (value: unknown): readonly ChartFrameSpec[] | undefined 
     if (!CHART_FRAME_KINDS.includes(kind as never)) {
       throw new AgentError(`${where}.kind must be one of ${CHART_FRAME_KINDS.join(', ')}`);
     }
+    // A field that belongs to another kind is refused rather than dropped: a
+    // `window` on a grouping is a request for a hundred and twenty rows that
+    // silently returned five hundred and ninety-one.
+    const forKind = FRAME_FIELDS[kind as ChartFrameSpec['kind']];
+    const misplaced = Object.keys(entry).find((field) => !forKind.includes(field));
+    if (misplaced !== undefined) {
+      throw new AgentError(
+        `${where}.${misplaced} is not part of a ${kind} data set — a ${kind} reads ${forKind.join(', ')}.` +
+          (CHART_FRAME_FIELDS.includes(misplaced)
+            ? ` (${misplaced} belongs to ${describeFrameKinds(misplaced)}.)`
+            : ''),
+      );
+    }
     const strings = (field: string): readonly string[] => {
       const list = entry[field];
       if (list === undefined || list === null) return [];
@@ -223,6 +272,7 @@ const readChartFrames = (value: unknown): readonly ChartFrameSpec[] | undefined 
     }
     if (kind === 'resample') {
       const points = numberOr(entry['points'], `frames[${index}].points`);
+      const rolling = numberOr(entry['rolling'], `frames[${index}].rolling`);
       const method = enumOr(CHART_RESAMPLE_METHODS, entry['method'], `frames[${index}].method`);
       return {
         name,
@@ -231,6 +281,7 @@ const readChartFrames = (value: unknown): readonly ChartFrameSpec[] | undefined 
         values: strings('values'),
         ...(method === undefined ? {} : { method: method as ChartResampleMethod }),
         ...(points === undefined ? {} : { points }),
+        ...(rolling === undefined ? {} : { rolling }),
         ...(typeof key === 'string' && key !== '' ? { key } : {}),
         ...(window === undefined ? {} : { window }),
       };

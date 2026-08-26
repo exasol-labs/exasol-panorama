@@ -464,6 +464,41 @@ describe('editing', () => {
     expect(host.drafts.get(query.id)).toBeUndefined();
   });
 
+  it('says when a statement carries an escape the database will not read as one', async () => {
+    const host = new FakeHost();
+    const base = host.add(makeTable(host.ids));
+    const box = host.add(
+      makeTable(host.ids, {
+        source: {
+          kind: 'query',
+          connectionId: TEST_CONNECTION,
+          sql: 'SELECT 1',
+          label: 'a query',
+          derivedFrom: base.id,
+        },
+        mode: 'result',
+        columns: [],
+      }),
+    );
+    // Exasol reads a backslash in a literal as an ordinary character, so this is
+    // six characters and not a middot — fine when that is what was meant, and
+    // silently the wrong column name when it was not.
+    const answer = (await run(host, 'query', {
+      tableId: box.id,
+      sql: 'SELECT 1 AS "a\\u00b7b"',
+      preview: 0,
+    })) as { note?: string };
+    expect(answer.note).toContain('backslash');
+    expect(answer.note).toContain('UNICODECHR');
+    // And nothing is said about a statement with no escape in it.
+    const plain = (await run(host, 'query', {
+      tableId: box.id,
+      sql: 'SELECT 1 AS "a·b"',
+      preview: 0,
+    })) as { note?: string };
+    expect(plain.note).toBeUndefined();
+  });
+
   it('draws the arrow a {{name}} asked for, and says what it did', async () => {
     const host = new FakeHost();
     const base = host.add(makeTable(host.ids));

@@ -61,7 +61,9 @@ A chart is given **named data sets**. Its own reduction is always there as
   a scatter with a size channel, a graph's edges or a tree's parents needs.
 - `resample` — a long series reduced to a few hundred points where the rows are.
   `extremes` (default) keeps each bucket's high and low, so a spike survives;
-  `mean` for a trend; `lttb` for the shape.
+  `mean` for a trend; `lttb` for the shape. `rolling: N` adds a trailing average
+  over N rows as `<column>_meanN`, computed before the reduction — the line and
+  its trend, from one data set.
 - `scalar` — one number, read as `{"$param": "name"}` anywhere in the option.
 
 With `type: "custom"`, `spec.extra` is the entire ECharts option and reads a data
@@ -71,13 +73,24 @@ set the way any ECharts example does — `datasetId` and `encode`:
     extra:  {"series":[{"type":"heatmap","datasetId":"m",
                         "encode":{"x":"BAND","y":"TYPE","value":"PCT"}}]}
 
+A series binds one data set, and a graph or a sankey needs two. So a data set can
+also go wherever a _list_ belongs, as objects keyed by its columns:
+
+    frames: [{ name: "nodes", kind: "rows", columns: ["name", "value"] },
+             { name: "edges", kind: "rows", columns: ["source", "target", "value"] }]
+    extra:  {"series":[{"type":"graph","layout":"force",
+                        "data":{"$rows":"nodes"},"links":{"$rows":"edges"}}]}
+
+Nothing is typed in as a literal, so the picture cannot go stale.
+
 A data set reads the chart's own box unless `from` names another — which draws a
 data arrow for you, so a panel of several aggregations, a graph of nodes and edges
 or a tree of parents is one `chart` call. `key` says which column a drawn mark
 stands for: give it and picking a mark means something.
 
-**Windows.** A `rows` or `resample` data set may say which part of a relation it
-reads: `{by: "position", from, count}`, or `{by: "value", column, from, to}` for a
+**Windows.** A window is a _range selector_, not a rolling one — for a moving
+average use `rolling`. A `rows` or `resample` data set may say which part of a
+relation it reads: `{by: "position", from, count}`, or `{by: "value", column, from, to}` for a
 range, which stops reading once the column passes the bound. Move a position
 window with `chart(tableId, pan: {frame, pages})` — one commit, and the picture
 you had stays on screen until the next window arrives.
@@ -128,11 +141,16 @@ picture drawn over the frames that follow. Ask again.
 ## Habits that pay
 
 1. `overview` first, then compute on the shortest route, then put the result here.
-2. Read from what a box's `readsFrom` says. Only a box built on another query or
+2. Every field belongs to one kind of data set: a `window` on a `group` is refused
+   rather than dropped, and the refusal says which kinds do read it.
+3. Read from what a box's `readsFrom` says. Only a box built on another query or
    chart reads `derived_table`; naming the relation is clearer.
-3. After setting a chart up, ask again and read `unresolved` and `marks` before
+4. After setting a chart up, ask again and read `unresolved` and `marks` before
    believing the picture.
-4. Name your boxes with `label`. A canvas where seven boxes all say
+5. Name your boxes with `label`. A canvas where seven boxes all say
    "RAW.CLAIMS · SQL" is one you have to read the statements to navigate.
-5. Send several commands in one `dispatch` rather than several calls.
-6. A refusal is an answer: it says what was wrong in the terms you sent it.
+6. Send several commands in one `dispatch` rather than several calls.
+7. A refusal is an answer: it says what was wrong in the terms you sent it.
+8. Exasol reads a backslash inside a string literal as an ordinary character, so
+   `\u00b7` in a statement is six characters and not a middot. Put the character
+   in directly, or use `UNICODECHR`. `query` says so when it sees one.

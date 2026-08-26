@@ -164,6 +164,9 @@ export const datasetsFor = (frames: readonly ChartFrame[]): readonly Option[] =>
 /** How a written option asks for a number a data set worked out. */
 const PARAM_KEY = '$param';
 
+/** How it asks for a whole data set, as rows, where a data set cannot be bound. */
+const ROWS_KEY = '$rows';
+
 /**
  * Puts the scalars where a written option asked for them.
  *
@@ -181,17 +184,42 @@ export const resolveParams = (value: unknown, frames: readonly ChartFrame[]): un
   if (Array.isArray(value)) return value.map((entry) => resolveParams(entry, frames));
   if (typeof value !== 'object' || value === null) return value;
   const record = value as Option;
+  const lone = Object.keys(record).length === 1;
   const asked = record[PARAM_KEY];
-  if (typeof asked === 'string' && Object.keys(record).length === 1) {
+  if (typeof asked === 'string' && lone) {
     const frame = frames.find((entry) => entry.name === asked);
     if (frame === undefined) return record;
     const scalar = frameScalar(frame);
     return scalar === null ? record : scalar;
   }
+  const wanted = record[ROWS_KEY];
+  if (typeof wanted === 'string' && lone) {
+    const frame = frames.find((entry) => entry.name === wanted);
+    return frame === undefined ? record : rowObjects(frame);
+  }
   return Object.fromEntries(
     Object.entries(record).map(([key, entry]) => [key, resolveParams(entry, frames)]),
   );
 };
+
+/**
+ * A data set as a list of objects, keyed by its columns.
+ *
+ * The way out of a limit that is ECharts' and not ours: a series binds *one* data
+ * set, and a graph or a sankey needs two — nodes and the links between them. So a
+ * written option can put a data set anywhere a list belongs:
+ *
+ *     series: [{ type: 'graph', data: { $rows: 'nodes' }, links: { $rows: 'edges' } }]
+ *
+ * Objects rather than arrays because that is what those series read: `{name}` and
+ * `{source, target}` are keys, and a data set's column names are already the right
+ * ones. Without this a graph's edges had to be typed into the option as literals,
+ * which makes a picture that silently lies as soon as the query behind it changes.
+ */
+const rowObjects = (frame: ChartFrame): readonly Option[] =>
+  frame.rows.map((row) =>
+    Object.fromEntries(frame.dimensions.map((name, column) => [name, row[column] ?? null])),
+  );
 
 export const chartOption = (
   spec: ChartSpec,

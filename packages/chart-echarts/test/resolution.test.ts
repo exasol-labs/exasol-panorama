@@ -428,6 +428,16 @@ describe('a number nothing answered for', () => {
     ]);
   });
 
+  it('names a data set a list asked for and did not get', () => {
+    const resolution = resolveOption(
+      { series: [{ type: 'graph', links: { $rows: 'edges' } }] },
+      EMPTY_CHART_DRAW_LIST,
+    );
+    expect(resolution.unresolved).toEqual([
+      'series[0].links asks for the rows of data set "edges", which there is no such data set for',
+    ]);
+  });
+
   it('says nothing where every number was resolved', () => {
     const resolution = resolveOption(
       { series: [{ type: 'line', markLine: { data: [{ yAxis: 4.91 }] } }] },

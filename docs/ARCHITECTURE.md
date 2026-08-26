@@ -659,6 +659,24 @@ data. The re-run is decided in the frame tick from what is true now, like every
 other derived thing here, so an arrow drawn by a pointer, an agent or an undo all
 take effect the same way.
 
+**A field belongs to one kind of data set, and a field in the wrong one is
+refused.** The top-level check that refuses an unknown setting was the right rule
+in the wrong place only: a `window` on a `group` data set was dropped as quietly as
+a misspelt name, and what came back was five hundred and ninety-one rows where a
+hundred and twenty had been asked for. So each kind declares what it reads, a
+field belonging to another kind is refused, and the refusal says which kinds do
+read it. Written as a table of kinds rather than as the one case reported, because
+the class of failure is what matters.
+
+**Where ECharts binds one data set and a series needs two, a data set goes in as
+rows.** A graph and a sankey read nodes _and_ links, and a dataset binding feeds
+only the first — so an edge list had to be typed into the option as literals, which
+is a picture that silently lies the moment the query changes. `{"$rows": "name"}`
+anywhere a list belongs becomes that data set's rows as objects keyed by its
+columns, which is exactly what those series read. The same shape as `$param` and
+for the same reason: one small piece of grammar, where the library has no concept
+to borrow.
+
 **A series longer than the screen is a window, and the reduction happens where the
 rows are.** A data set may say which part of a relation it reads — a row offset and
 a count, which is the table's own mechanism and right when the relation is already
@@ -668,7 +686,10 @@ bound. A `resample` data set then cuts what it read down to a few hundred points
 the worker, keeping the extremes of each bucket by default because a mean hides the
 spike that was the reason to look. Two rules make this safe to move along. The
 limit on points is the _layout_, not the database: a million points is nothing to
-an engine and impossible for a walk that visits every element in JavaScript. And
+an engine and impossible for a walk that visits every element in JavaScript. A window is a range
+selector rather than a rolling one, so a moving average is its own thing: `rolling`
+adds a trailing mean over the rows, computed before the reduction, as a column of
+its own — an average of the data rather than of the picture. And
 the chart keeps drawing the window it has while the next one is in flight —
 §1 does not get an exception for charts, and blanking on every step is the one
 thing a person moving along a series cannot use.

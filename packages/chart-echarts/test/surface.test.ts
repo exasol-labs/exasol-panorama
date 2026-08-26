@@ -793,6 +793,105 @@ describe('a chart whose option was written', () => {
     ]);
   });
 
+  it('puts a whole data set where a list belongs, which is what a graph needs', () => {
+    // The limit this works around is ECharts' and not ours: a series binds one
+    // data set, and a graph needs two — the nodes and the links between them.
+    // Without this an edge list had to be typed into the option as literals,
+    // making a picture that silently lies as soon as the query changes.
+    const nodes: ChartFrame = {
+      name: 'nodes',
+      dimensions: ['name', 'value'],
+      rows: [
+        ['a', 3],
+        ['b', 5],
+      ],
+      read: 2,
+      of: 2,
+      basis: 'exact',
+    };
+    const edges: ChartFrame = {
+      name: 'edges',
+      dimensions: ['source', 'target', 'value'],
+      rows: [['a', 'b', 2]],
+      read: 1,
+      of: 1,
+      basis: 'exact',
+    };
+    const chartSpec = spec({
+      type: 'custom',
+      extra: JSON.stringify({
+        series: [
+          {
+            type: 'graph',
+            layout: 'force',
+            data: { $rows: 'nodes' },
+            links: { $rows: 'edges' },
+          },
+        ],
+      }),
+    });
+    const chartData = data();
+    const built = chartOption(
+      chartSpec,
+      chartData,
+      framesOf(chartSpec, chartData, [nodes, edges]),
+      theme,
+      typography,
+    );
+    const series = built['series'] as { data: unknown; links: unknown }[];
+    // Objects keyed by the data set's own columns, which is what those series
+    // read: `{name}` and `{source, target}` are keys.
+    expect(series[0]?.data).toEqual([
+      { name: 'a', value: 3 },
+      { name: 'b', value: 5 },
+    ]);
+    expect(series[0]?.links).toEqual([{ source: 'a', target: 'b', value: 2 }]);
+  });
+
+  it('reads a row shorter than its columns as nothing rather than as missing', () => {
+    const ragged: ChartFrame = {
+      name: 'edges',
+      dimensions: ['source', 'target', 'value'],
+      // A data set built in code can be ragged; a value nobody gave is nothing,
+      // not a key the series will not find.
+      rows: [['a', 'b']],
+      read: 1,
+      of: 1,
+      basis: 'exact',
+    };
+    const chartSpec = spec({
+      type: 'custom',
+      extra: '{"series":[{"type":"graph","links":{"$rows":"edges"}}]}',
+    });
+    const chartData = data();
+    const built = chartOption(
+      chartSpec,
+      chartData,
+      framesOf(chartSpec, chartData, [ragged]),
+      theme,
+      typography,
+    );
+    const series = built['series'] as { links: unknown }[];
+    expect(series[0]?.links).toEqual([{ source: 'a', target: 'b', value: null }]);
+  });
+
+  it('leaves a list nothing answers for exactly where it was', () => {
+    const chartSpec = spec({
+      type: 'custom',
+      extra: '{"series":[{"type":"graph","links":{"$rows":"nobody"}}]}',
+    });
+    const chartData = data();
+    const built = chartOption(
+      chartSpec,
+      chartData,
+      framesOf(chartSpec, chartData),
+      theme,
+      typography,
+    );
+    const series = built['series'] as { links: unknown }[];
+    expect(series[0]?.links).toEqual({ $rows: 'nobody' });
+  });
+
   it('leaves a number nothing answers for exactly where it was', () => {
     // Rather than substituting a nought, which would draw a line at zero that
     // somebody then believes. The marker left behind is what the resolution

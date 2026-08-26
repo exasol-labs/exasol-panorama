@@ -283,6 +283,38 @@ const resampleFrame = (
   }
 
   const read = xs.length;
+  /**
+   * A trailing average over the rows, in order, before they are reduced.
+   *
+   * An average of the *data* rather than of the picture: computed here and then
+   * resampled with everything else, so the smoothed line says what the rows said
+   * whatever point budget the box turns out to have. One pass, a running total,
+   * and a gap wherever there were not enough figures to average — a mean of two
+   * of seven rows is not a seven-row mean.
+   */
+  const over = frame.rolling === undefined ? 0 : Math.max(2, Math.trunc(frame.rolling));
+  if (over > 1) {
+    for (const series of [...ys]) {
+      const averaged: (number | null)[] = [];
+      let total = 0;
+      let counted = 0;
+      for (let index = 0; index < read; index += 1) {
+        const value = series[index];
+        if (value !== null && value !== undefined) {
+          total += value;
+          counted += 1;
+        }
+        const leaving = index - over;
+        const left = leaving >= 0 ? series[leaving] : undefined;
+        if (left !== null && left !== undefined) {
+          total -= left;
+          counted -= 1;
+        }
+        averaged.push(index + 1 < over || counted === 0 ? null : total / counted);
+      }
+      ys.push(averaged);
+    }
+  }
   const rows: (readonly CellValue[])[] = [];
   const keys: CellValue[] = [];
   const emit = (index: number): void => {
@@ -393,7 +425,13 @@ const resampleFrame = (
     name: frame.name,
     ...windowReport(input),
     ...missingColumns([frame.x, ...frame.values], input.columns),
-    dimensions: [frame.x, ...frame.values],
+    // The averages are named after what they average, so a written option can
+    // plot the line and its trend together without being told the convention.
+    dimensions: [
+      frame.x,
+      ...frame.values,
+      ...(over > 1 ? frame.values.map((name) => `${name}_mean${over}`) : []),
+    ],
     rows,
     ...(frame.key === undefined || frame.key !== frame.x ? {} : { key: frame.key, keys }),
     read,

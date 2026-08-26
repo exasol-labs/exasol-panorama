@@ -548,6 +548,32 @@ describe('a long series, reduced to fit the pixels', () => {
     expect(built.rows.some((row) => row[1] === 8)).toBe(true);
   });
 
+  it('averages a column the relation has not got to nothing, and says which', () => {
+    const frame: ChartFrameSpec = {
+      name: 'line',
+      kind: 'resample',
+      x: 'T',
+      values: ['NOWHERE'],
+      rolling: 3,
+      points: 100,
+    };
+    const values: (readonly CellValue[])[] = Array.from({ length: 10 }, (_, index) => [
+      `t${index}`,
+      index,
+    ]);
+    const source: ChartFrameInput = {
+      spec: spec({ frames: [frame] }),
+      columns: ['T', 'V'],
+      chunks: [chunkOf(['T', 'V'], values)],
+      totalRows: values.length,
+    };
+    const built = named(buildFrames(source, aggregateChart(source)), 'line');
+    expect(built.dimensions).toEqual(['T', 'NOWHERE', 'NOWHERE_mean3']);
+    expect(built.rows.every((row) => row[1] === null && row[2] === null)).toBe(true);
+    // And which column it was, rather than a line of nothing with no explanation.
+    expect(built.missing).toEqual(['NOWHERE']);
+  });
+
   it('draws nothing along an axis the relation has not got', () => {
     const frame: ChartFrameSpec = { name: 'line', kind: 'resample', x: 'NOWHERE', values: ['V'] };
     const values: (readonly CellValue[])[] = Array.from({ length: 10 }, (_, index) => [
@@ -564,6 +590,65 @@ describe('a long series, reduced to fit the pixels', () => {
     // The rows are there and the axis is nothing, which the resolution report
     // names as an unresolved channel rather than this pretending otherwise.
     expect(built.rows.every((row) => row[0] === null)).toBe(true);
+  });
+
+  it('averages across the rows as it goes, beside the figures themselves', () => {
+    // The thing neither a window nor a bucket answers: a window says which part of
+    // the relation to look at and `mean` averages within a bucket, so neither one
+    // smooths as it goes.
+    const values: (readonly CellValue[])[] = Array.from({ length: 40 }, (_, index) => [
+      `t${String(index).padStart(3, '0')}`,
+      index % 2 === 0 ? 0 : 10,
+    ]);
+    const frame: ChartFrameSpec = {
+      name: 'line',
+      kind: 'resample',
+      x: 'T',
+      values: ['V'],
+      rolling: 4,
+      points: 100,
+    };
+    const source: ChartFrameInput = {
+      spec: spec({ frames: [frame] }),
+      columns: ['T', 'V'],
+      chunks: [chunkOf(['T', 'V'], values)],
+      totalRows: values.length,
+    };
+    const built = named(buildFrames(source, aggregateChart(source)), 'line');
+    // The average is a column of its own, named after what it averages.
+    expect(built.dimensions).toEqual(['T', 'V', 'V_mean4']);
+    // A saw-tooth of nought and ten averages to five once four rows are in.
+    expect(built.rows[0]?.[2]).toBeNull();
+    expect(built.rows[3]?.[2]).toBe(5);
+    expect(built.rows.at(-1)?.[2]).toBe(5);
+    // And the figures themselves are untouched.
+    expect(built.rows.map((row) => row[1])).toEqual(values.map((row) => row[1]));
+  });
+
+  it('leaves a gap in the average where there was nothing to average', () => {
+    const values: (readonly CellValue[])[] = Array.from({ length: 20 }, (_, index) => [
+      `t${index}`,
+      index < 10 ? null : 4,
+    ]);
+    const frame: ChartFrameSpec = {
+      name: 'line',
+      kind: 'resample',
+      x: 'T',
+      values: ['V'],
+      rolling: 3,
+      points: 100,
+    };
+    const source: ChartFrameInput = {
+      spec: spec({ frames: [frame] }),
+      columns: ['T', 'V'],
+      chunks: [chunkOf(['T', 'V'], values)],
+      totalRows: values.length,
+    };
+    const built = named(buildFrames(source, aggregateChart(source)), 'line');
+    // Nothing to average is a gap, not a nought — a line that dropped to the
+    // floor through an outage would be a picture of an outage that did not happen.
+    expect(built.rows[5]?.[2]).toBeNull();
+    expect(built.rows.at(-1)?.[2]).toBe(4);
   });
 
   it('goes the way the data went', () => {
