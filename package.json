@@ -2,6 +2,7 @@
   "name": "exasol-panorama",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "description": "Exasol Panorama — a spatial visual environment for exploring data in Exasol.",
   "workspaces": [

@@ -19,6 +19,10 @@ and is the page the server itself serves.
 
 ---
 
+MIT licensed — see [LICENSE](LICENSE).
+
+---
+
 ## Quick start
 
 ```bash
