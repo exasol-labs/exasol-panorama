@@ -29,6 +29,15 @@ export interface AgentViewState {
 
 export interface AgentSchemaListing {
   readonly name: string;
+  /**
+   * A virtual schema: held by another system and reached through an adapter.
+   *
+   * Reported because it bears directly on where to compute. Its tables have no
+   * row count in Exasol's catalogue — nothing here counted them — and a statement
+   * against one is federated out, so "the shortest route to the engine" is not
+   * the shortest route to these rows.
+   */
+  readonly virtual?: boolean;
 }
 
 export interface AgentTableListing {
@@ -37,6 +46,8 @@ export interface AgentTableListing {
   readonly kind: string;
   readonly rowCount?: number;
   readonly comment?: string;
+  /** A relation in a virtual schema; see `AgentSchemaListing.virtual`. */
+  readonly virtual?: boolean;
 }
 
 export interface AgentExportJob {

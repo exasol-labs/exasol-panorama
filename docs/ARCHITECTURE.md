@@ -750,6 +750,39 @@ the exception — and the reason there is only one.
 
 **Two draw calls, and the ordering law they imply.** See §8.2.
 
+**The explorer colours a relation by what it is, and never only by colour.** A
+table, a view and a virtual table are three different things to open — the second
+has no row count until it is run, and the third federates out to another system —
+and at thirteen pixels two words are indistinguishable while three marks are not.
+So each has its own drawing _and_ its own muted hue: the hue is what makes a
+column of thirty rows scannable, the drawing is what survives a reader who cannot
+separate two colours, and the tooltip carries the word. The hues are restrained rather than
+washed out, which took a correction: the first attempt put the table colour
+seventeen points of blue away from the grey it replaced, and since most schemas
+are mostly tables, opening one still looked monotone. A distinction that has to be
+looked for twice is not one. What carries a hue at thirteen pixels is chroma and
+area, so these have some of each — the stroke got a filled header band to sit in —
+while still staying quieter than the canvas, which is the only thing here that
+should win an attention contest.
+
+**A virtual schema is marked by the presence of a mark, not by its colour.**
+Ordinary schemas still carry no icon, because a mark every row at the top level
+shares distinguishes nothing and the chevron already says the row opens. The
+virtual one appears _because_ it is the difference, and its colour then ties it to
+the tables inside it. A visible caption was tried and removed: on a panel of
+thirty rows it was the loudest thing in it, so the word lives in the row's
+accessible name and its tooltip instead — where it costs no attention and is still
+there for a reader who is listening to the page.
+
+**"Virtual" is carried from the catalogue, not inferred.** `SCHEMA_IS_VIRTUAL` and
+`TABLE_IS_VIRTUAL` are read in the driver and travel as an optional flag through
+the worker to the tree and to the agent's `catalogue`. Said only when true: every
+ordinary schema carrying `virtual: false` would be noise in every answer. It earns
+the plumbing because it changes what the rows _are_ — an absent row count is
+explained rather than looking like statistics nobody gathered, and an agent
+choosing where to compute learns that the shortest route to the engine is not the
+shortest route to these rows.
+
 **The row-number gutter is as wide as its longest number.** A fixed gutter either
 wastes room or clips; the width follows the row count.
 

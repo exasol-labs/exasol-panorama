@@ -82,7 +82,13 @@ export interface FakeServerOptions {
    * relation but do not return it — an aggregate over a subquery, say.
    */
   readonly queries?: Record<string, FakeRelation>;
-  readonly schemas?: readonly string[];
+  /**
+   * Schema names, or names with the virtual flag the real catalogue carries.
+   *
+   * A plain string is an ordinary schema, which keeps every existing case
+   * readable; the object form is for the ones held by another system.
+   */
+  readonly schemas?: readonly (string | { name: string; virtual?: boolean | string })[];
   readonly tables?: Record<
     string,
     ReadonlyArray<{
@@ -91,6 +97,8 @@ export interface FakeServerOptions {
       comment: string | null;
       /** What the catalogue reports; a view has none, as the real one has none. */
       rows?: number | string | null;
+      /** `TABLE_IS_VIRTUAL`, as the real catalogue sends it. */
+      virtual?: boolean | string;
     }>
   >;
   /** Single-column foreign keys, keyed by the table that declares them. */
@@ -266,11 +274,16 @@ export class FakeExasolServer {
       if (sqlText.includes(pattern)) return relation;
     }
     if (sqlText.includes('EXA_ALL_SCHEMAS')) {
-      const names = this.#options.schemas ?? [];
+      const listed = (this.#options.schemas ?? []).map((entry) =>
+        typeof entry === 'string' ? { name: entry } : entry,
+      );
       return {
-        columns: [{ name: 'SCHEMA_NAME', dataType: { type: 'VARCHAR', size: 128 } }],
-        rowCount: names.length,
-        data: [names],
+        columns: [
+          { name: 'SCHEMA_NAME', dataType: { type: 'VARCHAR', size: 128 } },
+          { name: 'SCHEMA_IS_VIRTUAL', dataType: { type: 'BOOLEAN' } },
+        ],
+        rowCount: listed.length,
+        data: [listed.map((entry) => entry.name), listed.map((entry) => entry.virtual ?? false)],
       };
     }
     if (sqlText.includes('EXA_ALL_TABLES')) {
@@ -282,6 +295,7 @@ export class FakeExasolServer {
           { name: 'OBJECT_KIND', dataType: { type: 'VARCHAR', size: 8 } },
           { name: 'OBJECT_COMMENT', dataType: { type: 'VARCHAR', size: 256 } },
           { name: 'OBJECT_ROWS', dataType: { type: 'DECIMAL', precision: 18, scale: 0 } },
+          { name: 'OBJECT_IS_VIRTUAL', dataType: { type: 'BOOLEAN' } },
         ],
         rowCount: entries.length,
         data: [
@@ -289,6 +303,7 @@ export class FakeExasolServer {
           entries.map((entry) => entry.kind),
           entries.map((entry) => entry.comment),
           entries.map((entry) => entry.rows ?? null),
+          entries.map((entry) => entry.virtual ?? false),
         ],
       };
     }

@@ -114,19 +114,69 @@ const PowerIcon = (): React.JSX.Element => (
   </svg>
 );
 
-/** A grid: a stored relation. */
+/**
+ * A grid: a stored relation.
+ *
+ * The header band is filled, and that is not decoration. An outline at this size
+ * is a pixel and a half of stroke, which carries almost no colour — a hue with
+ * nothing to sit in reads as grey, which is exactly how the first version of this
+ * failed. A filled band gives the colour somewhere to be, at a third opacity so
+ * it stays a mark rather than a block.
+ */
 const TableIcon = (): React.JSX.Element => (
-  <svg {...ICON} className="pn-tree__icon">
+  <svg {...ICON} className="pn-tree__icon pn-tree__icon--table">
     <rect x="2.2" y="3" width="11.6" height="10" rx="1.4" />
+    <path d="M2.2 3.9h11.6v2.5H2.2z" fill="currentColor" fillOpacity={0.32} stroke="none" />
     <path d="M2.2 6.4h11.6M7.4 6.4V13" />
   </svg>
 );
 
 /** An eye: a relation you look through rather than one that is there. */
 const ViewIcon = (): React.JSX.Element => (
-  <svg {...ICON} className="pn-tree__icon">
+  <svg {...ICON} className="pn-tree__icon pn-tree__icon--view">
     <path d="M1.4 8S3.8 4 8 4s6.6 4 6.6 4-2.4 4-6.6 4S1.4 8 1.4 8Z" />
     <circle cx="8" cy="8" r="1.7" fill="currentColor" stroke="none" />
+  </svg>
+);
+
+/**
+ * The same grid, drawn as something reached rather than held: two cells of it are
+ * dashed, because part of this relation is not here.
+ *
+ * A colour alone would be the wrong way to carry this. Colour is what makes the
+ * three kinds separable at a glance in a column of thirty rows, and it is the
+ * *only* thing distinguishing a virtual table from a stored one if the shape does
+ * not move — which fails for anyone who cannot tell the two hues apart, and fails
+ * in a screenshot. So the mark differs too, and the row says the word.
+ */
+const VirtualTableIcon = (): React.JSX.Element => (
+  <svg {...ICON} className="pn-tree__icon pn-tree__icon--virtual">
+    <path d="M2.2 6.4V4.4a1.4 1.4 0 0 1 1.4-1.4h2.2M9.8 3h2.6a1.4 1.4 0 0 1 1.4 1.4v2" />
+    <path d="M2.2 9.2v2.4A1.4 1.4 0 0 0 3.6 13h2.2M13.8 9.2v2.4a1.4 1.4 0 0 1-1.4 1.4H9.8" />
+    {/* The same filled band as a stored table, so the two read as the same kind
+        of thing — one of them reached rather than held. */}
+    <path d="M3.2 3.9h9.6v2.5H3.2z" fill="currentColor" fillOpacity={0.32} stroke="none" />
+    <path d="M2.2 6.4h11.6M7.4 7.6V13" />
+  </svg>
+);
+
+/**
+ * A schema whose contents are somewhere else.
+ *
+ * Ordinary schemas still carry no icon — a mark every row at the top level shares
+ * distinguishes nothing, and the chevron already says the row opens. This one
+ * appears *because* it is the difference: presence, not hue, is what separates a
+ * virtual schema from a plain one, and the colour then ties it to the tables
+ * inside it.
+ */
+const VirtualSchemaIcon = (): React.JSX.Element => (
+  <svg
+    {...ICON}
+    strokeLinecap="round"
+    className="pn-tree__icon pn-tree__icon--virtual pn-tree__icon--schema"
+  >
+    <path d="M6.6 9.4a2.6 2.6 0 0 0 3.7 0l2-2a2.6 2.6 0 0 0-3.7-3.7l-.6.6" />
+    <path d="M9.4 6.6a2.6 2.6 0 0 0-3.7 0l-2 2a2.6 2.6 0 0 0 3.7 3.7l.6-.6" />
   </svg>
 );
 
@@ -142,8 +192,10 @@ const Chevron = ({ open }: { readonly open: boolean }): React.JSX.Element => (
   </svg>
 );
 
-const iconFor = (kind: string): React.JSX.Element =>
-  kind.toUpperCase() === VIEW_KIND ? <ViewIcon /> : <TableIcon />;
+const iconFor = (table: TableListing): React.JSX.Element => {
+  if (table.kind.toUpperCase() === VIEW_KIND) return <ViewIcon />;
+  return table.virtual === true ? <VirtualTableIcon /> : <TableIcon />;
+};
 
 /**
  * The row's tooltip: the count in full, and the comment, whichever there is.
@@ -154,6 +206,12 @@ const iconFor = (kind: string): React.JSX.Element =>
  */
 const describeRelation = (table: TableListing): string | undefined => {
   const parts: string[] = [];
+  /**
+   * First, and spelled out: it explains the absent row count rather than leaving
+   * it looking like a table nobody has gathered statistics for, and it is the one
+   * thing here that changes what opening the relation will cost.
+   */
+  if (table.virtual === true) parts.push('Virtual: held by another system');
   if (table.rowCount !== undefined) parts.push(`${formatCount(table.rowCount)} rows`);
   if (table.comment !== undefined && table.comment !== '') parts.push(table.comment);
   return parts.length === 0 ? undefined : parts.join(' · ');
@@ -243,12 +301,30 @@ export const SchemaExplorer = ({
               <button
                 type="button"
                 className="pn-tree__row pn-tree__row--schema"
+                {...(schema.virtual === true
+                  ? { title: 'Virtual schema: its contents are held by another system' }
+                  : {})}
                 aria-expanded={open}
                 aria-controls={panelId}
                 onClick={() => toggle(schema.name)}
               >
                 <Chevron open={open} />
+                {schema.virtual === true ? <VirtualSchemaIcon /> : null}
                 <span className="pn-tree__name">{schema.name}</span>
+                {/*
+                  The word, for everyone the mark does not reach.
+                  
+                  Not shown: a caption on every virtual schema was, on a panel of
+                  thirty rows, the loudest thing in it — which is the opposite of
+                  what a mark this size is for. So the visible signal is the mark
+                  and its colour, and the word is in the row's accessible name and
+                  in its tooltip, where it costs nobody any attention and is still
+                  there for a reader who is listening to the page or cannot
+                  separate two muted hues.
+                */}
+                {schema.virtual === true ? (
+                  <span className="pn-visually-hidden"> (virtual schema)</span>
+                ) : null}
               </button>
 
               {open ? (
@@ -274,7 +350,7 @@ export const SchemaExplorer = ({
                             title={describeRelation(table)}
                             onClick={() => onOpenTable(table)}
                           >
-                            {iconFor(table.kind)}
+                            {iconFor(table)}
                             <span className="pn-tree__name">{table.name}</span>
                             {rank(table.kind) === 2 ? (
                               <span className="pn-tree__kind">{table.kind}</span>

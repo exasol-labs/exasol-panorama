@@ -8,6 +8,23 @@
   --pn-muted: #6b747d;
   --pn-accent: #2f6fed;
   --pn-danger: #c1362c;
+  /*
+   * The explorer's three kinds of relation.
+   *
+   * Restrained, not washed out — a distinction that has to be looked for twice is
+   * not a distinction. The first attempt at these was so desaturated that the
+   * table colour sat seventeen points of blue away from the grey it replaced, and
+   * since most schemas are mostly tables, opening one still looked monotone. What
+   * makes a colour readable at 13 pixels through a 1.3-pixel stroke is chroma, so
+   * these have some: three clearly separate hues, each dark enough to hold its
+   * own against a white row and none of them shouting.
+   *
+   * They also stay clear of `--pn-accent`, which every icon takes on hover: the
+   * row you are about to press outranks what kind it is.
+   */
+  --pn-kind-table: #3d6fa8;
+  --pn-kind-view: #1f8163;
+  --pn-kind-virtual: #8250c0;
   --pn-font: 'Inter', system-ui, -apple-system, 'Segoe UI', roboto, helvetica, arial, sans-serif;
   --pn-mono: 'SF Mono', 'JetBrains Mono', menlo, consolas, monospace;
 }
@@ -345,6 +362,29 @@ button:disabled {
   color: var(--pn-muted);
 }
 
+.pn-tree__icon--table {
+  color: var(--pn-kind-table);
+}
+
+.pn-tree__icon--view {
+  color: var(--pn-kind-view);
+}
+
+.pn-tree__icon--virtual {
+  color: var(--pn-kind-virtual);
+}
+
+/*
+ * A virtual schema's own mark sits at the top level, where it is the only thing
+ * in a column of plain schema names — so it is quieter than the relations below
+ * it, which have each other to be told apart from.
+ */
+.pn-tree__icon--schema {
+  opacity: 0.75;
+}
+
+/* Hover still takes the row's colour: the accent says "this is the one you are
+   about to press", which outranks saying what kind it is. */
 .pn-tree__row:hover .pn-tree__icon {
   color: var(--pn-accent);
 }
@@ -380,6 +420,26 @@ button:disabled {
 
 .pn-tree__count {
   font-variant-numeric: tabular-nums;
+}
+
+/*
+ * Said, but not shown.
+ *
+ * "Virtual" belongs in the accessible name of a virtual schema's row — a mark and
+ * a hue are nothing to a reader who is listening to the page, and a hue alone is
+ * nothing to one who cannot separate two muted colours. Shown as a caption it was
+ * the loudest thing on the panel, which a 13-pixel mark is expressly not for.
+ */
+.pn-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }
 
 .pn-tree__branch .pn-hint,

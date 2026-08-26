@@ -167,6 +167,87 @@ describe('SchemaExplorer', () => {
     expect(onOpenTable).toHaveBeenCalledWith(view);
   });
 
+  /**
+   * The three kinds are told apart by colour, and colour alone is never enough:
+   * a reader who cannot separate two muted hues, or who is listening to the page,
+   * gets nothing from it. So each kind carries its own class *and* its own shape,
+   * and virtual says the word.
+   */
+  describe('telling the kinds apart', () => {
+    const iconIn = (row: HTMLElement): SVGElement | null => row.querySelector('svg');
+
+    it('gives a table, a view and a virtual table each their own colour and mark', () => {
+      const virtual: TableListing = {
+        schema: 'SALES',
+        name: 'REMOTE',
+        kind: 'TABLE',
+        virtual: true,
+      };
+      renderTree(
+        new Map([['SALES', ready([relation('ORDERS'), relation('ORDERS_V', 'VIEW'), virtual])]]),
+      );
+      fireEvent.click(schemaRow('SALES'));
+      const rows = within(screen.getByRole('list', { name: 'Relations in SALES' })).getAllByRole(
+        'listitem',
+      );
+      // Grouped by kind, so a virtual table sorts with the tables — it is one.
+      // In Exasol they only ever occur in a virtual schema, where every relation
+      // is virtual, so the two never interleave in practice.
+      expect(rows.map((row) => row.textContent)).toEqual(['ORDERS', 'REMOTE', 'ORDERS_V']);
+      const classes = rows.map((row) => iconIn(row)?.getAttribute('class'));
+      expect(classes[0]).toContain('pn-tree__icon--table');
+      expect(classes[1]).toContain('pn-tree__icon--virtual');
+      expect(classes[2]).toContain('pn-tree__icon--view');
+      // And three different drawings, so the hue is a convenience rather than
+      // the whole of the message.
+      const shapes = rows.map((row) => iconIn(row)?.innerHTML);
+      expect(new Set(shapes).size).toBe(3);
+    });
+
+    it('says so in words on the row a virtual relation opens', () => {
+      const virtual: TableListing = {
+        schema: 'SALES',
+        name: 'REMOTE',
+        kind: 'TABLE',
+        virtual: true,
+      };
+      renderTree(new Map([['SALES', ready([virtual])]]));
+      fireEvent.click(schemaRow('SALES'));
+      expect(screen.getByText('REMOTE').closest('button')?.getAttribute('title')).toContain(
+        'Virtual',
+      );
+    });
+
+    it('marks a virtual schema and leaves an ordinary one unmarked', () => {
+      renderTree(new Map(), { schemas: [{ name: 'SALES' }, { name: 'MONGO', virtual: true }] });
+      const plain = schemaRow('SALES');
+      const federated = schemaRow('MONGO');
+      // A mark every schema shared would distinguish nothing, so the ordinary one
+      // has only its chevron: presence is what carries this, not hue.
+      expect(plain.querySelectorAll('svg')).toHaveLength(1);
+      expect(federated.querySelectorAll('svg')).toHaveLength(2);
+      expect(federated.innerHTML).toContain('pn-tree__icon--virtual');
+      expect(plain.textContent).toBe('SALES');
+      /**
+       * The word is in the accessible name and the tooltip rather than on the
+       * panel: shown as a caption on every virtual schema it was the loudest
+       * thing in a column of thirty rows, and a mark this size is for the
+       * opposite of that. It still has to be *somewhere* — a hue is nothing to a
+       * reader who cannot separate two of them, or who is listening.
+       */
+      expect(federated.textContent).toContain('virtual schema');
+      expect(federated.getAttribute('title')).toContain('another system');
+      expect(plain.getAttribute('title')).toBeNull();
+    });
+
+    it('keeps a virtual schema findable by name, caption or not', () => {
+      renderTree(new Map(), { schemas: [{ name: 'MONGO', virtual: true }] });
+      // The row is still "MONGO", not "MONGO (virtual schema)", to anything
+      // matching on the visible text.
+      expect(screen.getByText('MONGO')).toBeDefined();
+    });
+  });
+
   it('spells out a kind it has no icon for', () => {
     renderTree(new Map([['SALES', ready([relation('LEGACY', 'SYNONYM')])]]));
     fireEvent.click(schemaRow('SALES'));

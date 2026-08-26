@@ -94,6 +94,17 @@ const toRowCount = (value: ExasolValue | undefined): number | undefined => {
   return Number.isFinite(numeric) ? numeric : undefined;
 };
 
+/**
+ * A catalogue flag, as a flag.
+ *
+ * `SCHEMA_IS_VIRTUAL` and `TABLE_IS_VIRTUAL` come back as booleans over the
+ * protocol, but a driver that reads `'false'` as true because it is a non-empty
+ * string is a whole class of bug, and this is the one place to not have it. Only
+ * `true` is true.
+ */
+const toFlag = (value: ExasolValue | undefined): boolean =>
+  value === true || value === 'true' || value === 1;
+
 export class ExasolConnection {
   readonly id: ConnectionId;
   readonly #options: ExasolConnectionOptions;
@@ -282,11 +293,24 @@ export class ExasolConnection {
     return { numRows: loaded, columns };
   }
 
+  /**
+   * Lists the schemas, saying which of them are virtual.
+   *
+   * Virtual is not a decoration: a virtual schema's tables are held by another
+   * system, so they have no row count here and reading one federates out. The
+   * explorer says so, and an agent choosing where to compute needs to know.
+   */
   async listSchemas(): Promise<readonly SchemaInfo[]> {
     const result = await this.queryAll(
-      'SELECT SCHEMA_NAME FROM SYS.EXA_ALL_SCHEMAS ORDER BY SCHEMA_NAME',
+      'SELECT SCHEMA_NAME, SCHEMA_IS_VIRTUAL FROM SYS.EXA_ALL_SCHEMAS ORDER BY SCHEMA_NAME',
     );
-    return (result.columns[0] ?? []).map((name) => ({ name: String(name) }));
+    const virtual = result.columns[1] ?? [];
+    return (result.columns[0] ?? []).map((name, index) => ({
+      name: String(name),
+      // Said only when it is true: absent means an ordinary schema, and every
+      // schema carrying `virtual: false` would be noise in every answer.
+      ...(toFlag(virtual[index]) ? { virtual: true } : {}),
+    }));
   }
 
   /**
@@ -304,10 +328,12 @@ export class ExasolConnection {
     const literal = quoteLiteral(schema);
     const result = await this.queryAll(
       `SELECT TABLE_NAME AS OBJECT_NAME, 'TABLE' AS OBJECT_KIND, TABLE_COMMENT AS OBJECT_COMMENT` +
-        `, TABLE_ROW_COUNT AS OBJECT_ROWS` +
+        `, TABLE_ROW_COUNT AS OBJECT_ROWS, TABLE_IS_VIRTUAL AS OBJECT_IS_VIRTUAL` +
         ` FROM SYS.EXA_ALL_TABLES WHERE TABLE_SCHEMA = ${literal}` +
         ` UNION ALL` +
-        ` SELECT VIEW_NAME, 'VIEW', VIEW_COMMENT, CAST(NULL AS DECIMAL(18,0))` +
+        // A view is never virtual: what can be virtual is the table an adapter
+        // stands in front of, and a view over one is still a view held here.
+        ` SELECT VIEW_NAME, 'VIEW', VIEW_COMMENT, CAST(NULL AS DECIMAL(18,0)), FALSE` +
         ` FROM SYS.EXA_ALL_VIEWS WHERE VIEW_SCHEMA = ${literal}` +
         ` ORDER BY 1`,
     );
@@ -315,6 +341,7 @@ export class ExasolConnection {
     const kinds = result.columns[1] ?? [];
     const comments = result.columns[2] ?? [];
     const rowCounts = result.columns[3] ?? [];
+    const virtual = result.columns[4] ?? [];
     return names.map((name, index) => {
       const comment = comments[index];
       const rowCount = toRowCount(rowCounts[index]);
@@ -324,6 +351,7 @@ export class ExasolConnection {
         kind: String(kinds[index] ?? 'TABLE'),
         ...(comment === null || comment === undefined ? {} : { comment: String(comment) }),
         ...(rowCount === undefined ? {} : { rowCount }),
+        ...(toFlag(virtual[index]) ? { virtual: true } : {}),
       };
     });
   }

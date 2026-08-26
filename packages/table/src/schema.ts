@@ -24,6 +24,16 @@ export interface TableSchema {
 
 export interface SchemaInfo {
   readonly name: string;
+  /**
+   * A virtual schema: its contents live in another system, and Exasol reaches
+   * them through an adapter rather than holding them.
+   *
+   * Worth carrying because it changes what the rows *are* rather than how they
+   * look. A query against one is pushed down to somewhere else, its tables have
+   * no row count in the catalogue because nothing here counted them, and its
+   * cost is somebody else's network. Absent where the database did not say.
+   */
+  readonly virtual?: boolean;
 }
 
 export interface TableInfo {
@@ -39,6 +49,11 @@ export interface TableInfo {
    * gathered. Absent is not zero.
    */
   readonly rowCount?: number;
+  /**
+   * A relation in a virtual schema, which is why it has no row count: reading it
+   * federates out to whatever system holds it. See `SchemaInfo.virtual`.
+   */
+  readonly virtual?: boolean;
 }
 
 export const columnIndexByName = (schema: TableSchema, name: string): number =>

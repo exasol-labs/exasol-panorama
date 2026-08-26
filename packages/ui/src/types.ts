@@ -28,6 +28,8 @@ export interface ConnectionRequest {
 
 export interface SchemaListing {
   readonly name: string;
+  /** A schema whose contents live in another system, reached through an adapter. */
+  readonly virtual?: boolean;
 }
 
 export interface TableListing {
@@ -37,6 +39,8 @@ export interface TableListing {
   readonly comment?: string;
   /** Rows the database's catalogue reports; absent where it has no figure. */
   readonly rowCount?: number;
+  /** A relation in a virtual schema: reading it federates out to another system. */
+  readonly virtual?: boolean;
 }
 
 /**

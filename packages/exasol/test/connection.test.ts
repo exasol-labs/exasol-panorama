@@ -168,6 +168,43 @@ describe('ExasolConnection metadata', () => {
     ]);
   });
 
+  /**
+   * A virtual schema is held by another system and reached through an adapter,
+   * which is why its tables have no row count: nothing here counted them. The
+   * explorer colours them differently and says the word, and an agent choosing
+   * where to compute needs to know that these rows are somebody else's network.
+   */
+  it('says which schemas are virtual, and says nothing about the ones that are not', async () => {
+    const { connection, server } = await connect({
+      schemas: ['SALES', { name: 'MONGO_DEMO', virtual: true }],
+    });
+    await expect(connection.listSchemas()).resolves.toEqual([
+      // Absent rather than false: every ordinary schema carrying a flag would be
+      // noise in every answer, and absent already means "not virtual".
+      { name: 'SALES' },
+      { name: 'MONGO_DEMO', virtual: true },
+    ]);
+    expect(server.executed.at(-1)).toContain('SCHEMA_IS_VIRTUAL');
+  });
+
+  it('carries the flag on the relations inside one', async () => {
+    const { connection } = await connect({
+      tables: {
+        MONGO_DEMO: [
+          { name: 'CUSTOMERS', kind: 'TABLE', comment: null, virtual: true },
+          { name: 'ORDERS', kind: 'TABLE', comment: null, rows: 12, virtual: false },
+          // A boolean Exasol sent as text, which is the shape that makes a
+          // truthiness check quietly mark everything virtual.
+          { name: 'SAID_AS_TEXT', kind: 'TABLE', comment: null, virtual: 'false' },
+        ],
+      },
+    });
+    const listed = await connection.listTables('MONGO_DEMO');
+    expect(listed.find((entry) => entry.name === 'CUSTOMERS')?.virtual).toBe(true);
+    expect(listed.find((entry) => entry.name === 'ORDERS')).not.toHaveProperty('virtual');
+    expect(listed.find((entry) => entry.name === 'SAID_AS_TEXT')).not.toHaveProperty('virtual');
+  });
+
   it('lists tables and views', async () => {
     const { connection, server } = await connect({
       tables: {
