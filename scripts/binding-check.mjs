@@ -7,6 +7,9 @@
  */
 import { mkdirSync } from 'node:fs';
 import { chromium } from 'playwright';
+
+/** The same variable every other probe reads; see docs/TESTING.md §8.2. */
+const URL_UNDER_TEST = process.env.PANORAMA_SMOKE_URL ?? 'http://localhost:5199/';
 import { connectorMidpoint } from './lib/connector-midpoint.mjs';
 
 mkdirSync('scripts/shots', { recursive: true });
@@ -20,9 +23,8 @@ page.on('console', (m) => {
   if (m.type() === 'error') problems.push(`[console] ${m.text()}`);
 });
 
-await page.goto('http://localhost:5199/', { waitUntil: 'networkidle' });
+await page.goto(URL_UNDER_TEST, { waitUntil: 'networkidle' });
 await page.waitForTimeout(1200);
-await page.getByRole('button', { name: 'Hide' }).click();
 await page.locator('[aria-label="Sample tables"] button:has-text("SAMPLE_100")').first().click();
 await page.waitForTimeout(900);
 

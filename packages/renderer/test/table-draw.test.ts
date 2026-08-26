@@ -594,6 +594,29 @@ describe('the action halo', () => {
     ).toBe(false);
   });
 
+  /**
+   * Rounded like the explorer's rows beside it, and rounded the only way the
+   * ordering law allows: all polygons draw before all quads, and the halo draws
+   * over tables, so the shape has to be made of quads.
+   */
+  it('rounds the corners of a button, in the batch that draws over a table', () => {
+    const faces = haloOf().quads.filter(
+      (quad) => quad.color === DEFAULT_TABLE_THEME.haloBackground,
+    );
+    const widths = [...new Set(faces.map((strip) => Math.round(strip.width * 1000) / 1000))];
+    // Not one rectangle per button any more: the ends are inset to follow an arc,
+    // so a button's face is several widths rather than one.
+    expect(widths.length).toBeGreaterThan(1);
+    const widest = Math.max(...widths);
+    const narrowest = Math.min(...widths);
+    expect(narrowest).toBeLessThan(widest);
+    // And inset by at most the radius on each side — a corner, not a taper.
+    expect(widest - narrowest).toBeLessThanOrEqual(DEFAULT_TABLE_THEME.haloCornerRadius * 2);
+    // The face still sits inside the border on every side.
+    const border = haloOf().quads.filter((quad) => quad.color === DEFAULT_TABLE_THEME.haloBorder);
+    expect(Math.max(...border.map((strip) => strip.width))).toBeGreaterThan(widest);
+  });
+
   it('tints an ordinary action with the accent and a destructive one with the warning', () => {
     expect(
       haloOf({ hoveredAction: 'sql' }).quads.some(
@@ -614,7 +637,16 @@ describe('the action halo', () => {
     // polygon batch is painted underneath them.
     const bars = TABLE_ACTIONS.filter((spec) => spec.shape === 'bars').length * 3;
     expect(bars).toBe(3);
-    expect(haloOf().quads.length).toBe(quiet + 2 * TABLE_ACTIONS.length + bars);
+    /**
+     * A button is a rounded rectangle, and a rounded rectangle in the quad batch
+     * is a stack of strips (see `rounded.ts`) — so the count is no longer two per
+     * button. What is worth pinning is that it stays cheap: a budget rather than
+     * an exact figure, so the radius can be tuned without editing an arithmetic
+     * expression that says nothing to a reader.
+     */
+    const halo = haloOf().quads.length - quiet - bars;
+    expect(halo / TABLE_ACTIONS.length).toBeLessThanOrEqual(24);
+    expect(halo / TABLE_ACTIONS.length).toBeGreaterThan(2);
     expect(haloOf().quads.some((quad) => quad.color === DEFAULT_TABLE_THEME.haloBackground)).toBe(
       true,
     );

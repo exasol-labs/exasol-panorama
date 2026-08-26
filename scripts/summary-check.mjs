@@ -23,7 +23,6 @@ page.on('console', (message) => {
 
 await page.goto(URL_UNDER_TEST, { waitUntil: 'networkidle' });
 await page.waitForTimeout(1200);
-await page.getByRole('button', { name: 'Hide' }).click();
 await page.locator('[aria-label="Sample tables"] button:has-text("SAMPLE_100")').first().click();
 await page.waitForTimeout(900);
 
@@ -133,7 +132,27 @@ const secondSummary = await page.evaluate(
 );
 await page.screenshot({ path: 'scripts/shots/summary-panels.png' });
 
-const stats = await page.evaluate(() => globalThis.__panorama.frameStats?.() ?? null);
+/**
+ * The frame's own numbers, read where they are actually published.
+ *
+ * This asked `__panorama.frameStats()`, which does not exist and never has, so it
+ * reported `null` every run — a probe field that looks like a measurement and is
+ * a spelling mistake. The counts live in the instrumentation overlay, which is
+ * where `smoke` reads them: opened for the reading and closed again, since it
+ * starts collapsed and covers the corner of the canvas when it is not.
+ */
+const stats = await (async () => {
+  await page.getByRole('button', { name: /fps/ }).click();
+  const rows = await page.evaluate(() => {
+    const out = {};
+    for (const row of document.querySelectorAll('.pn-overlay dl > div')) {
+      out[row.querySelector('dt')?.textContent ?? ''] = row.querySelector('dd')?.textContent ?? '';
+    }
+    return out;
+  });
+  await page.getByRole('button', { name: 'Hide' }).click();
+  return rows;
+})();
 
 console.log(
   JSON.stringify(

@@ -88,7 +88,16 @@ export const App = ({
    */
   const [contents, setContents] = useState<ReadonlyMap<string, SchemaContents>>(new Map());
   const [loadingSchemas, setLoadingSchemas] = useState(false);
-  const [overlayVisible, setOverlayVisible] = useState(true);
+  /**
+   * The instrumentation overlay starts collapsed.
+   *
+   * The frame budget is a design constraint and a number nobody can see is a
+   * number nobody defends — which is the argument for the overlay existing, not
+   * for it covering the top-right corner of somebody's data before they have
+   * asked it anything. Collapsed it is still one number on screen, and the rest
+   * is one click away; opened, it stays open for the session.
+   */
+  const [overlayVisible, setOverlayVisible] = useState(false);
   const [metrics, setMetrics] = useState<PerformanceMetrics>(EMPTY_METRICS);
   const [xrAvailable, setXrAvailable] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);

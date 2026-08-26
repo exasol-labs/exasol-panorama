@@ -14,6 +14,7 @@ import type { LodLevel } from './lod.js';
 import { showsCellText, showsGridLines, showsTypeRow } from './lod.js';
 import type { EntityActionId, EntityId } from '@panorama/core';
 import { actionsForTable, barRects, computeHalo } from './halo.js';
+import { roundedRectStrips } from './rounded.js';
 import type { SummaryPanelRequest, SummaryPanelView } from './summary-panel.js';
 import { buildSummaryPanels, layoutSummaryPanels } from './summary-panel.js';
 import { baselineOffset } from '../text/metrics.js';
@@ -565,21 +566,49 @@ export const buildTableDrawList = (input: TableRenderInput): TableDrawList => {
           : hovered
             ? highlight.hover
             : theme.haloBackground;
-      quad(
+      /**
+       * Rounded, and therefore several quads rather than one — see `rounded.ts`
+       * for why it cannot be a polygon.
+       *
+       * The border is a rounded rectangle and the background a smaller one inside
+       * it, so what is left of the first is a ring of even width: the corner of
+       * the inner shape is rounded by one border width less, which is what keeps
+       * the two arcs concentric instead of the ring thickening at the corners.
+       *
+       * Hit testing still treats a button as its rectangle. The sliver outside a
+       * three-pixel arc is under two square pixels of a 22-pixel button, and a
+       * pointer that has to respect the curve is a button with a dead corner —
+       * the wrong trade for something this size.
+       */
+      const scale = Math.max(0.05, input.scale ?? 1);
+      const radius = theme.haloCornerRadius / scale;
+      const inset = Math.max(0.5, theme.borderWidth / scale);
+      for (const strip of roundedRectStrips(
         button.x,
         button.y,
         button.width,
         button.size,
-        disabled ? theme.haloDisabledBorder : theme.haloBorder,
-      );
-      const inset = Math.max(0.5, theme.borderWidth / Math.max(0.05, input.scale ?? 1));
-      quad(
+        radius,
+        scale,
+      )) {
+        quad(
+          strip.x,
+          strip.y,
+          strip.width,
+          strip.height,
+          disabled ? theme.haloDisabledBorder : theme.haloBorder,
+        );
+      }
+      for (const strip of roundedRectStrips(
         button.x + inset,
         button.y + inset,
         button.width - inset * 2,
         button.size - inset * 2,
-        background,
-      );
+        radius - inset,
+        scale,
+      )) {
+        quad(strip.x, strip.y, strip.width, strip.height, background);
+      }
       const mark = disabled
         ? theme.haloDisabledIcon
         : hovered || pressed

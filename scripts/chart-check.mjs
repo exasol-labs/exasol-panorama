@@ -27,7 +27,6 @@ page.on('console', (message) => {
 
 await page.goto(URL_UNDER_TEST, { waitUntil: 'networkidle' });
 await page.waitForTimeout(1500);
-await page.getByRole('button', { name: 'Hide' }).click();
 await page.locator('[aria-label="Sample tables"] button:has-text("SAMPLE_100")').first().click();
 await page.waitForTimeout(1000);
 

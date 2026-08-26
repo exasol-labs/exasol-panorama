@@ -276,6 +276,8 @@ describe('App', () => {
     try {
       const harness = createAppHarness();
       render(<App workspace={harness.workspace} />);
+      // Collapsed to start with, so the numbers are asked for rather than shown.
+      fireEvent.click(screen.getByRole('button', { name: /fps/ }));
       expect(screen.getByText('Draw calls')).toBeDefined();
       await act(async () => {
         vi.advanceTimersByTime(300);
@@ -286,13 +288,22 @@ describe('App', () => {
     }
   });
 
-  it('collapses and restores the overlay', () => {
+  /**
+   * Collapsed by default: an overlay of diagnostics over somebody's data is a
+   * development affordance, not the first thing to show them. One number stays,
+   * because the frame budget is a claim this application makes and a claim nobody
+   * can see is one nobody defends.
+   */
+  it('starts collapsed, and opens and closes again on demand', () => {
     const harness = createAppHarness();
     render(<App workspace={harness.workspace} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Hide' }));
     expect(screen.queryByText('Draw calls')).toBeNull();
+    expect(screen.getByRole('button', { name: /fps/ })).toBeDefined();
+
     fireEvent.click(screen.getByRole('button', { name: /fps/ }));
     expect(screen.getByText('Draw calls')).toBeDefined();
+    fireEvent.click(screen.getByRole('button', { name: 'Hide' }));
+    expect(screen.queryByText('Draw calls')).toBeNull();
   });
 
   it('says nothing at all when the headset is entered', async () => {

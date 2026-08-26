@@ -116,7 +116,9 @@ http://localhost:5173/?backend=webgpu
 ```
 
 The overlay's **Backend** field shows which one is live; `—` with 0 FPS means no
-engine ever started.
+engine ever started. It starts collapsed to the frame-rate pill in the top-right
+corner of the canvas — click that for the full set of numbers, and **Hide** to put
+it away again.
 
 ### Supplying connection details at startup
 

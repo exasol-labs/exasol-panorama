@@ -750,6 +750,24 @@ the exception — and the reason there is only one.
 
 **Two draw calls, and the ordering law they imply.** See §8.2.
 
+**A rounded corner in the quad batch is a stack of strips.** The halo's buttons
+are rounded to the same three pixels as the explorer's rows, at the same
+twenty-two pixel height, because the canvas and the panel beside it are one
+interface and a square control next to a column of rounded ones reads as an older
+part of the application. Getting there is not a declaration: the ordering law
+(§8.2) puts every polygon under every quad, and the halo draws over tables, whose
+bodies are quads — so the shape cannot be a polygon with arcs in it. It is built
+instead as a full-width middle band plus a few inset strips at each end
+(`table/rounded.ts`), stepped finely enough that the staircase reads as a curve,
+which was checked by screenshot at four times scale rather than argued about. The
+cost is eighteen quads per button against the thousands a table draws.
+
+**Hit testing still treats a rounded button as its rectangle.** The sliver outside
+a three-pixel arc is under two square pixels of a twenty-two pixel button, and a
+pointer made to respect the curve is a button with a dead corner. The trade is
+recorded rather than hidden: draw and pick agree everywhere it matters, and the
+three halo probes still pass unchanged.
+
 **The explorer colours a relation by what it is, and never only by colour.** A
 table, a view and a virtual table are three different things to open — the second
 has no row count until it is run, and the third federates out to another system —
@@ -785,6 +803,14 @@ shortest route to these rows.
 
 **The row-number gutter is as wide as its longest number.** A fixed gutter either
 wastes room or clips; the width follows the row count.
+
+**The instrumentation overlay starts collapsed.** The frame budget is a design
+constraint and a number nobody can see is a number nobody defends — which argues
+for the overlay existing, not for a panel of diagnostics over somebody's data
+before they have asked for one. So the frame rate stays on screen as a pill and
+the rest is a click behind it. The probes are the reason this is worth writing
+down: nine of them opened by clicking **Hide** first, and the default is now what
+they wanted all along.
 
 **Per-frame work is measured before it is optimised.** A chart's layout cache was
 keyed by a _serialised_ specification — 1.2 ms per ten seconds of frames, against

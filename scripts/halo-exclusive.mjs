@@ -6,6 +6,9 @@
  */
 import { chromium } from 'playwright';
 
+/** The same variable every other probe reads; see docs/TESTING.md §8.2. */
+const URL_UNDER_TEST = process.env.PANORAMA_SMOKE_URL ?? 'http://localhost:5199/';
+
 const browser = await chromium.launch({
   args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'],
 });
@@ -16,9 +19,8 @@ page.on('console', (m) => {
   if (m.type() === 'error') problems.push(`[console] ${m.text()}`);
 });
 
-await page.goto('http://localhost:5199/', { waitUntil: 'networkidle' });
+await page.goto(URL_UNDER_TEST, { waitUntil: 'networkidle' });
 await page.waitForTimeout(1200);
-await page.getByRole('button', { name: 'Hide' }).click();
 
 const open = async (name) => {
   await page.locator(`[aria-label="Sample tables"] button:has-text("${name}")`).first().click();

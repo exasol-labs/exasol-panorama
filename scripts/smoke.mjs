@@ -32,8 +32,8 @@ page.on('requestfailed', (request) =>
 
 await page.goto(url, { waitUntil: 'networkidle' });
 await page.waitForTimeout(1200);
-// The overlay covers the top-right corner; hide it for the screenshots.
-await page.getByRole('button', { name: 'Hide' }).click();
+// The overlay starts collapsed, which is what the screenshots want; `overlay()`
+// below opens it when a reading is needed and closes it again.
 
 const overlay = async () => {
   await page.getByRole('button', { name: /fps/ }).click();

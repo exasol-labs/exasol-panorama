@@ -105,6 +105,15 @@ export interface TableTheme {
   readonly resizeMargin: number;
   /** Diameter of a halo button, in screen pixels. */
   readonly haloButtonSize: number;
+  /**
+   * How far a halo button's corners are rounded, in screen pixels.
+   *
+   * The same three pixels the explorer's rows use, on a button the same height as
+   * one — the canvas and the panel beside it are one interface, and a control
+   * that is square where every control in the sidebar is rounded reads as an
+   * older part of the application.
+   */
+  readonly haloCornerRadius: number;
   readonly haloGap: number;
   /** Distance from the table's top edge to the halo, in screen pixels. */
   readonly haloOffset: number;
@@ -203,6 +212,7 @@ export const DEFAULT_TABLE_THEME: TableTheme = Object.freeze({
   scrollbarMinLength: 24,
   resizeMargin: 6,
   haloButtonSize: 22,
+  haloCornerRadius: 3,
   haloGap: 6,
   haloOffset: 8,
   haloIconFontSize: 15,
