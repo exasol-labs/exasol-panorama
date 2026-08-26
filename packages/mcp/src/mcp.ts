@@ -1,6 +1,7 @@
 import type { JsonRpcRequest, JsonRpcResponse } from './jsonrpc.js';
 import { METHOD_NOT_FOUND, failure, result } from './jsonrpc.js';
 import { toolDefinitions } from './catalogue.js';
+import { isRecord } from './schema.js';
 
 /**
  * The Model Context Protocol, server side.
@@ -55,9 +56,6 @@ export const INSTRUCTIONS = [
 
 /** What a tool call has to do: reach the application and come back with JSON. */
 export type CallTool = (name: string, args: unknown) => Promise<unknown>;
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const requestedVersion = (params: unknown): string => {
   const asked = isRecord(params) ? params['protocolVersion'] : undefined;

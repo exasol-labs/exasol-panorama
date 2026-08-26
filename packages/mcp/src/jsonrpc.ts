@@ -8,6 +8,8 @@
  * and either a result or an error.
  */
 
+import { isRecord } from './schema.js';
+
 export type JsonRpcId = string | number;
 
 export interface JsonRpcRequest {
@@ -49,9 +51,6 @@ export const failure = (id: JsonRpcId | null, code: number, message: string): Js
 
 /** One line out. Newline-delimited, so a reader needs no length prefix. */
 export const encode = (message: JsonRpcResponse): string => `${JSON.stringify(message)}\n`;
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 /**
  * Reads one line as a request.

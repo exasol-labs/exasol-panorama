@@ -15,6 +15,8 @@
  * reachable from the network.
  */
 
+import { isRecord } from './schema.js';
+
 /** The development server's port, which is where the endpoint is mounted. */
 export const DEFAULT_AGENT_PORT = 5173;
 
@@ -53,9 +55,6 @@ export interface AgentReply {
  * without an encoder.
  */
 export const encodeEvent = (call: AgentCall): string => `data: ${JSON.stringify(call)}\n\n`;
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 export const parseCall = (data: string): AgentCall | null => {
   let value: unknown;

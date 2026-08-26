@@ -194,7 +194,7 @@ const SESSION_FIELDS: Readonly<Record<string, ArgsSpec>> = {
     id: { kind: 'string', describe: 'Table to focus, or omit for none', optional: true },
   },
   SetSelectedColumns: {
-    columnIds: { kind: 'string-array', describe: 'Column view ids to pick out' },
+    ids: { kind: 'string-array', describe: 'Column view ids to pick out' },
   },
   SetSelectedMarks: {
     targets: {
@@ -204,6 +204,20 @@ const SESSION_FIELDS: Readonly<Record<string, ArgsSpec>> = {
     },
   },
   EndDrag: {},
+};
+
+/**
+ * What an omitted field means, where absent and nothing are different things.
+ *
+ * The convention everywhere else here is that an optional field left out stays
+ * out — the difference between "leave the size alone" and "set it to none". A
+ * session command is the one place that does not hold: `hovered` is *either* an
+ * entity or `null`, never missing, and a command that left it missing would put
+ * `undefined` into state that everything downstream compares against `null`.
+ */
+const NOTHING: Readonly<Record<string, Readonly<Record<string, null>>>> = {
+  SetHovered: { id: null },
+  SetFocusedTable: { id: null },
 };
 
 /**
@@ -229,5 +243,5 @@ export const readSessionCommand = (value: Readonly<Record<string, unknown>>): Se
     );
   }
   const read = readArgs(found, fields);
-  return { type, ...read } as unknown as SessionCommand;
+  return { type, ...NOTHING[type], ...read } as unknown as SessionCommand;
 };

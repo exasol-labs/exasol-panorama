@@ -2,8 +2,42 @@ import { describe, expect, it } from 'vitest';
 import type { EntityId } from '@panorama/core';
 import { dataType, isTableEntity, resolveBinding, tableDisplayName } from '@panorama/core';
 import { createAppHarness, firstTableId } from './harness.js';
-import { blockSizeForColumns, summaryPanelView } from '../src/panorama/workspace.js';
+import { blockSizeForColumns } from '../src/panorama/workspace.js';
+import { summaryPanelView } from '../src/panorama/column-summaries.js';
 import { DEMO_SCHEMA } from '../src/panorama/demo.js';
+
+describe('the statistics under a picked-out column', () => {
+  it('asks once per column, and forgets a column let go of', async () => {
+    const harness = createAppHarness();
+    await harness.workspace.connect({ url: 'wss://x', credentials: { kind: 'token', token: 't' } });
+    const opening = harness.workspace.openTable({ schema: 'PANORAMA_TEST', table: 'SALES' });
+    await harness.settle();
+    await opening;
+    const table = harness.workspace.core.world.entities.get(firstTableId(harness));
+    if (table === undefined || !isTableEntity(table)) throw new Error('expected a table');
+    const [first, second] = table.columns;
+
+    const pick = async (...ids: readonly EntityId[]): Promise<void> => {
+      harness.workspace.core.dispatchSession({ type: 'SetSelectedColumns', ids });
+      harness.workspace.syncColumnSummaries();
+      await harness.settle();
+    };
+
+    await pick(first?.id as EntityId);
+    expect(harness.workspace.columnSummary(first?.id as EntityId)?.status).toBe('ready');
+
+    // Swapped for another: the one let go of is forgotten, and the new one asked
+    // about. This is the case a "nothing selected" test never reaches, because
+    // an empty selection is answered before any of the comparing happens.
+    await pick(second?.id as EntityId);
+    expect(harness.workspace.columnSummary(first?.id as EntityId)).toBeUndefined();
+    expect(harness.workspace.columnSummary(second?.id as EntityId)?.status).toBe('ready');
+
+    // And nothing at all: the frame that clears the selection clears these.
+    await pick();
+    expect(harness.workspace.columnSummary(second?.id as EntityId)).toBeUndefined();
+  });
+});
 
 describe('Workspace connection', () => {
   it('connects, adopts the connection id and lists metadata', async () => {

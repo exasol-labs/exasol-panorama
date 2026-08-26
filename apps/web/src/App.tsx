@@ -19,7 +19,8 @@ import { SqlEditors } from './panorama/SqlEditors.js';
 import { backendOverride } from './bootstrap.js';
 import { DEMO_SCHEMA, demoTables } from './panorama/demo.js';
 import { describeFormat } from '@panorama/export';
-import type { ExportJob, Workspace } from './panorama/workspace.js';
+import type { ExportJob } from './panorama/export-jobs.js';
+import type { Workspace } from './panorama/workspace.js';
 import type { StartupConnection } from './panorama/startup.js';
 
 /**

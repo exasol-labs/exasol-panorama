@@ -167,6 +167,10 @@ export const COMMAND_FIELDS: Readonly<Record<string, ArgsSpec>> = {
       schema: CHART_SPEC_SCHEMA,
     },
   },
+  SetTableLabel: {
+    tableId: { kind: 'string', describe: 'Box to rename; not a stored relation' },
+    label: { kind: 'string', describe: 'What the box should be called' },
+  },
   SetTableMode: {
     tableId: { kind: 'string', describe: 'Table to switch' },
     mode: { kind: 'string', describe: 'Which face to show', enum: ['result', 'editing'] },
@@ -291,7 +295,7 @@ export const AGENT_TOOLS: readonly AgentToolSpec[] = [
   {
     name: 'session_dispatch',
     describe:
-      'Changes session state: SetSelection(ids), SetHovered(id?), SetFocusedTable(id?), SetSelectedColumns(columnIds), SetSelectedMarks(targets), EndDrag(). Nothing here is recorded in history. Picking chart marks out is what fills a drill-down table.',
+      'Changes session state: SetSelection(ids), SetHovered(id?), SetFocusedTable(id?), SetSelectedColumns(ids), SetSelectedMarks(targets), EndDrag(). Nothing here is recorded in history. Picking chart marks out is what fills a drill-down table.',
     args: {
       command: { kind: 'object', describe: 'The session command, as {type, ...fields}' },
     },

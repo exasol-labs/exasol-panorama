@@ -119,7 +119,13 @@ export const jsonSchema = (spec: ArgsSpec): Record<string, unknown> => ({
   additionalProperties: false,
 });
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
+/**
+ * A plain object, which is what "an object" means at this boundary.
+ *
+ * Shared rather than written per file: four copies of a three-line predicate is
+ * three chances for one of them to disagree about whether an array counts.
+ */
+export const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const checkField = (name: string, field: FieldSpec, value: unknown): void => {

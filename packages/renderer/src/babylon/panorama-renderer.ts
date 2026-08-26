@@ -410,6 +410,12 @@ export class PanoramaRenderer {
     const lod = lodForScale(this.camera.scale, this.#lodThresholds);
     const session = this.#core.session;
     const selection = new Set(session.selection);
+    // Built once for the frame, and empty on almost every frame: without it,
+    // deciding whether a table has a column picked out is a scan of its columns
+    // against a list, per table, per frame — which on a five-thousand-column
+    // table is five thousand comparisons to answer "no".
+    const pickedColumns =
+      session.selectedColumns.length === 0 ? null : new Set(session.selectedColumns);
     // Connector lines are drawn first so they pass behind the tables they join,
     // emerging from the borders rather than crossing the data. Their markers
     // are held back and drawn afterwards, in front.
@@ -435,11 +441,10 @@ export class PanoramaRenderer {
         : 0;
       // A statistics panel hangs off the table, below it or above it, so a table
       // just past the edge of the view can still have something on screen.
-      const panelMargin = entity.columns.some((column) =>
-        session.selectedColumns.includes(column.id),
-      )
-        ? SUMMARY_PANEL_GAP + SUMMARY_PANEL_MAX_HEIGHT
-        : 0;
+      const panelMargin =
+        pickedColumns !== null && entity.columns.some((column) => pickedColumns.has(column.id))
+          ? SUMMARY_PANEL_GAP + SUMMARY_PANEL_MAX_HEIGHT
+          : 0;
       const bounds = {
         x: entity.transform.x,
         y: entity.transform.y - margin - panelMargin,

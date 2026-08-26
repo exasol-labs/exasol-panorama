@@ -1,4 +1,14 @@
 import { describe, expect, it } from 'vitest';
+import type { EntityId, SessionState } from '@panorama/core';
+import {
+  applyCommand,
+  applySessionCommand,
+  buildTableEntity,
+  emptySession,
+  emptyWorld,
+  unwrap,
+} from '@panorama/core';
+import { TEST_CONNECTION, makeTable, testIds } from './fixtures.js';
 import {
   COMMAND_TYPES,
   describeCommands,
@@ -190,7 +200,9 @@ describe('readSessionCommand', () => {
       type: 'SetSelection',
       ids: ['table:1'],
     });
-    expect(readSessionCommand({ type: 'SetHovered' })).toEqual({ type: 'SetHovered' });
+    // Nothing, spelled out: `hovered` is an entity or null and never missing,
+    // and everything downstream compares it against null.
+    expect(readSessionCommand({ type: 'SetHovered' })).toEqual({ type: 'SetHovered', id: null });
     expect(readSessionCommand({ type: 'EndDrag' })).toEqual({ type: 'EndDrag' });
     const marks = [{ entityId: 'table:1', series: 0, data: 1 }];
     expect(readSessionCommand({ type: 'SetSelectedMarks', targets: marks })).toEqual({
@@ -206,5 +218,195 @@ describe('readSessionCommand', () => {
     );
     expect(() => readSessionCommand({ type: 'BeginDrag' })).toThrow(/SetSelection/u);
     expect(() => readSessionCommand({})).toThrow(/must name a session command/u);
+  });
+});
+
+describe('the commands an agent sends, applied for real', () => {
+  /**
+   * The seam that a hand-written table of field names needs.
+   *
+   * Every command here is described twice: once as an interface in the core, and
+   * once as a table of fields in this package — and nothing was checking that
+   * the two used the same *names*. They did not: an agent following the schema
+   * sent `SetSelectedColumns(columnIds)` where the reducer reads `ids`, which
+   * reached `sameIds(undefined, …)` and took the page down. So each command is
+   * now built the way an agent would build it and applied to a real session,
+   * where a name that does not match shows up as an answer that did not change.
+   */
+  const ids = testIds();
+  const table = makeTable(ids);
+  const world = unwrap(applyCommand(emptyWorld(), { type: 'CreateTableEntity', entity: table }));
+  const columnId = table.columns[0]?.id as EntityId;
+
+  it('changes the session as each command says it will', () => {
+    const applied = (sent: Record<string, unknown>): SessionState =>
+      applySessionCommand(emptySession(), readSessionCommand(sent));
+
+    expect(applied({ type: 'SetSelection', ids: [table.id] }).selection).toEqual([table.id]);
+    expect(applied({ type: 'SetHovered', id: table.id }).hovered).toBe(table.id);
+    // And a null that arrives as an omission is still a null in the state.
+    expect(applied({ type: 'SetHovered' }).hovered).toBeNull();
+    expect(applied({ type: 'SetFocusedTable', id: table.id }).focusedTable).toBe(table.id);
+    expect(applied({ type: 'SetFocusedTable' }).focusedTable).toBeNull();
+    expect(applied({ type: 'SetSelectedColumns', ids: [columnId] }).selectedColumns).toEqual([
+      columnId,
+    ]);
+    const mark = { entityId: table.id, series: 0, data: 1 };
+    expect(applied({ type: 'SetSelectedMarks', targets: [mark] }).selectedMarks).toEqual([mark]);
+    expect(applied({ type: 'EndDrag' }).drag).toBeNull();
+  });
+
+  it('changes the document as each command says it will', () => {
+    // The same seam on the document side: a field named wrongly here would be a
+    // command the core reads as missing.
+    const move = unwrap(
+      applyCommand(
+        world,
+        readCommand({ type: 'MoveEntities', ids: [table.id], position: { x: 40, y: 12 } }),
+      ),
+    );
+    expect(move.entities.get(table.id)?.transform).toMatchObject({ x: 40, y: 12 });
+
+    const resized = unwrap(
+      applyCommand(
+        world,
+        readCommand({ type: 'ResizeEntity', id: table.id, width: 300, height: 200 }),
+      ),
+    );
+    expect(resized.entities.get(table.id)?.transform).toMatchObject({ width: 300, height: 200 });
+
+    const widened = unwrap(
+      applyCommand(
+        world,
+        readCommand({ type: 'ResizeColumn', tableId: table.id, columnId, width: 180 }),
+      ),
+    );
+    expect(widened.entities.get(table.id)?.columns[0]?.width).toBe(180);
+
+    const reordered = unwrap(
+      applyCommand(
+        world,
+        readCommand({
+          type: 'ReorderColumns',
+          tableId: table.id,
+          columnIds: [...table.columns].reverse().map((column) => column.id),
+        }),
+      ),
+    );
+    expect(reordered.entities.get(table.id)?.columns[0]?.id).toBe(table.columns.at(-1)?.id);
+
+    const hidden = unwrap(
+      applyCommand(
+        world,
+        readCommand({
+          type: 'SetColumnVisibility',
+          tableId: table.id,
+          columnId,
+          visible: false,
+        }),
+      ),
+    );
+    expect(hidden.entities.get(table.id)?.columns[0]?.visible).toBe(false);
+
+    const removed = unwrap(
+      applyCommand(world, readCommand({ type: 'RemoveEntities', ids: [table.id] })),
+    );
+    expect(removed.entities.size).toBe(0);
+  });
+
+  it('changes a query, a chart and a name as each command says it will', () => {
+    const box = buildTableEntity(ids, {
+      source: {
+        kind: 'query',
+        connectionId: TEST_CONNECTION,
+        sql: 'SELECT 1',
+        label: 'SALES.ORDERS · SQL',
+      },
+      mode: 'result',
+      columns: [],
+    });
+    const withBox = unwrap(applyCommand(world, { type: 'CreateTableEntity', entity: box }));
+
+    const rewritten = unwrap(
+      applyCommand(
+        withBox,
+        readCommand({ type: 'SetTableQuery', tableId: box.id, sql: 'SELECT 2' }),
+      ),
+    );
+    expect((rewritten.entities.get(box.id)?.source as { sql: string }).sql).toBe('SELECT 2');
+
+    const editing = unwrap(
+      applyCommand(
+        withBox,
+        readCommand({ type: 'SetTableMode', tableId: box.id, mode: 'editing' }),
+      ),
+    );
+    expect(editing.entities.get(box.id)?.mode).toBe('editing');
+
+    const named = unwrap(
+      applyCommand(
+        withBox,
+        readCommand({ type: 'SetTableLabel', tableId: box.id, label: 'deciles' }),
+      ),
+    );
+    expect((named.entities.get(box.id)?.source as { label: string }).label).toBe('deciles');
+
+    const chart = buildTableEntity(ids, {
+      source: {
+        kind: 'chart',
+        connectionId: TEST_CONNECTION,
+        spec: { type: 'bar', category: 'COUNTRY', values: ['REVENUE'], aggregate: 'sum' },
+        label: 'SALES.ORDERS · Chart',
+        derivedFrom: table.id,
+      },
+      mode: 'editing',
+      columns: [],
+    });
+    const withChart = unwrap(applyCommand(world, { type: 'CreateTableEntity', entity: chart }));
+    const drawn = unwrap(
+      applyCommand(
+        withChart,
+        readCommand({
+          type: 'SetChartSpec',
+          tableId: chart.id,
+          spec: { type: 'pie', category: 'COUNTRY', values: ['REVENUE'], aggregate: 'sum' },
+        }),
+      ),
+    );
+    expect((drawn.entities.get(chart.id)?.source as { spec: { type: string } }).spec.type).toBe(
+      'pie',
+    );
+  });
+
+  it('changes a connector as each command says it will', () => {
+    const second = makeTable(ids);
+    const both = unwrap(applyCommand(world, { type: 'CreateTableEntity', entity: second }));
+    const bindingId = ids.binding();
+    const joined = unwrap(
+      applyCommand(
+        both,
+        readCommand({
+          type: 'CreateBinding',
+          binding: {
+            id: bindingId,
+            kind: 'connector',
+            fromId: table.id,
+            toId: second.id,
+            from: { mode: 'auto' },
+            to: { mode: 'auto' },
+            directed: true,
+          },
+        }),
+      ),
+    );
+    expect(joined.bindings.size).toBe(1);
+    const retitled = unwrap(
+      applyCommand(joined, readCommand({ type: 'SetBindingLabel', bindingId, label: 'follows' })),
+    );
+    expect(retitled.bindings.get(bindingId)?.label).toBe('follows');
+    const cut = unwrap(
+      applyCommand(joined, readCommand({ type: 'RemoveBindings', ids: [bindingId] })),
+    );
+    expect(cut.bindings.size).toBe(0);
   });
 });
