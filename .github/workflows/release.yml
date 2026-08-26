@@ -1,0 +1,149 @@
+# Builds the installable application and publishes it as a release.
+#
+# What comes out is the whole of the product: a directory of static files that a
+# browser can install as an application — on a desktop, a phone, or a headset —
+# and that talks to Exasol over a socket from wherever it is served. There is no
+# server to deploy, which is why the artifact is a zip and not an image.
+#
+# The order here is the point. The release gate is the same `npm run verify` a
+# developer runs, then the application is built *once*, and then the installability
+# probe is pointed at that build rather than making its own. So the bytes that were
+# driven in a browser — worker registered, manifest and icons checked, network
+# taken away, application launched again — are the bytes in the zip.
+#
+# Deploying it is a copy to any HTTPS origin that serves the directory at its
+# root. The root matters: the service worker's scope is the directory it is served
+# from, and the manifest names `/` as the start URL, so a subpath (GitHub Pages
+# under a repository name, say) needs base-path support this build does not yet
+# have. See plans/panorama-packaging-plan.md.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: 'Build and check, but publish nothing'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: build, check, publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # A tag that disagrees with the manifest ships an artifact whose own name
+      # is wrong. Caught here rather than discovered by whoever downloads it.
+      - name: Work out the version, and insist the tag agrees with it
+        id: version
+        run: |
+          declared="$(node -p 'require("./package.json").version')"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            tagged="${GITHUB_REF_NAME#v}"
+            if [ "$tagged" != "$declared" ]; then
+              echo "::error::Tag ${GITHUB_REF_NAME} does not match package.json version ${declared}. Bump one of them."
+              exit 1
+            fi
+          fi
+          echo "value=${declared}" >> "$GITHUB_OUTPUT"
+          echo "Releasing ${declared}"
+
+      # The same gate as a developer's, and the reason a release cannot ship
+      # something the suite rejects.
+      - name: Verify
+        run: npm run verify
+
+      - name: Build the application
+        run: npm run build
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      # Pointed at the build above rather than making its own: what is checked
+      # has to be what is shipped, or the check is about a different artifact.
+      - name: Drive the built application in a browser
+        env:
+          PANORAMA_SKIP_BUILD: '1'
+        run: npm run install-check
+
+      - name: Package it
+        id: package
+        run: |
+          version="${{ steps.version.outputs.value }}"
+          name="exasol-panorama-pwa-${version}"
+          cp LICENSE apps/web/dist/LICENSE
+          cat > apps/web/dist/SERVING.md <<'NOTE'
+          # Serving Panorama
+
+          These are the whole application: static files, no server of their own.
+
+          1. Copy this directory to the **root** of an HTTPS origin. The root is
+             not a preference — a service worker's scope is the directory it is
+             served from, and the manifest names `/` as the start URL.
+          2. Serve `.webmanifest` as `application/manifest+json` and `.js` as
+             `text/javascript`. Most hosts do; some need telling.
+          3. Do not cache `index.html` or `service-worker.js` at the edge for
+             long. Everything under `assets/` is content-hashed and safe to cache
+             forever.
+
+          Then open the origin and use the browser's install control. It will
+          launch in its own window and start with no network, because the
+          application is on the device. A database, of course, is not.
+
+          Panorama connects to Exasol directly over `wss://`. A browser refuses
+          that handshake to a host whose certificate it does not trust and never
+          offers an exception, so the instance needs a certificate the browser
+          accepts.
+          NOTE
+          (cd apps/web/dist && zip -qr "../../../${name}.zip" .)
+          sha256sum "${name}.zip" > "${name}.zip.sha256"
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
+          ls -lh "${name}.zip"
+
+      - name: Keep the artifact whatever happens next
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: |
+            ${{ steps.package.outputs.name }}.zip
+            ${{ steps.package.outputs.name }}.zip.sha256
+          retention-days: 90
+
+      # Only for a tag, and never for a dry run: a release is the one step here
+      # that is visible outside this workflow.
+      - name: Publish the release
+        if: github.ref_type == 'tag' && inputs.dry-run != true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${{ steps.version.outputs.value }}"
+          name="${{ steps.package.outputs.name }}"
+          {
+            echo "Panorama ${version}, as an installable application."
+            echo
+            echo "\`${name}.zip\` is the built application: static files to copy to the"
+            echo "root of an HTTPS origin, then install from the browser. \`SERVING.md\`"
+            echo "inside it says what a host has to get right."
+            echo
+            echo "Built from ${GITHUB_SHA} and driven in Chromium before packaging:"
+            echo "service worker registered and activated, manifest and every icon"
+            echo "checked against the files, and the application launched again with"
+            echo "the network taken away."
+          } > notes.md
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "Panorama ${version}" \
+            --notes-file notes.md \
+            "${name}.zip" "${name}.zip.sha256"

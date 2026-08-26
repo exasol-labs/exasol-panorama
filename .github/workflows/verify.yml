@@ -1,0 +1,83 @@
+# The gate, run by a machine instead of by whoever remembered.
+#
+# `npm run verify` is the same command the repository has always been checked
+# with — typecheck plus coverage, and the coverage thresholds are what fail the
+# build (100% of lines, see docs/TESTING.md §7). Nothing here is a CI-only
+# standard: if this passes, `npm run verify` passed.
+#
+# Two jobs rather than one, because they need different machines. The suite needs
+# no browser and takes half a minute; the installability probe needs a real
+# Chromium and builds the application first. Splitting them means a failure says
+# which kind of failure it is without anybody reading a log.
+name: verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A second push to a branch makes the first run's answer irrelevant.
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  suite:
+    name: typecheck, tests, coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # The floor the package declares, so CI cannot pass on a version the
+          # project does not claim to support.
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Formatting
+        run: npm run format:check
+
+      - name: Typecheck and coverage
+        run: npm run verify
+
+      # Kept whether the run passed or failed: a coverage report is most wanted
+      # on the run that failed the threshold.
+      - name: Keep the coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage/
+          retention-days: 14
+
+  installable:
+    name: installable in a browser
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # Chromium and its libraries. Only Chromium: the probes drive one engine
+      # deliberately, and docs/TESTING.md §12 records that as a known limit
+      # rather than pretending otherwise.
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      # Builds the application, serves it, registers the worker, checks the
+      # manifest and every icon, then takes the network away and launches it
+      # again. Sets a non-zero exit code, so it can gate a merge.
+      - name: Build and drive the installed app
+        run: npm run install-check

@@ -66,6 +66,11 @@ npm run verify         # typecheck + coverage — the gate
 npm run build          # production bundle
 ```
 
+`npm run verify` is what CI runs on every push and pull request, along with
+`format:check` and the installability probe — see
+[.github/workflows/verify.yml](.github/workflows/verify.yml). Nothing in CI is a
+CI-only standard: if it passes there, it passes here.
+
 Everything else about the tests — the browser probes, the coverage thresholds, the
 opt-in runs against a real database — is in [TESTING.md](docs/TESTING.md).
 
@@ -93,6 +98,26 @@ being offline. See [`shell-cache.ts`](apps/web/src/panorama/shell-cache.ts).
 npm run install-check  # builds, serves, and drives it: worker, manifest, offline
 npm run icons          # redraws the icons after a change to the mark
 ```
+
+#### Releasing it
+
+`.github/workflows/release.yml` builds the application, drives **that build** in a
+browser — worker registered, manifest and every icon checked, network taken away
+and the application launched again — and publishes the result as a zip on a GitHub
+release. Tag it and the release makes itself:
+
+```bash
+npm version patch      # or edit package.json; the tag has to match it
+git push --follow-tags
+```
+
+Run the workflow by hand from the Actions tab to build and check without
+publishing anything. The zip is the whole product: static files to copy to the
+**root** of an HTTPS origin, with a `SERVING.md` inside saying what a host has to
+get right. The root is not a preference — a service worker's scope is the
+directory it is served from, so a subpath needs base-path support this build does
+not have yet
+([packaging plan](plans/panorama-packaging-plan.md)).
 
 A service worker is registered **only in a build** — in front of the dev server a
 cache is just a way of being shown a file you have already changed.

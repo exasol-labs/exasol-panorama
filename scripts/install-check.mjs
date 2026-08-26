@@ -27,6 +27,7 @@
  *     npm run build && npm run install-check
  */
 import { spawn, spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { chromium } from 'playwright';
 
 const PORT = Number(process.env.PANORAMA_PREVIEW_PORT ?? 4180);
@@ -41,6 +42,13 @@ if (process.env.PANORAMA_SKIP_BUILD === undefined) {
   console.info('building...');
   const built = spawnSync('npm', ['run', 'build'], { stdio: ['ignore', 'ignore', 'inherit'] });
   if (built.status !== 0) process.exit(built.status ?? 1);
+} else if (!existsSync('apps/web/dist/index.html')) {
+  // The release workflow builds once and then points this at that build, so that
+  // what was driven in a browser is what gets shipped. Skipping the build with
+  // nothing there is that arrangement gone wrong, and it should say so rather
+  // than fail later as a server that will not start.
+  console.error('PANORAMA_SKIP_BUILD is set but apps/web/dist is empty. Run `npm run build`.');
+  process.exit(1);
 }
 
 const problems = [];
