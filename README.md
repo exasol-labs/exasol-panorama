@@ -1,25 +1,130 @@
+<div align="center">
+
+<img src="apps/web/public/icons/icon-512.png" alt="" width="84" height="84">
+
 # Exasol Panorama
 
-A spatial visual environment for exploring data in Exasol.
+**A spatial canvas for exploring data in Exasol.**
 
-This repository implements **Stage 0–1** of `plans/panorama-plan-stage1.md`: the
-Panorama core, the GPU table renderer, the Exasol WebSocket driver, the data
-worker, and the application shell that ties them together.
+Tables, queries and charts as boxes on an infinite plane, drawn by the GPU,
+connected by lines that mean something — and driven by a person and an agent at
+the same time, on the same document.
 
-The Stage 1 deliverable is one thing: **browsing an arbitrarily large Exasol
-table must feel local, continuous and tactile.**
+[![verify](https://github.com/exasol-labs/exasol-panorama/actions/workflows/verify.yml/badge.svg)](https://github.com/exasol-labs/exasol-panorama/actions/workflows/verify.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![node ≥ 20.11](https://img.shields.io/badge/node-%E2%89%A5%2020.11-3c873a.svg)](https://nodejs.org)
 
-This file is about running it. Three documents in [`docs/`](docs) cover the rest:
-**[ARCHITECTURE.md](docs/ARCHITECTURE.md)** is how it is built and why — the
-model, the layering, the module map, the flows, and a decision record of
-everything that is not obvious from the code. **[TESTING.md](docs/TESTING.md)** is
-how we know it works — the suite, the doubles, the coverage gate, and the browser
-probes. **[AGENT-SKILL.md](docs/AGENT-SKILL.md)** is how to drive it as an agent,
-and is the page the server itself serves.
+[Quick start](#quick-start) · [Let an agent drive it](#letting-an-agent-drive-it) ·
+[Architecture](docs/ARCHITECTURE.md) · [Testing](docs/TESTING.md) ·
+[Agent interface](docs/AGENT-SKILL.md)
+
+<img src="scripts/shots/summary-panels.png" alt="A table on the Panorama canvas with per-column summary panels beneath it" width="900">
+
+</div>
 
 ---
 
-MIT licensed — see [LICENSE](LICENSE).
+## Why a canvas
+
+A query console answers one question at a time and throws the previous answer
+away. A notebook remembers, but it remembers in a line — and exploration is not a
+line. You open a table, notice something odd in one column, follow a key to find
+out what it points at, compare it against last year, back up two steps and try the
+other branch. What you want when you are done is not the last result. It is the
+six results side by side, and the arrows between them.
+
+Panorama makes every answer a **thing**: a box on an infinite plane you can move,
+resize, label and point at. A table is a box. A statement written against it is a
+box beside it, with an arrow saying where it came from. A chart is a box, and
+picking a mark inside it filters the boxes downstream. Follow a foreign key in a
+cell and the matching rows open next to you, joined by a line. Nothing you have
+learnt disappears because you asked the next question.
+
+<img src="scripts/shots/fk-followed.png" alt="Following a foreign key opens the matching row as a new box, joined by an arrow" width="900">
+
+Two properties make that hold up against a real warehouse rather than a demo.
+
+**It stays local-feeling at any size.** Nothing is ever held whole — not a result
+set, not an export, not a chart's input. Rows are windowed, prefetched in the
+direction you are already scrolling, and cached against a byte budget, so a
+ten-billion-row relation flings under the pointer like a local file. One sentence
+sets almost every boundary in the codebase:
+
+> The database may cause data to arrive late. It may never cause Panorama to
+> respond late.
+
+A cell that has not arrived yet is drawn as _absent_ — never as blank, never as
+zero.
+
+**History is a graph, not an undo stack.** Every persistent change is one of
+sixteen commands, and each is a commit. Move the head back to an earlier state,
+keep working, and you branch rather than destroy: the line of inquiry you walked
+away from is still there to return to. Selection, hover and half-written SQL are
+_session_ state and stay out of history, where they belong.
+
+## Two hands on one document
+
+Panorama offers its live session to an agent over the Model Context Protocol —
+and this is not an export, a screenshot pipe or a replica. **There is no second
+copy of the document.** An agent's edits are the same sixteen commands your
+pointer produces, applied to the session in the open page. They appear on screen
+as they are made, they undo like yours, and they land in the same history graph.
+
+That symmetry is what makes the collaboration direct rather than a game of
+telephone:
+
+- **The agent sees what you see.** `overview` reports what is open, which
+  database, and where history stands; `entities`, `entity` and `rows` read the
+  boxes and the cells that have actually arrived. You never have to describe your
+  canvas to it.
+- **You see what the agent did, while it does it.** It opens boxes, labels them,
+  wires them together. Disagree with one? Drag it somewhere else, close it, or
+  check out the commit before it — the same three gestures you would use on your
+  own work.
+- **Pictures are measured, not imagined.** An agent cannot see pixels, so a chart
+  reports what it actually drew: marks per series, labels that fell outside the
+  box, and every channel that named a column the data has not got. "Looked
+  plausible, drew nothing" is the failure this closes.
+- **Neither side does the other's job.** Heavy work — scanning, aggregating,
+  profiling, DDL — belongs on the shortest route to the engine, and the handshake
+  ranks those routes and says so. This server is for the canvas: work out what is
+  true elsewhere, then put _that_ on the plane, where a person can see it.
+- **Pairing is one button.** **Settings → Pair with Claude** registers the
+  endpoint with Claude Code and the desktop app, and opens whichever is on the
+  machine.
+
+The whole agent-facing interface is written down once, in
+**[docs/AGENT-SKILL.md](docs/AGENT-SKILL.md)**, and the server serves that very
+file as its first tool — so the documentation you read and the instructions the
+agent reads cannot drift apart.
+
+## What you can do
+
+- **Open anything.** Browse schemas and tables in the explorer tree, or use the
+  generated sample relations that need no database at all — including a
+  ten-billion-row table, a 5 000-column one, a null-heavy one, and one covering
+  every Exasol type.
+- **Scroll, fling, resize.** Row and column virtualisation with smooth
+  wheel/trackpad scrolling; resize tables and columns, reorder and hide them.
+- **Read a column.** Distinct counts, nulls, top values or a histogram, in a
+  panel under the table.
+- **Follow a key.** Foreign keys are read from
+  `SYS.EXA_ALL_CONSTRAINT_COLUMNS`; a followable cell opens the rows it points at
+  as a new, connected box.
+- **Write SQL in place.** A statement box built on another box — and you keep
+  both, and everything downstream re-runs.
+- **Chart it.** Bar, line, area, scatter, pie, stacked — drawn by the same two GPU
+  batches as everything else, hoverable and selectable mark by mark. Open the rows
+  behind whatever you picked, or let that selection cross-filter the boxes built on
+  it. A `custom` type writes the ECharts option out in full, which brings radar,
+  sankey, treemap and gauge within reach.
+- **Take it with you.** Charts export as SVG, PNG or PDF; result sets export to
+  CSV, XLSX or Parquet — encoded off the main thread, streamed to disk, with
+  progress and cancellation.
+- **Install it, or wear it.** It installs as a standalone application and starts
+  with no network; and it enters WebXR on the same scene, with the same renderer.
+
+<img src="scripts/shots/chart-shown.png" alt="A pie chart of a table's rows, drawn as a box on the canvas" width="470">
 
 ---
 
@@ -38,7 +143,18 @@ To use a real database, fill in the connection panel (`wss://host:8563`, user +
 password, or an Exasol SaaS personal access token), open a schema in the
 explorer tree, and click a table.
 
-#### Connecting to a local instance (self-signed certificate)
+```bash
+npm test               # the test suite
+npm run verify         # typecheck + coverage — the gate
+npm run build          # production bundle
+```
+
+`npm run verify` is what CI runs on every push and pull request, along with
+`format:check` and the installability probe — see
+[.github/workflows/verify.yml](.github/workflows/verify.yml). Nothing in CI is a
+CI-only standard: if it passes there, it passes here.
+
+### Connecting to a local instance (self-signed certificate)
 
 A browser refuses a `wss://` handshake to a host whose certificate it does not
 trust, and — unlike a page navigation — it never offers to make an exception. It
@@ -55,107 +171,10 @@ self-signed, so:
 
 Use the _same host_ as the certificate. `localhost` and `127.0.0.1` are
 different hosts to a browser, so an exception accepted for one does nothing for
-the other. This is the constraint the plan asked Stage 1 to answer: the driver
-itself is fine (its integration tests pass against a real instance over TLS),
-but browser-direct access to a self-signed instance needs a manual trust step —
-which is a strong argument for the thin gateway the plan keeps as an option.
-
-```bash
-npm test               # the test suite
-npm run verify         # typecheck + coverage — the gate
-npm run build          # production bundle
-```
-
-`npm run verify` is what CI runs on every push and pull request, along with
-`format:check` and the installability probe — see
-[.github/workflows/verify.yml](.github/workflows/verify.yml). Nothing in CI is a
-CI-only standard: if it passes there, it passes here.
-
-Everything else about the tests — the browser probes, the coverage thresholds, the
-opt-in runs against a real database — is in [TESTING.md](docs/TESTING.md).
-
-### Installing it as an application
-
-The build is installable: a browser can launch it in its own window, from a dock,
-a home screen or a headset's library, with no wrapper around it. To try that:
-
-```bash
-npm run build
-npm run preview        # http://localhost:4173
-```
-
-Then use the install control in the address bar (Chrome and Edge: the icon at the
-right; Safari: **Share → Add to Dock**; Android and the Quest Browser: **Install**
-in the menu). It launches without browser chrome, keeps its own window, and — the
-part worth checking — **starts with no network at all**, because the build is on
-the device. The sample tables work offline; a database, of course, does not.
-
-Nothing is cached but the application itself. No query result, no schema, no row
-ever goes into that cache: a stale row shown as current is a worse failure than
-being offline. See [`shell-cache.ts`](apps/web/src/panorama/shell-cache.ts).
-
-```bash
-npm run install-check  # builds, serves, and drives it: worker, manifest, offline
-npm run icons          # redraws the icons after a change to the mark
-```
-
-#### Releasing it
-
-`.github/workflows/release.yml` builds the application, drives **that build** in a
-browser — worker registered, manifest and every icon checked, network taken away
-and the application launched again — and publishes the result as a zip on a GitHub
-release. Tag it and the release makes itself:
-
-```bash
-npm version patch      # or edit package.json; the tag has to match it
-git push --follow-tags
-```
-
-Run the workflow by hand from the Actions tab to build and check without
-publishing anything. The zip is the whole product: static files to copy anywhere
-an HTTPS origin will serve them, with a `SERVING.md` inside saying what a host has
-to get right.
-
-**Anywhere** is meant literally. The build is relative, so one artifact installs at
-an origin's root, under a repository name, or several directories deep — the
-manifest's URLs resolve against the manifest, and the service worker takes its
-scope from the directory it was served from. `PANORAMA_BASE=/some/path/` forces
-absolute URLs for a deployment that needs them.
-
-`.github/workflows/pages.yml` deploys it to this repository's GitHub Pages site on
-every change to the application: it builds, drives the built files **mounted under
-a path** to prove the relative build survives one, then pushes them to
-`gh-pages`.
-
-A service worker is registered **only in a build** — in front of the dev server a
-cache is just a way of being shown a file you have already changed.
-
-The route from here to a store listing (a Trusted Web Activity for Play and the
-Meta Horizon Store, and what a desktop shell would and would not buy) is
-evaluated in [`plans/panorama-packaging-plan.md`](plans/panorama-packaging-plan.md).
-
-### If the canvas stays blank
-
-The renderer reports startup and per-frame failures as a message in the sidebar
-and on the console, and retries with WebGL when the preferred backend cannot
-start or cannot draw its first frame. Each attempt gets a **fresh canvas
-element**: a graphics context is bound to its canvas for that canvas's lifetime,
-so retrying on the same element cannot obtain a context at all and fails with a
-misleading "WebGL not supported".
-
-WebGPU is preferred but has **not** been verified on real hardware — no
-WebGPU-capable browser was available while this was built, so every renderer
-screenshot in `scripts/shots/` is WebGL. To force a backend without rebuilding:
-
-```
-http://localhost:5173/?backend=webgl
-http://localhost:5173/?backend=webgpu
-```
-
-The overlay's **Backend** field shows which one is live; `—` with 0 FPS means no
-engine ever started. It starts collapsed to the frame-rate pill in the top-right
-corner of the canvas — click that for the full set of numbers, and **Hide** to put
-it away again.
+the other. The driver itself is fine here — its integration tests pass against a
+real instance over TLS — but browser-direct access to a self-signed instance
+needs that manual trust step, which is the strongest argument there is for
+putting a thin gateway in front of one.
 
 ### Supplying connection details at startup
 
@@ -186,7 +205,30 @@ from the DOM, for no benefit over having connected already.
 password cannot be baked into a deployable artifact. There is a test for that,
 because it is the kind of guarantee that quietly stops being true.
 
-### Letting an agent drive it
+### If the canvas stays blank
+
+The renderer reports startup and per-frame failures as a message in the sidebar
+and on the console, and retries with WebGL when the preferred backend cannot
+start or cannot draw its first frame. Each attempt gets a **fresh canvas
+element**: a graphics context is bound to its canvas for that canvas's lifetime,
+so retrying on the same element cannot obtain a context at all and fails with a
+misleading "WebGL not supported".
+
+To force a backend without rebuilding:
+
+```
+http://localhost:5173/?backend=webgl
+http://localhost:5173/?backend=webgpu
+```
+
+The overlay's **Backend** field shows which one is live; `—` with 0 FPS means no
+engine ever started. It starts collapsed to the frame-rate pill in the top-right
+corner of the canvas — click that for the full set of numbers, and **Hide** to put
+it away again.
+
+---
+
+## Letting an agent drive it
 
 An agent reaches Panorama over the Model Context Protocol. The endpoint is part
 of the development server, so there is one thing to start:
@@ -217,15 +259,17 @@ Code**, in a new terminal window in this project's directory, on a machine with 
 application to open. Both say what they did, and the panel then shows the pairing
 as done.
 
-`overview` is where to start — what is open, what is
-being edited, where the history stands. `entities`, `entity` and `rows` describe
-the boxes and read their cells; `history` is the commit graph; `session` is what
-is selected. `dispatch` applies a document command — one, or a list of
-them — `checkout` moves the history head, `label` renames a box, and `open_table`,
-`action`, `query` and `chart` do the things a document command cannot express on
-its own. `catalogue` lists the database. `session_dispatch` changes what is
-selected, and `skill` is the page describing all of it. The handshake says how many
-tools there are, which matters — see below.
+<img src="scripts/shots/settings.png" alt="The Settings panel, showing the agent endpoint and the pairing controls" width="320">
+
+`overview` is where to start — what is open, what is being edited, where the
+history stands. `entities`, `entity` and `rows` describe the boxes and read their
+cells; `history` is the commit graph; `session` is what is selected. `dispatch`
+applies a document command — one, or a list of them — `checkout` moves the history
+head, `label` renames a box, and `open_table`, `action`, `query` and `chart` do the
+things a document command cannot express on its own. `catalogue` lists the
+database. `session_dispatch` changes what is selected, and `skill` is the page
+describing all of it. The handshake says how many tools there are, which
+matters — see below.
 
 Every answer comes from the session in the page — there is no second copy of the
 document — so an agent and a person are looking at the same thing, and an agent's
@@ -250,7 +294,7 @@ the canvas — and check first that the other route is the same database. Why th
 interface is shaped this way is in
 [ARCHITECTURE.md §9.10](docs/ARCHITECTURE.md#910-the-agent-interface).
 
-#### If an agent cannot see a tool that is there
+### If an agent cannot see a tool that is there
 
 Almost always the same thing, and it is not on the agent's side: **a client fetches
 the tool list once, when it connects, and then shows what it fetched.** So a client
@@ -281,7 +325,9 @@ curl -s -X POST http://localhost:5173/agent/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | jq '.result.tools | length, .[0].name'
 ```
 
-### Viewing it in a headset
+---
+
+## Viewing it in a headset
 
 WebXR is only offered on a secure page. `http://localhost` counts as one, which
 is why the desktop never needed anything — but a headset reaching this machine
@@ -328,6 +374,64 @@ the notice says which.
 
 ---
 
+## Installing it as an application
+
+The build is installable: a browser can launch it in its own window, from a dock,
+a home screen or a headset's library, with no wrapper around it. To try that:
+
+```bash
+npm run build
+npm run preview        # http://localhost:4173
+```
+
+Then use the install control in the address bar (Chrome and Edge: the icon at the
+right; Safari: **Share → Add to Dock**; Android and the Quest Browser: **Install**
+in the menu). It launches without browser chrome, keeps its own window, and — the
+part worth checking — **starts with no network at all**, because the build is on
+the device. The sample tables work offline; a database, of course, does not.
+
+Nothing is cached but the application itself. No query result, no schema, no row
+ever goes into that cache: a stale row shown as current is a worse failure than
+being offline. See [`shell-cache.ts`](apps/web/src/panorama/shell-cache.ts).
+
+```bash
+npm run install-check  # builds, serves, and drives it: worker, manifest, offline
+npm run icons          # redraws the icons after a change to the mark
+```
+
+A service worker is registered **only in a build** — in front of the dev server a
+cache is just a way of being shown a file you have already changed.
+
+### Releasing it
+
+`.github/workflows/release.yml` builds the application, drives **that build** in a
+browser — worker registered, manifest and every icon checked, network taken away
+and the application launched again — and publishes the result as a zip on a GitHub
+release. Tag it and the release makes itself:
+
+```bash
+npm version patch      # or edit package.json; the tag has to match it
+git push --follow-tags
+```
+
+Run the workflow by hand from the Actions tab to build and check without
+publishing anything. The zip is the whole product: static files to copy anywhere
+an HTTPS origin will serve them, with a `SERVING.md` inside saying what a host has
+to get right.
+
+**Anywhere** is meant literally. The build is relative, so one artifact installs at
+an origin's root, under a repository name, or several directories deep — the
+manifest's URLs resolve against the manifest, and the service worker takes its
+scope from the directory it was served from. `PANORAMA_BASE=/some/path/` forces
+absolute URLs for a deployment that needs them.
+
+`.github/workflows/pages.yml` deploys it to this repository's GitHub Pages site on
+every change to the application: it builds, drives the built files **mounted under
+a path** to prove the relative build survives one, then pushes them to
+`gh-pages`.
+
+---
+
 ## Testing
 
 `npm run verify` is the gate: a type check across every package, then the suite
@@ -352,7 +456,8 @@ npm run smoke                     # in another
 `route-check`, `summary-check`, `sql-check`, `chart-check`, `export-check`,
 `agent-check`, and `probe` as a graphics scratch pad. What each one asserts, the
 techniques behind them, and how to read their output are in
-[TESTING.md §8](docs/TESTING.md#8-browser-probes).
+[TESTING.md §8](docs/TESTING.md#8-browser-probes). The screenshots in this file
+come out of those runs, in `scripts/shots/`.
 
 ### Checking the export files against someone else's reader
 
@@ -381,7 +486,8 @@ see [TESTING.md §10](docs/TESTING.md#10-against-a-real-exasol).
 One model at the centre and three projections of it. Interaction never mutates a
 mesh and never mutates the document directly: a pointer drag produces _session_
 state while it is live and exactly one semantic command when it ends — the same
-command an agent would send.
+command an agent would send. That is the whole reason an agent could be given the
+canvas without the renderer knowing.
 
 Three dependency rules hold the shape together, and each buys a specific freedom:
 
@@ -395,70 +501,35 @@ flows, the cross-cutting concerns, a decision record of everything that is not
 obvious from the code, the test strategy, and an honest register of what is still
 weak.
 
-Two things worth knowing before reading any of it:
+---
 
-> The database may cause data to arrive late. It may never cause Panorama to
-> respond late.
+## Known limits
 
-and: nothing is ever held whole. Not a result set, not an export, not a chart's
-input.
+Worth knowing before you judge something a bug:
+
+- **WebGPU is preferred but has not been verified on real hardware.** No
+  WebGPU-capable browser was available while this was built, so every renderer
+  screenshot here is WebGL. WebGL is a complete fallback and is taken
+  automatically when the preferred backend cannot draw.
+- **No frame timings on real hardware.** The tests prove the renderer's work is
+  proportional to visible cells and independent of database latency; they do not
+  prove 60 FPS on a given machine. That is what the performance overlay is for.
+- **Typography, colour and the _feel_ of scrolling need a human at a real
+  display.** Everything about them is verified structurally — draw lists, batch
+  contents, glyph geometry, camera maths — which is not the same as looking good.
+- **The agent endpoint lives on the development server.** A static build is the
+  application alone; there is no MCP server in it.
 
 ---
 
-## Status against the Stage 1 plan
+## Documentation
 
-Delivered and covered by tests:
+- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — how it is built and why: the
+  model, the layering, the module map, the flows, and a decision record of
+  everything that is not obvious from the code.
+- **[docs/TESTING.md](docs/TESTING.md)** — how we know it works: the suite, the
+  doubles, the coverage gate, and the browser probes.
+- **[docs/AGENT-SKILL.md](docs/AGENT-SKILL.md)** — how to drive it as an agent,
+  and the page the server itself serves.
 
-- Panorama Core: entity ids, table entity, session context, command dispatcher,
-  immutable commits, branchable history DAG, HEAD.
-- Commands: `CreateTableEntity`, `MoveEntities`, `ResizeEntity`, `ResizeColumn`,
-  `ReorderColumns`, `SetColumnVisibility`, `RemoveEntities`.
-- Babylon canvas: pan, zoom, entity picking, table movement, table resize,
-  column resize, scrollbar dragging, LOD thresholds.
-- Row and column virtualisation, smooth wheel/trackpad scrolling, velocity
-  tracking, predictive prefetch, block LRU cache with byte-based eviction.
-- An agent interface: a Model Context Protocol endpoint on the development
-  server with fifteen tools over the live session — the document, the commit
-  graph, the session and the database — verified against a real browser by
-  `npm run agent-check`.
-- A settings panel that finds Claude on this machine, pairs it with this session
-  and opens it.
-- An action halo on the activated table, with a working close button that
-  releases the result set as well as removing the entity.
-- Charts of any table, set up in a box beside their own live preview, drawn by the
-  same two GPU batches as everything else, hoverable and selectable mark by mark,
-  able to open a table of the rows behind whatever has been picked out — and
-  exported as SVG, PNG or PDF, verified as files by Ghostscript and `pdftotext`.
-  Plus a `custom` type whose ECharts option is written out, which puts the whole
-  library — radar, sankey, treemap, gauge — within reach of an agent.
-- Export to CSV, XLSX and Parquet: encoded in the data worker, streamed to disk,
-  with progress, cancellation and a save dialog — verified end to end through a
-  real pointer and a real download by `npm run export-check`, and verified as
-  files by pyarrow and openpyxl.
-- Bindings: connector records, derived geometry, cascade on delete, and
-  directional lines rendered behind the tables they join.
-- Foreign keys read from `SYS.EXA_ALL_CONSTRAINT_COLUMNS`, followable cells, and
-  the filtered result set behind them — verified against a live instance.
-- Exasol driver: connect, authenticate (password and access token), disconnect,
-  list schemas, list tables, describe table, execute, result-set metadata, total
-  row count, arbitrary range fetch, explicit result-set close.
-- Data worker with response versioning, stale-response rejection, bounded
-  concurrency, duplicate suppression, cancellation and per-block retry backoff.
-- Performance overlay with the metrics the plan lists.
-- WebXR entry against the same scene and the same table renderer.
-- Pathological relations: very tall, very wide, large strings, null-heavy, and
-  full type coverage — available in the app without a database.
-
-Deliberately not done, because it cannot be done from here:
-
-- **No pixels have been looked at.** Every renderer decision is verified
-  structurally (draw lists, batch contents, glyph geometry, camera maths) and
-  against Babylon's headless engine. Typography, colour and the _feel_ of
-  scrolling need a human at a real display, which is what Stage 1E is for.
-- **No frame timings on real hardware.** The tests prove the renderer's work is
-  proportional to visible cells and independent of latency; they do not prove
-  60 FPS on a given machine. The overlay is there to measure it.
-- **The Exasol protocol is now verified against a live instance.** The
-  integration tests pass against Exasol over TLS: login with real RSA/PKCS#1
-  password encryption, schema and table listing, `describeTable`, opening a
-  result set, positional range fetches, and explicit result-set close.
+MIT licensed — see [LICENSE](LICENSE).
