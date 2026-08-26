@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
-  SHELL_ASSETS_URL,
+  SHELL_ASSETS_PATH,
   SHELL_CACHE,
-  SHELL_URLS,
+  SHELL_PATHS,
   isShellAsset,
   shellCacheHandlers,
 } from '../src/panorama/shell-cache.js';
@@ -20,6 +20,17 @@ import {
  */
 
 const ORIGIN = 'https://panorama.example';
+
+/**
+ * Two deployments, and the difference between them is the point of most of this.
+ *
+ * An application at an origin's root can treat `/assets/` as its own. One served
+ * under a path cannot: there, `/` is somebody else's page and `/assets/` somebody
+ * else's assets, and a worker that claimed them would serve one site's files to
+ * another. So every case below is run against both bases.
+ */
+const AT_ROOT = `${ORIGIN}/`;
+const UNDER_PATH = `${ORIGIN}/exasol-panorama/`;
 
 interface Stored {
   readonly url: string;
@@ -110,12 +121,14 @@ const fakeCaches = (
 const handlersWith = (
   storage: ReturnType<typeof fakeCaches>,
   network: (given: Request | string) => Promise<Response>,
-) => shellCacheHandlers({ caches: storage.api, fetch: network, origin: ORIGIN });
+  base: string = AT_ROOT,
+) => shellCacheHandlers({ caches: storage.api, fetch: network, base });
 
 /** A network that answers the build's asset list, and nothing else. */
-const listing = (body: unknown, init: { ok?: boolean; broken?: boolean } = {}) => {
+const listing = (body: unknown, init: { ok?: boolean; broken?: boolean; base?: string } = {}) => {
+  const url = new URL(SHELL_ASSETS_PATH, init.base ?? AT_ROOT).href;
   return async (given: Request | string): Promise<Response> => {
-    if (given !== SHELL_ASSETS_URL) throw new TypeError('Failed to fetch');
+    if (given !== url) throw new TypeError('Failed to fetch');
     const answer = response('list', { ok: init.ok ?? true });
     return {
       ...answer,
@@ -132,24 +145,43 @@ const offline = async (): Promise<Response> => {
 };
 
 describe('what belongs to the shell', () => {
-  it('claims the hashed assets and the files a launch names', () => {
-    expect(isShellAsset(`${ORIGIN}/assets/index-a1b2c3.js`, ORIGIN)).toBe(true);
-    expect(isShellAsset(`${ORIGIN}/icons/icon-192.png`, ORIGIN)).toBe(true);
-    expect(isShellAsset(`${ORIGIN}/manifest.webmanifest`, ORIGIN)).toBe(true);
-  });
+  for (const base of [AT_ROOT, UNDER_PATH]) {
+    describe(`served at ${base}`, () => {
+      it('claims the hashed assets and the files a launch names', () => {
+        expect(isShellAsset(`${base}assets/index-a1b2c3.js`, base)).toBe(true);
+        expect(isShellAsset(`${base}icons/icon-192.png`, base)).toBe(true);
+        expect(isShellAsset(`${base}manifest.webmanifest`, base)).toBe(true);
+      });
 
-  it('claims nothing from another origin, however it is spelled', () => {
-    expect(isShellAsset('https://other.example/assets/index.js', ORIGIN)).toBe(false);
-    expect(isShellAsset('wss://db.internal:8563/', ORIGIN)).toBe(false);
-  });
+      it('claims nothing from another origin, however it is spelled', () => {
+        expect(isShellAsset('https://other.example/assets/index.js', base)).toBe(false);
+        expect(isShellAsset('wss://db.internal:8563/', base)).toBe(false);
+      });
 
-  it('refuses anything carrying a query, because the answer depends on it', () => {
-    expect(isShellAsset(`${ORIGIN}/assets/index.js?v=2`, ORIGIN)).toBe(false);
-  });
+      it('refuses anything carrying a query, because the answer depends on it', () => {
+        expect(isShellAsset(`${base}assets/index.js?v=2`, base)).toBe(false);
+      });
 
-  it('refuses a path that is not part of the build', () => {
-    expect(isShellAsset(`${ORIGIN}/mcp`, ORIGIN)).toBe(false);
-    expect(isShellAsset(`${ORIGIN}/`, ORIGIN)).toBe(false);
+      it('refuses a path that is not part of the build', () => {
+        expect(isShellAsset(`${base}mcp`, base)).toBe(false);
+        expect(isShellAsset(base, base)).toBe(false);
+      });
+    });
+  }
+
+  /**
+   * The failure this arrangement exists to rule out: an application under a path
+   * treating the origin's own `/assets/` as its own. On a project site that is a
+   * neighbour's files, and serving them from this cache would be serving one site
+   * out of another's worker.
+   */
+  it('does not claim the origin root when it is served under a path', () => {
+    expect(isShellAsset(`${ORIGIN}/assets/somebody-else.js`, UNDER_PATH)).toBe(false);
+    expect(isShellAsset(`${ORIGIN}/manifest.webmanifest`, UNDER_PATH)).toBe(false);
+    expect(isShellAsset(`${ORIGIN}/`, UNDER_PATH)).toBe(false);
+    // And the reverse: a root deployment does not answer for a subdirectory that
+    // happens to be named like one of its own.
+    expect(isShellAsset(`${UNDER_PATH}assets/index.js`, AT_ROOT)).toBe(false);
   });
 });
 
@@ -157,7 +189,7 @@ describe('installing', () => {
   it('fetches the shell into its own cache', async () => {
     const storage = fakeCaches();
     await handlersWith(storage, offline).install();
-    expect(storage.addAllCalls).toEqual([[...SHELL_URLS]]);
+    expect(storage.addAllCalls).toEqual([SHELL_PATHS.map((path) => new URL(path, AT_ROOT).href)]);
     expect(storage.names()).toEqual([SHELL_CACHE]);
   });
 
@@ -204,8 +236,38 @@ describe('installing', () => {
       const handlers = handlersWith(storage, network);
       await handlers.install();
       expect(await handlers.listedAssets()).toEqual([]);
-      expect(storage.contents()).toEqual(SHELL_URLS.map((url) => new URL(url, ORIGIN).href));
+      expect(storage.contents()).toEqual(SHELL_PATHS.map((path) => new URL(path, AT_ROOT).href));
     }
+  });
+
+  /**
+   * Under a path, everything moves: the document, the list, and every asset in
+   * it. This is the case a build hosted at an origin's root can never exercise
+   * and a project site is always in.
+   */
+  it('installs an application served under a path, entirely under that path', async () => {
+    const storage = fakeCaches();
+    const handlers = handlersWith(
+      storage,
+      listing(['assets/index-a1.js', 'icons/icon-192.png'], { base: UNDER_PATH }),
+      UNDER_PATH,
+    );
+    await handlers.install();
+    const cached = storage.contents();
+    expect(cached).toContain(`${UNDER_PATH}assets/index-a1.js`);
+    expect(cached).toContain(`${UNDER_PATH}icons/icon-192.png`);
+    expect(cached).toContain(UNDER_PATH);
+    expect(cached).toContain(`${UNDER_PATH}manifest.webmanifest`);
+    // Nothing of the origin's own root, which belongs to whatever else is there.
+    expect(cached.some((url) => !url.startsWith(UNDER_PATH))).toBe(false);
+  });
+
+  it('serves that application its own document when the network is gone', async () => {
+    const storage = fakeCaches();
+    storage.seed(SHELL_CACHE, [{ url: `${UNDER_PATH}`, body: 'the app' }]);
+    const handlers = handlersWith(storage, offline, UNDER_PATH);
+    const answer = await handlers.handle(request(`${UNDER_PATH}deep/link`, { mode: 'navigate' }))!;
+    expect(bodyOf(answer)).toBe('the app');
   });
 
   it('is not failed by one asset a deployment no longer has', async () => {

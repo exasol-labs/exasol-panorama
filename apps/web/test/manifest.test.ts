@@ -22,6 +22,7 @@ interface ManifestIcon {
 }
 
 interface Manifest {
+  readonly id: string;
   readonly name: string;
   readonly short_name: string;
   readonly start_url: string;
@@ -52,9 +53,25 @@ describe('the web app manifest', () => {
     // Truncated under an icon at about twelve characters, so it is chosen, not
     // derived from the full name.
     expect(manifest.short_name.length).toBeLessThanOrEqual(12);
-    expect(manifest.start_url).toBe('/');
-    expect(manifest.scope).toBe('/');
     expect(manifest.display).toBe('standalone');
+  });
+
+  /**
+   * Every URL in a manifest resolves against the manifest's own address, so
+   * relative ones make the whole file independent of where the application is
+   * served — the origin's root, or a project site under a repository name. An
+   * absolute `/` here would launch the wrong page under a path, and there would be
+   * nothing in the build to say so.
+   */
+  it('names its own addresses relatively, so it survives being served under a path', () => {
+    expect(manifest.start_url).toBe('./');
+    expect(manifest.scope).toBe('./');
+    expect(manifest.id).toBe('./');
+    for (const icon of manifest.icons) expect(icon.src.startsWith('/')).toBe(false);
+    for (const base of ['https://panorama.example/', 'https://panorama.example/under/a/path/']) {
+      expect(new URL(manifest.start_url, base).href).toBe(base);
+      expect(new URL(manifest.icons[0]!.src, base).href).toBe(`${base}icons/icon-192.png`);
+    }
   });
 
   it('matches the palette the application is drawn in', () => {
@@ -64,7 +81,9 @@ describe('the web app manifest', () => {
   });
 
   it('is linked from the document, with a theme colour a browser can use early', () => {
-    expect(document_).toContain('<link rel="manifest" href="/manifest.webmanifest" />');
+    // `%BASE_URL%` is substituted at build time — the documented way to point at
+    // a public file from HTML, and the only one that survives a base change.
+    expect(document_).toContain('<link rel="manifest" href="%BASE_URL%manifest.webmanifest" />');
     expect(document_).toContain(`content="${manifest.theme_color}"`);
   });
 });
@@ -72,7 +91,7 @@ describe('the web app manifest', () => {
 describe('the icons it declares', () => {
   it('exists, as a PNG of exactly the size claimed', () => {
     for (const icon of manifest.icons) {
-      const bytes = read(`../public${icon.src}`);
+      const bytes = read(`../public/${icon.src}`);
       expect(icon.type, icon.src).toBe('image/png');
       const size = pngSize(bytes);
       expect(size, `${icon.src} is not a PNG`).not.toBeNull();
@@ -93,7 +112,9 @@ describe('the icons it declares', () => {
 
   /** iOS reads neither the manifest's icons nor its name for a home screen. */
   it('is joined by an apple-touch-icon the document points at', () => {
-    expect(document_).toContain('<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png"');
+    expect(document_).toContain(
+      '<link rel="apple-touch-icon" href="%BASE_URL%icons/apple-touch-icon.png"',
+    );
     expect(pngSize(read('../public/icons/apple-touch-icon.png'))).toEqual({
       width: 180,
       height: 180,

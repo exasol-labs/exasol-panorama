@@ -24,7 +24,7 @@ interface FetchEvent {
 }
 
 interface WorkerScope {
-  readonly location: { readonly origin: string };
+  readonly location: { readonly href: string };
   readonly clients: { claim(): Promise<void> };
   skipWaiting(): Promise<void>;
   addEventListener(type: 'install' | 'activate', listener: (event: WaitableEvent) => void): void;
@@ -36,7 +36,16 @@ const scope = globalThis as unknown as WorkerScope;
 const handlers = shellCacheHandlers({
   caches,
   fetch: (request) => fetch(request),
-  origin: scope.location.origin,
+  /**
+   * Where the application is, worked out from where this worker is.
+   *
+   * A worker's scope is its own directory, so the directory this script was
+   * served from *is* the application root — whether that is the origin's root or
+   * a path under it. Derived rather than configured: a base compiled in here
+   * could disagree with where the file actually ended up, and the disagreement
+   * would show up as an application that installs and then cannot find itself.
+   */
+  base: new URL('./', scope.location.href).href,
 });
 
 /**

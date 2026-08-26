@@ -40,8 +40,14 @@ export const SHELL_CACHE_PREFIX = 'panorama-shell-';
 /**
  * What is fetched at install time and must succeed: the document, and the
  * manifest so that an install prompt has something to read on a cold start.
+ *
+ * Relative to where the application is served rather than to the origin's root,
+ * because it is not always at the root: served under a path — a project site on
+ * GitHub Pages, say — `/` is somebody else's page and `/assets/` is somebody
+ * else's assets. Everything here is resolved against the base the worker was
+ * registered with, which the worker knows because it is its own directory.
  */
-export const SHELL_URLS: readonly string[] = ['/', '/manifest.webmanifest'];
+export const SHELL_PATHS: readonly string[] = ['', 'manifest.webmanifest'];
 
 /**
  * The rest of the shell, listed by the build.
@@ -57,23 +63,25 @@ export const SHELL_URLS: readonly string[] = ['/', '/manifest.webmanifest'];
  * here because the names are hashed: the list changes on every deployment and
  * this file does not.
  */
-export const SHELL_ASSETS_URL = '/shell-assets.json';
-
-/** Where the document is served from when the network cannot be reached. */
-export const SHELL_DOCUMENT = '/';
+export const SHELL_ASSETS_PATH = 'shell-assets.json';
 
 /** Paths whose contents never change without their names changing. */
-const IMMUTABLE_PREFIXES: readonly string[] = ['/assets/', '/icons/'];
+const IMMUTABLE_PREFIXES: readonly string[] = ['assets/', 'icons/'];
 
-/** Files at the root that a launch needs and a deployment replaces in place. */
-const SHELL_FILES: readonly string[] = ['/manifest.webmanifest'];
+/** Files beside the document that a launch needs, replaced in place by a deployment. */
+const SHELL_FILES: readonly string[] = ['manifest.webmanifest'];
 
 export interface ShellCacheEnvironment {
   readonly caches: CacheStorage;
   /** The network. Passed in so a test can be offline without a network stack. */
   readonly fetch: (request: Request | string) => Promise<Response>;
-  /** The origin the worker is serving, against which a request is same-origin. */
-  readonly origin: string;
+  /**
+   * Where the application is served: an absolute URL ending in a slash, which is
+   * the origin's root for most deployments and a subdirectory for some. Every
+   * decision here is relative to it — a worker under a path must not claim the
+   * origin's `/assets/`, which belongs to whatever else is hosted there.
+   */
+  readonly base: string;
 }
 
 export interface ShellCacheHandlers {
@@ -98,17 +106,20 @@ const isDocument = (request: Request): boolean =>
 /**
  * Whether a URL is part of the shell.
  *
- * Same-origin, no query — a query means a parameter, and a parameter means the
- * answer depends on something this worker does not model — and either an
- * immutable asset path or one of the few named root files.
+ * Under this application's own base, no query — a query means a parameter, and a
+ * parameter means the answer depends on something this worker does not model —
+ * and then either an immutable asset path or one of the few named files beside
+ * the document.
  */
-export const isShellAsset = (url: string, origin: string): boolean => {
-  const parsed = new URL(url, origin);
-  if (parsed.origin !== origin) return false;
+export const isShellAsset = (url: string, base: string): boolean => {
+  const root = new URL(base);
+  const parsed = new URL(url, root);
+  if (parsed.origin !== root.origin) return false;
   if (parsed.search !== '') return false;
+  if (!parsed.pathname.startsWith(root.pathname)) return false;
+  const within = parsed.pathname.slice(root.pathname.length);
   return (
-    IMMUTABLE_PREFIXES.some((prefix) => parsed.pathname.startsWith(prefix)) ||
-    SHELL_FILES.includes(parsed.pathname)
+    IMMUTABLE_PREFIXES.some((prefix) => within.startsWith(prefix)) || SHELL_FILES.includes(within)
   );
 };
 
@@ -132,7 +143,7 @@ const MATCH_ANY_VARIANT = { ignoreVary: true } as const;
 const isStorable = (response: Response): boolean => response.ok && response.type !== 'opaque';
 
 export const shellCacheHandlers = (environment: ShellCacheEnvironment): ShellCacheHandlers => {
-  const { caches, fetch, origin } = environment;
+  const { caches, fetch, base } = environment;
 
   /**
    * Put a copy away, and do not let a failure to do so fail the response the
@@ -182,12 +193,12 @@ export const shellCacheHandlers = (environment: ShellCacheEnvironment): ShellCac
    */
   const listedAssets = async (): Promise<string[]> => {
     try {
-      const response = await fetch(SHELL_ASSETS_URL);
+      const response = await fetch(new URL(SHELL_ASSETS_PATH, base).href);
       if (!response.ok) return [];
       const listed: unknown = await response.json();
       if (!Array.isArray(listed)) return [];
       return listed.filter(
-        (entry): entry is string => typeof entry === 'string' && isShellAsset(entry, origin),
+        (entry): entry is string => typeof entry === 'string' && isShellAsset(entry, base),
       );
     } catch {
       return [];
@@ -199,11 +210,11 @@ export const shellCacheHandlers = (environment: ShellCacheEnvironment): ShellCac
 
     async install(): Promise<void> {
       const cache = await caches.open(SHELL_CACHE);
-      await cache.addAll([...SHELL_URLS]);
+      await cache.addAll(SHELL_PATHS.map((path) => new URL(path, base).href));
       const listed = await listedAssets();
       // Settled, not all: one asset a deployment no longer has should cost a
       // fetch later, not the whole install. Runtime caching picks up the rest.
-      await Promise.allSettled(listed.map(async (url) => cache.add(url)));
+      await Promise.allSettled(listed.map(async (path) => cache.add(new URL(path, base).href)));
     },
 
     async activate(): Promise<void> {
@@ -218,8 +229,10 @@ export const shellCacheHandlers = (environment: ShellCacheEnvironment): ShellCac
     handle(request: Request): Promise<Response> | null {
       // A write is never ours, and neither is anything the page did not GET.
       if (request.method !== 'GET') return null;
-      if (isDocument(request)) return fromNetworkFirst(request, SHELL_DOCUMENT);
-      if (isShellAsset(request.url, origin)) return fromCacheFirst(request);
+      // The document falls back to the application's own base, which is the
+      // document — not to `/`, which under a path is somebody else's page.
+      if (isDocument(request)) return fromNetworkFirst(request, base);
+      if (isShellAsset(request.url, base)) return fromCacheFirst(request);
       return null;
     },
   };

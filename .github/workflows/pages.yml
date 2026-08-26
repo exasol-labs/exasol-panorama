@@ -1,0 +1,87 @@
+# Publishes the installable application to this repository's GitHub Pages site.
+#
+# The build is relative, so it does not need to be told where it will be served:
+# the service worker takes its scope from its own address, the manifest's URLs
+# resolve against the manifest, and the document's assets are beside it. That
+# matters here because an access-controlled Pages site is served from a generated
+# hostname, and whether a project site sits at that host's root or under the
+# repository's name is not a thing to establish by deploying and hoping.
+#
+# What is still worth checking is that it survives being served under a path. So
+# the probe is pointed at the built files *mounted under one*, without rebuilding
+# them — the artifact that gets published is the artifact that was driven.
+#
+# Published by pushing the built files to `gh-pages`, which is where this
+# repository's Pages site is served from. Not `actions/deploy-pages`: that needs
+# the site's source set to "GitHub Actions", and a branch is a source that also
+# works when somebody has to deploy by hand — as somebody did the first time,
+# while this organisation's Actions runners were not picking up work.
+name: pages
+
+on:
+  push:
+    branches: [main]
+    # The application and the things that decide where it can be served. A
+    # documentation change does not need a deployment.
+    paths:
+      - 'apps/web/**'
+      - 'packages/**'
+      - 'package-lock.json'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  deploy:
+    name: build, check, publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      # Serves the build under the same base and drives it: worker registered and
+      # scoped to the path, manifest and every icon resolved, then the network
+      # taken away and the application launched again.
+      - name: Drive it under a path, without rebuilding it
+        env:
+          PANORAMA_SKIP_BUILD: '1'
+          # Only where the preview serves it and what the assertions expect; the
+          # build above is untouched. Trailing slash: it is a directory.
+          PANORAMA_BASE: /exasol-panorama/
+        run: npm run install-check
+
+      - name: Publish to gh-pages
+        run: |
+          # Jekyll would otherwise take a view on a directory it has no business
+          # processing. Nothing here is a Jekyll site.
+          touch apps/web/dist/.nojekyll
+          cd apps/web/dist
+          git init -q
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "deploy ${GITHUB_SHA}"
+          # Force, deliberately: the branch is an artifact of the build, not a
+          # history anybody should be reading.
+          git push -q --force \
+            "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" \
+            HEAD:gh-pages
+          echo "Deployed ${GITHUB_SHA} to gh-pages"

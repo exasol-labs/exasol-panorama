@@ -31,6 +31,9 @@ const agent = startAgent(workspace);
  */
 void registerShell({
   enabled: import.meta.env.PROD,
+  // Where this build was told it would be served from; `/` unless a deployment
+  // said otherwise. See `panorama/install.ts`.
+  base: import.meta.env.BASE_URL,
   host: navigator,
   onProblem: (error) => console.warn('[install] service worker not registered', error),
 });

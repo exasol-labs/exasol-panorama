@@ -859,6 +859,19 @@ cache then does not match it, silently, so cache-first became network-first
 against no network. Ignoring it is sound and not merely convenient: these are
 hashed public assets, and the Cache API stores bodies already decoded.
 
+**The build is relative, so it does not have to be told where it will live.**
+Every address in it resolves against the document that names it: the manifest's
+`start_url`, `scope` and icons resolve against the manifest, the document's assets
+sit beside the document, and the service worker derives its base from the
+directory it was served from — a worker's scope _is_ that directory, so the file's
+own address is the most reliable statement of where the application is. One
+artifact therefore installs correctly at an origin's root, under a repository name
+on a project site, or three directories deep, and `PANORAMA_BASE` exists only for
+a deployment that needs absolute URLs. This was worth doing rather than
+configuring: GitHub serves an access-controlled Pages site from a generated
+hostname, and which path a project site occupies there is not a thing to establish
+by deploying and hoping.
+
 **The worker is registered only in a build.** In front of a development server a
 cache is a way of being shown a file you have already changed. The flag is passed
 in at the call site rather than read inside, so both sides of it are testable.

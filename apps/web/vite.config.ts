@@ -41,6 +41,26 @@ const DEV_PORT = Number(process.env['PANORAMA_PORT'] ?? 5173);
 const SERVICE_WORKER = 'service-worker';
 
 /**
+ * Where this build will be served from — and by default, wherever it is put.
+ *
+ * `./` rather than `/`, so every address in the build is relative to the document
+ * that names it. An origin of its own, a project site under a repository name, a
+ * folder on somebody's laptop: all the same build, no configuration, nothing to
+ * get wrong. It is what the rest of the design already assumed — the manifest's
+ * URLs resolve against the manifest, and the service worker's base is the
+ * directory it was served from — so this is the last piece rather than a new idea.
+ *
+ * The reason it is a default rather than a decision: GitHub serves an
+ * access-controlled Pages site from a generated hostname, and whether a project
+ * site sits at that host's root or under the repository's name is not something
+ * to find out by deploying and hoping. A relative build is right either way.
+ *
+ * `PANORAMA_BASE` overrides it for a deployment that needs absolute URLs — one
+ * behind a rewriting proxy, or serving deep links the application does not have.
+ */
+const BASE = process.env['PANORAMA_BASE'] ?? './';
+
+/**
  * Writes the list of files the build produced, for the service worker to fetch
  * while installing. See `src/panorama/shell-cache.ts` for why it needs one: the
  * renderer imports its shaders lazily, so "cache what has been used" leaves an
@@ -56,8 +76,9 @@ const shellAssets = (): Plugin => ({
   apply: 'build',
   generateBundle(_options, bundle) {
     const files = Object.keys(bundle)
+      // Relative to the base, because that is what the worker resolves them
+      // against — an absolute `/assets/...` is the wrong file under a path.
       .filter((name) => name.startsWith('assets/') && !name.endsWith('.map'))
-      .map((name) => `/${name}`)
       .sort();
     this.emitFile({
       type: 'asset',
@@ -73,6 +94,7 @@ const startupForServing = (): ReturnType<typeof readStartupConnection> => {
 };
 
 export default defineConfig(({ command }) => ({
+  base: BASE,
   /**
    * The agent interface is mounted on the dev server: see `packages/mcp`. It
    * answers from the live session in the page, so it belongs in the process that

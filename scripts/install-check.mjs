@@ -31,7 +31,18 @@ import { existsSync } from 'node:fs';
 import { chromium } from 'playwright';
 
 const PORT = Number(process.env.PANORAMA_PREVIEW_PORT ?? 4180);
+/**
+ * Where the application is served from, which is not always an origin's root.
+ *
+ * A project site is served under a repository name, and everything that has to
+ * agree about that — the worker's scope, the manifest's start URL, the cache's
+ * idea of which assets are its own — can only be checked by serving it that way.
+ * `PANORAMA_BASE` is the same variable the build takes, so a run of this checks
+ * the deployment it names.
+ */
+const BASE = process.env.PANORAMA_BASE ?? '/';
 const origin = `http://localhost:${PORT}`;
+const appUrl = `${origin}${BASE}`;
 
 /**
  * Built here rather than assumed, because the worker is part of the build: a
@@ -40,7 +51,10 @@ const origin = `http://localhost:${PORT}`;
  */
 if (process.env.PANORAMA_SKIP_BUILD === undefined) {
   console.info('building...');
-  const built = spawnSync('npm', ['run', 'build'], { stdio: ['ignore', 'ignore', 'inherit'] });
+  const built = spawnSync('npm', ['run', 'build'], {
+    stdio: ['ignore', 'ignore', 'inherit'],
+    env: { ...process.env, PANORAMA_BASE: BASE },
+  });
   if (built.status !== 0) process.exit(built.status ?? 1);
 } else if (!existsSync('apps/web/dist/index.html')) {
   // The release workflow builds once and then points this at that build, so that
@@ -60,7 +74,7 @@ const expect = (claim, message) => {
 /** The preview server: the built files, served the way a host would serve them. */
 const preview = spawn(
   'npx',
-  ['vite', 'preview', '--port', String(PORT), '--strictPort', 'apps/web'],
+  ['vite', 'preview', '--port', String(PORT), '--strictPort', '--base', BASE, 'apps/web'],
   { stdio: ['ignore', 'pipe', 'inherit'] },
 );
 const ready = new Promise((resolve, reject) => {
@@ -128,7 +142,7 @@ const report = {};
 
 try {
   // 1. The worker.
-  await page.goto(origin, { waitUntil: 'load' });
+  await page.goto(appUrl, { waitUntil: 'load' });
   const registration = await page.evaluate(async () => {
     const found = await navigator.serviceWorker.ready;
     // `ready` resolves as soon as there is an active worker, which may still be
@@ -140,7 +154,7 @@ try {
   });
   report.worker = registration;
   expect(registration.state === 'activated', `worker did not activate: ${registration.state}`);
-  expect(registration.scope === `${origin}/`, `worker scope is ${registration.scope}`);
+  expect(registration.scope === appUrl, `worker scope is ${registration.scope}, wanted ${appUrl}`);
 
   // A second load is the one the worker is present for, and the one that fills
   // the cache: on the first, it was still installing while the assets arrived.
@@ -202,11 +216,17 @@ try {
   report.cached = Object.fromEntries(
     Object.entries(cached).map(([name, paths]) => [name, paths.length]),
   );
-  const shellish = (path) =>
-    path === '/' ||
-    path === '/manifest.webmanifest' ||
-    path.startsWith('/assets/') ||
-    path.startsWith('/icons/');
+  const within = (path) => (path.startsWith(BASE) ? path.slice(BASE.length) : null);
+  const shellish = (path) => {
+    const rest = within(path);
+    return (
+      rest !== null &&
+      (rest === '' ||
+        rest === 'manifest.webmanifest' ||
+        rest.startsWith('assets/') ||
+        rest.startsWith('icons/'))
+    );
+  };
   for (const [name, paths] of Object.entries(cached)) {
     expect(name.startsWith('panorama-shell-'), `an unexpected cache exists: ${name}`);
     for (const path of paths) {
@@ -214,7 +234,9 @@ try {
     }
   }
   expect(
-    Object.values(cached).some((paths) => paths.some((path) => path.startsWith('/assets/'))),
+    Object.values(cached).some((paths) =>
+      paths.some((path) => within(path)?.startsWith('assets/') === true),
+    ),
     'no assets were cached, so an offline launch would have nothing to run',
   );
 

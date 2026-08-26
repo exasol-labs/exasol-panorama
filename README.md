@@ -112,12 +112,20 @@ git push --follow-tags
 ```
 
 Run the workflow by hand from the Actions tab to build and check without
-publishing anything. The zip is the whole product: static files to copy to the
-**root** of an HTTPS origin, with a `SERVING.md` inside saying what a host has to
-get right. The root is not a preference — a service worker's scope is the
-directory it is served from, so a subpath needs base-path support this build does
-not have yet
-([packaging plan](plans/panorama-packaging-plan.md)).
+publishing anything. The zip is the whole product: static files to copy anywhere
+an HTTPS origin will serve them, with a `SERVING.md` inside saying what a host has
+to get right.
+
+**Anywhere** is meant literally. The build is relative, so one artifact installs at
+an origin's root, under a repository name, or several directories deep — the
+manifest's URLs resolve against the manifest, and the service worker takes its
+scope from the directory it was served from. `PANORAMA_BASE=/some/path/` forces
+absolute URLs for a deployment that needs them.
+
+`.github/workflows/pages.yml` deploys it to this repository's GitHub Pages site on
+every change to the application: it builds, drives the built files **mounted under
+a path** to prove the relative build survives one, then pushes them to
+`gh-pages`.
 
 A service worker is registered **only in a build** — in front of the dev server a
 cache is just a way of being shown a file you have already changed.

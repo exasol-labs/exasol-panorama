@@ -18,10 +18,8 @@
  * dropped rather than raised.
  */
 
-export const SERVICE_WORKER_PATH = '/service-worker.js';
-
-/** The scope a Panorama worker claims: the whole origin, which is the whole app. */
-export const SERVICE_WORKER_SCOPE = '/';
+/** The worker's file name, which is also the last part of the path it is served at. */
+export const SERVICE_WORKER_FILE = 'service-worker.js';
 
 interface ServiceWorkerRegistrar {
   register(path: string, options: { readonly scope: string }): Promise<unknown>;
@@ -34,6 +32,17 @@ interface RegistrarHost {
 export interface RegisterShellOptions {
   /** False in development, where a cache in front of the dev server only lies. */
   readonly enabled: boolean;
+  /**
+   * Where the application is served from, ending in a slash — `import.meta.env`'s
+   * `BASE_URL` at the call site.
+   *
+   * A worker can only claim the directory it is served from, so a build hosted
+   * under a path has to register the worker under that path: asking for `/` from
+   * a page at `/panorama/` is refused outright by the browser, and asking for
+   * `/service-worker.js` fetches whatever is at the origin's root, which is
+   * somebody else's application.
+   */
+  readonly base?: string | undefined;
   readonly host?: RegistrarHost | undefined;
   readonly onProblem?: ((error: unknown) => void) | undefined;
 }
@@ -48,8 +57,9 @@ export const registerShell = async (options: RegisterShellOptions): Promise<Shel
   if (!options.enabled) return 'disabled';
   const registrar = options.host?.serviceWorker;
   if (registrar === undefined) return 'unsupported';
+  const base = options.base ?? '/';
   try {
-    await registrar.register(SERVICE_WORKER_PATH, { scope: SERVICE_WORKER_SCOPE });
+    await registrar.register(`${base}${SERVICE_WORKER_FILE}`, { scope: base });
     return 'registered';
   } catch (error) {
     options.onProblem?.(error);
