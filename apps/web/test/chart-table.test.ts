@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ChartMetrics } from '@panorama/renderer';
-import type { EntityId, TableEntity } from '@panorama/core';
+import type { ChartSpec, EntityId, TableEntity } from '@panorama/core';
 import { isChartTable, isTableEntity } from '@panorama/core';
 import { EMPTY_CHART_DRAW_LIST } from '@panorama/chart';
 import { EChartsSurface } from '@panorama/chart-echarts';
@@ -134,6 +134,53 @@ describe('setting a chart up', () => {
     // Turning a dial is not an edit; committing the setup is.
     expect(harness.workspace.core.history.commits.size).toBe(commits);
     expect(chartEntity(harness, tableId).source.spec).toMatchObject({ type: 'bar' });
+  });
+
+  it('reads another box where an arrow says to, and says which', async () => {
+    const { harness, baseId } = await openTable();
+    const { tableId: chartId } = await harness.workspace.openChart(baseId);
+    // A second box for the data set to read: the same relation opened again is
+    // enough, because what is being tested is which box the rows came from.
+    const second = await harness.workspace.openTable({ schema: 'PANORAMA_TEST', table: 'SALES' });
+    harness.workspace.setChartDraft(chartId, {
+      type: 'custom',
+      category: 'COUNTRY',
+      values: ['REVENUE'],
+      aggregate: 'sum',
+      frames: [{ name: 'matrix', kind: 'rows', columns: ['COUNTRY', 'REVENUE'] }],
+      extra: '{"series":[{"type":"heatmap","datasetId":"matrix"}]}',
+    });
+    await harness.settle();
+    // With no arrow it reads the chart's own box: raw rows, not the four
+    // categories the reduction beside it folded them into.
+    const own = harness.workspace
+      .chartState(chartId)
+      ?.frames?.find((frame) => frame.name === 'matrix');
+    expect(own?.from).toBeUndefined();
+    expect(own?.rows).toBeGreaterThan(4);
+
+    const bound = harness.workspace.core.dispatch({
+      type: 'CreateBinding',
+      binding: {
+        id: harness.workspace.core.ids.binding(),
+        kind: 'data',
+        fromId: second,
+        toId: chartId,
+        from: { mode: 'auto' },
+        to: { mode: 'auto' },
+        directed: true,
+        label: 'matrix',
+      },
+    });
+    expect(bound.ok ? 'ok' : bound.error.message).toBe('ok');
+    // Nothing fired the reload: the frame tick notices the arrow is new.
+    harness.workspace.update(16);
+    await harness.settle();
+    const reported = harness.workspace
+      .chartState(chartId)
+      ?.frames?.find((frame) => frame.name === 'matrix');
+    expect(reported?.from).toBe(second);
+    expect(reported?.dimensions).toEqual(['COUNTRY', 'REVENUE']);
   });
 
   it('waits rather than drawing when nothing has been chosen', async () => {
@@ -589,6 +636,7 @@ describe('exporting a chart as a picture', () => {
           polygons: [{ corners: [0, 0, 1, 0, 1, 1, 0, 1], color: [0, 0, 0, 1] }],
           texts: [],
         }),
+        resolution: () => ({ datasets: [], series: [], unresolved: [] }),
         toSvg: () => null,
         dispose: () => undefined,
       },
@@ -781,6 +829,53 @@ describe('pointing at a chart and picking parts of it out', () => {
   });
 });
 
+describe('moving along a series longer than the screen', () => {
+  it('keeps the picture it had while the next window is being read', async () => {
+    // The constraint the whole design answers to does not get an exception for
+    // charts: rows may arrive late and the canvas may not respond late. Blanking
+    // on every step is the one thing a person moving along a series cannot use.
+    const { harness, baseId } = await openTable({ rowCount: 5_000 });
+    const { tableId: chartId } = await harness.workspace.openChart(baseId);
+    const windowed = (from: number): ChartSpec => ({
+      type: 'custom',
+      category: 'COUNTRY',
+      values: ['REVENUE'],
+      aggregate: 'sum',
+      frames: [
+        {
+          name: 'line',
+          kind: 'resample',
+          x: 'ORDER_ID',
+          values: ['REVENUE'],
+          points: 40,
+          window: { by: 'position', from, count: 500 },
+        },
+      ],
+      extra: '{"xAxis":{},"yAxis":{},"series":[{"type":"line","datasetId":"line"}]}',
+    });
+    harness.workspace.setChartDraft(chartId, windowed(0));
+    await harness.settle();
+    const entity = chartEntity(harness, chartId) as TableEntity;
+    const first = harness.workspace.chartFor(entity, 400, 240, metrics);
+    expect(first?.chart.polygons.length ?? 0).toBeGreaterThan(0);
+    const drawn = first?.chart.polygons.length ?? 0;
+
+    // The next window, asked for and not yet arrived.
+    harness.workspace.setChartDraft(chartId, windowed(500));
+    expect(harness.workspace.chartState(chartId)?.status).toBe('loading');
+    const holding = harness.workspace.chartFor(entity, 400, 240, metrics);
+    expect(holding?.chart.polygons.length).toBe(drawn);
+    // And it says what is happening, so nobody reads the old picture as the new.
+    expect(holding?.note).toContain('reading…');
+
+    await harness.settle();
+    const settled = harness.workspace.chartState(chartId);
+    expect(settled?.status).toBe('ready');
+    const page = settled?.frames?.find((frame) => frame.name === 'line');
+    expect(page?.window).toEqual({ by: 'position', from: 500, count: 500 });
+  });
+});
+
 describe('the rows behind a chart selection', () => {
   const laidOut = async (): Promise<{
     harness: ReturnType<typeof createAppHarness>;
@@ -849,6 +944,81 @@ describe('the rows behind a chart selection', () => {
     expect(harness.workspace.viewOfTable(rowsId)?.rowCount ?? 0).toBeGreaterThan(one);
 
     await pick(harness, chartId, []);
+    expect(harness.workspace.viewOfTable(rowsId)?.rowCount).toBe(0);
+  });
+
+  it('opens the rows behind a cell of a written heatmap, keyed as it said', async () => {
+    // The point of the whole stage. Before this, a picked mark meant something
+    // only inside the built-in reduction: a heatmap drew beautifully, picked
+    // cleanly, and had nothing to open the rows behind it with.
+    const { harness, chartId } = await laidOut();
+    harness.workspace.setChartDraft(chartId, {
+      type: 'custom',
+      category: 'COUNTRY',
+      values: ['REVENUE'],
+      aggregate: 'sum',
+      frames: [
+        {
+          name: 'cells',
+          kind: 'rows',
+          columns: ['COUNTRY', 'ORDER_DATE', 'REVENUE'],
+          key: 'COUNTRY',
+          rowLimit: 30,
+        },
+      ],
+      extra: JSON.stringify({
+        xAxis: { type: 'category' },
+        yAxis: { type: 'category' },
+        visualMap: { min: 0, max: 500 },
+        series: [
+          {
+            type: 'heatmap',
+            datasetId: 'cells',
+            encode: { x: 'COUNTRY', y: 'ORDER_DATE', value: 'REVENUE' },
+          },
+        ],
+      }),
+    });
+    await harness.settle();
+    const entity = chartEntity(harness, chartId) as TableEntity;
+    harness.workspace.chartFor(entity, 400, 240, metrics);
+    const rowsId = await harness.workspace.openChartRows(chartId);
+    await harness.settle();
+
+    const mark = firstMark(harness, chartId);
+    // The mark says which data set and which row of it, and the data set says
+    // which column those rows are found by.
+    expect(harness.workspace.markMeaning(chartId, mark)).toMatchObject({
+      frame: 'cells',
+      column: 'COUNTRY',
+    });
+    await pick(harness, chartId, [mark]);
+    expect(harness.workspace.viewOfTable(rowsId)?.rowCount ?? 0).toBeGreaterThan(0);
+  });
+
+  it('picks a cell out and finds nothing to open where nothing keyed the data set', async () => {
+    const { harness, chartId } = await laidOut();
+    harness.workspace.setChartDraft(chartId, {
+      type: 'custom',
+      category: 'COUNTRY',
+      values: ['REVENUE'],
+      aggregate: 'sum',
+      // No key: pickable, not traceable, and it says so rather than guessing that
+      // the first column is the subject.
+      frames: [{ name: 'cells', kind: 'rows', columns: ['COUNTRY', 'REVENUE'], rowLimit: 30 }],
+      extra: JSON.stringify({
+        xAxis: { type: 'category' },
+        yAxis: { type: 'value' },
+        series: [{ type: 'bar', datasetId: 'cells', encode: { x: 'COUNTRY', y: 'REVENUE' } }],
+      }),
+    });
+    await harness.settle();
+    harness.workspace.chartFor(chartEntity(harness, chartId) as TableEntity, 400, 240, metrics);
+    const rowsId = await harness.workspace.openChartRows(chartId);
+    await harness.settle();
+    const mark = firstMark(harness, chartId);
+    expect(harness.workspace.markMeaning(chartId, mark)).toBeNull();
+    await pick(harness, chartId, [mark]);
     expect(harness.workspace.viewOfTable(rowsId)?.rowCount).toBe(0);
   });
 

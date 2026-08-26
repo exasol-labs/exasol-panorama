@@ -2,18 +2,21 @@ import type {
   ChartDrawList,
   ChartMark,
   ChartPolygon,
+  ChartResolution,
   ChartRgba,
   ChartSurface,
   ChartSurfaceInput,
   ChartText,
   ChartTypography,
 } from '@panorama/chart';
+import { EMPTY_CHART_RESOLUTION } from '@panorama/chart';
 import * as echarts from 'echarts';
 import { Path, TSpan, setPlatformAPI } from 'zrender';
 import { parseColour, withOpacity } from './colour.js';
 import type { Affine, ChartPoint } from './geometry.js';
 import { PolylineContext, applyAffine, fillOutline, strokeOutline } from './geometry.js';
 import { chartOption } from './option.js';
+import { resolveOption, seriesDatasets } from './resolution.js';
 
 /**
  * ECharts, used as a layout engine rather than as a renderer.
@@ -241,12 +244,20 @@ const isVisible = (element: ZrElement): boolean =>
 export const extractDrawList = (
   elements: readonly ZrElement[],
   metrics: ChartTypography,
+  /** The data set each series reads, so a mark can say which row it is. */
+  datasets: readonly (string | undefined)[] = [],
 ): ChartDrawList => {
   const polygons: ChartPolygon[] = [];
   const texts: ChartText[] = [];
   for (const element of elements) {
     if (!isVisible(element)) continue;
-    const mark = markOf(element);
+    const found = markOf(element);
+    // Stamped here, where the series index is still in hand: a mark that knows
+    // its data set and row can be traced back to the relation, and one that does
+    // not can only be compared with other marks.
+    const frame = found === undefined ? undefined : datasets[found.series];
+    const mark =
+      found === undefined || frame === undefined ? found : { ...found, frame, row: found.data };
     if (element instanceof TSpan) {
       const text = textFor(element, metrics);
       if (text !== null) texts.push(mark === undefined ? text : { ...text, mark });
@@ -262,9 +273,16 @@ export const extractDrawList = (
       const points: readonly ChartPoint[] = subpath.points.map((point) =>
         applyAffine(element.transform, point),
       );
-      if (paint.fill !== null) polygons.push(...fillOutline(points, paint.fill).map(tag));
+      // Appended one at a time rather than spread in: `push(...pieces)` is a call
+      // with one argument per piece, and a single polyline of a few tens of
+      // thousands of points is a longer argument list than the stack allows.
+      if (paint.fill !== null) {
+        for (const piece of fillOutline(points, paint.fill)) polygons.push(tag(piece));
+      }
       if (paint.stroke !== null) {
-        polygons.push(...strokeOutline(points, paint.width, paint.stroke, subpath.closed).map(tag));
+        for (const piece of strokeOutline(points, paint.width, paint.stroke, subpath.closed)) {
+          polygons.push(tag(piece));
+        }
       }
     }
   }
@@ -284,6 +302,10 @@ export class EChartsSurface implements ChartSurface {
   #chart: EchartsInstance | null = null;
   #typography: ChartTypography | null = null;
   #drawList: ChartDrawList = { polygons: [], texts: [] };
+  /** The option this was laid out for, which is what the report reads. */
+  #option: unknown = null;
+  /** Which data set each series reads, for stamping the marks. */
+  #datasets: readonly (string | undefined)[] = [];
   #width = 0;
   #height = 0;
 
@@ -307,7 +329,10 @@ export class EChartsSurface implements ChartSurface {
     }
     this.#width = width;
     this.#height = height;
-    this.#chart.setOption(chartOption(input.spec, input.data, input.theme, metrics), true);
+    const option = chartOption(input.spec, input.data, input.frames, input.theme, metrics);
+    this.#option = option;
+    this.#datasets = seriesDatasets(option);
+    this.#chart.setOption(option, true);
     this.#read(this.#chart, metrics);
   }
 
@@ -325,6 +350,14 @@ export class EChartsSurface implements ChartSurface {
     return this.#drawList;
   }
 
+  resolution(): ChartResolution {
+    // Counted against the last geometry, so "drew no marks" is a fact about the
+    // picture rather than a guess from the option.
+    return this.#option === null
+      ? EMPTY_CHART_RESOLUTION
+      : resolveOption(this.#option, this.#drawList);
+  }
+
   toSvg(): string | null {
     return this.#chart?.renderToSVGString() ?? null;
   }
@@ -332,10 +365,15 @@ export class EChartsSurface implements ChartSurface {
   dispose(): void {
     this.#chart?.dispose();
     this.#chart = null;
+    this.#option = null;
   }
 
   /** Only ever called with a chart in hand, which is why it takes one. */
   #read(chart: EchartsInstance, metrics: ChartTypography): void {
-    this.#drawList = extractDrawList(chart.getZr().storage.getDisplayList(true), metrics);
+    this.#drawList = extractDrawList(
+      chart.getZr().storage.getDisplayList(true),
+      metrics,
+      this.#datasets,
+    );
   }
 }

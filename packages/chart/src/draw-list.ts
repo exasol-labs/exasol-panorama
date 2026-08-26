@@ -1,5 +1,6 @@
 import type { ChartSpec } from '@panorama/core';
 import type { CellValue } from '@panorama/table';
+import type { ChartFrame } from './frame.js';
 
 /**
  * What a chart hands the renderer.
@@ -30,6 +31,21 @@ export type ChartRgba = readonly [number, number, number, number];
 export interface ChartMark {
   readonly series: number;
   readonly data: number;
+  /**
+   * Where the mark's numbers came from: the data set, and which of its rows.
+   *
+   * Carried rather than worked out afterwards, for the same reason the series and
+   * the data index are: the moment the geometry is read out of a layout is the
+   * only moment anything knows which row a triangle belongs to. With it, a picked
+   * heatmap cell, sankey ribbon or treemap tile can be traced back to the
+   * relation — which is what makes selection and drilling in mean the same thing
+   * for every kind of chart instead of only for the ones built from the reduction.
+   *
+   * Absent where a series reads no data set, which is nothing Panorama builds and
+   * only a written option that carries its own numbers.
+   */
+  readonly frame?: string;
+  readonly row?: number;
 }
 
 export const sameChartMark = (
@@ -111,6 +127,72 @@ export interface ChartTheme {
 }
 
 /**
+ * One data set a chart was offered, as the chart understood it.
+ *
+ * Named because a name is what an author refers to it by, and dimensioned because
+ * a column that is not there is the commonest reason a series draws nothing.
+ */
+export interface ChartDatasetResolution {
+  /** The name the option refers to it by, where it has one. */
+  readonly name?: string;
+  readonly dimensions: readonly string[];
+  readonly rows: number;
+}
+
+/**
+ * What one series turned out to be reading.
+ *
+ * The counterpart of the geometry read-back, for correctness rather than for
+ * layout: geometry says a picture came out the right shape, and this says it came
+ * out of the right numbers. Without it a written option that quietly read the
+ * wrong column draws a chart that is beautiful and false, and nothing at the far
+ * end of a pipe can tell.
+ */
+export interface ChartSeriesResolution {
+  readonly index: number;
+  /** The series type, as the option asked for it. */
+  readonly type: string;
+  /** The data set it read, by name where it had one. */
+  readonly dataset?: string;
+  /** Which dimension each visual channel resolved to: `x`, `y`, `value`, … */
+  readonly encode?: Readonly<Record<string, string>>;
+  /** Marks drawn for it, counted from the geometry rather than from the option. */
+  readonly marks: number;
+}
+
+/**
+ * What a laid-out chart resolved to, in Panorama's own terms.
+ *
+ * `unresolved` is the point of it: a channel naming a dimension its data set has
+ * not got is the failure that looks like success. Reported as sentences because
+ * whoever reads them cannot look at the chart.
+ */
+export interface ChartResolution {
+  readonly datasets: readonly ChartDatasetResolution[];
+  readonly series: readonly ChartSeriesResolution[];
+  readonly unresolved: readonly string[];
+  /**
+   * Whether anything drawn can be pointed at.
+   *
+   * A mark is found in the geometry, so picking works for any series the library
+   * links back to its rows — which is most of them and not all of them. A
+   * calendar heatmap is the known counterexample: its cells are drawn by the
+   * calendar component and carry no row index anywhere in the display list, so
+   * there is nothing to find. That is not something an author can fix by writing
+   * the option differently, so it is reported as a property of the picture rather
+   * than as a mistake in it: a correct chart that is inert.
+   */
+  readonly pickable: boolean;
+}
+
+export const EMPTY_CHART_RESOLUTION: ChartResolution = Object.freeze({
+  datasets: Object.freeze([]),
+  series: Object.freeze([]),
+  unresolved: Object.freeze([]),
+  pickable: false,
+});
+
+/**
  * A chart that can be laid out, pointed at, and read as geometry.
  *
  * Stateful on purpose: the thing that knows a tooltip is open, or a legend entry
@@ -137,6 +219,14 @@ export interface ChartSurface {
    */
   point(x: number | null, y: number | null): void;
   draw(): ChartDrawList;
+  /**
+   * What the last layout read, and what it could not find.
+   *
+   * Asked of whatever laid the chart out, because it is the only thing that knows
+   * how a written option's channels were matched against the data — and a written
+   * option is exactly the case where nobody can see the answer.
+   */
+  resolution(): ChartResolution;
   dispose(): void;
 }
 
@@ -171,6 +261,14 @@ export interface ChartSurfaceInput {
    */
   readonly spec: ChartSpec;
   readonly data: ChartData;
+  /**
+   * The data sets the chart was given, the reduction first.
+   *
+   * Beside `data` rather than instead of it: the assembled charts are built from
+   * the reduction directly, and a written option reads whichever of these it
+   * names. One read of the rows produced both.
+   */
+  readonly frames: readonly ChartFrame[];
   readonly width: number;
   readonly height: number;
   readonly theme: ChartTheme;

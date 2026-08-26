@@ -1,5 +1,12 @@
 import type { Binding, Commit, EntityId, TableEntity } from '@panorama/core';
-import { bindingsOf, derivedFromOf, describeCommand, tableDisplayName } from '@panorama/core';
+import {
+  bindingsOf,
+  derivedFromOf,
+  describeCommand,
+  isChartTable,
+  isCustomChart,
+  tableDisplayName,
+} from '@panorama/core';
 import type { AgentCell, AgentHost } from './host.js';
 import { MAX_COLUMNS, MAX_ROWS } from './catalogue.js';
 import { AgentError } from './schema.js';
@@ -88,11 +95,45 @@ export const chartDrawn = (host: AgentHost, entity: TableEntity): Record<string,
     return { drawn: null, note: 'Not drawn yet — ask again once the canvas has laid it out.' };
   }
   const rounded = (value: number): number => Math.round(value);
+  /**
+   * A column a data set was asked for and the relation has not got.
+   *
+   * Beside the channels a written option names, because they are the same kind of
+   * failure and read the same way. This one used to show up only as a dimension
+   * with nothing in it and no marks drawn — a picture of nothing that said nothing
+   * about why.
+   */
+  const unresolved = [
+    ...drawn.unresolved,
+    ...(host.chartState(entity.id)?.frames ?? []).flatMap((frame) =>
+      (frame.missing ?? []).map(
+        (column) =>
+          `data set "${frame.name}" was asked to read ${column}, which the rows behind it have not got`,
+      ),
+    ),
+  ];
   return {
     drawn: {
       box: { width: rounded(drawn.width), height: rounded(drawn.height) },
       polygons: drawn.polygons,
       labels: drawn.texts,
+      // What it drew it *from*, which is the half a picture cannot show: a series
+      // reading the wrong column lays out perfectly.
+      ...(drawn.datasets.length === 0 ? {} : { datasets: drawn.datasets }),
+      ...(drawn.series.length === 0 ? {} : { series: drawn.series }),
+      // Named failures, first among the things worth reading here: a channel
+      // pointing at a column its data set has not got draws nothing and says
+      // nothing.
+      ...(unresolved.length === 0 ? {} : { unresolved }),
+      // Said outright when it matters: a picture with shapes in it and nothing to
+      // point at is a correct chart that is inert, and no amount of rewriting the
+      // option changes it.
+      ...(drawn.pickable || drawn.polygons === 0
+        ? {}
+        : {
+            pickable: false,
+            note: 'This drew shapes and none of them can be pointed at: the library attaches no row to them, which a calendar heatmap does. Hovering, picking and drilling in cannot reach this picture — every other kind of series can.',
+          }),
       ...(drawn.bounds === null
         ? {}
         : {
@@ -107,6 +148,60 @@ export const chartDrawn = (host: AgentHost, entity: TableEntity): Record<string,
       ...(drawn.clipped.length === 0 ? {} : { clipped: drawn.clipped }),
     },
   };
+};
+
+/**
+ * What the chart is drawing, said in terms of what it actually used.
+ *
+ * The reduction is computed for every chart, including a written one — the rows
+ * are read and grouped and offered as a data set. A written option is free to
+ * ignore all of it, and reporting a sum of a column the option never touched is
+ * not a partial answer but a wrong one: an agent reads the number, believes it,
+ * and reasons from a figure that describes a chart nobody is looking at. So a
+ * written option is told what it was *offered*, and `drawn.series` says what it
+ * took.
+ */
+const chartRead = (host: AgentHost, entity: TableEntity): unknown => {
+  const state = host.chartState(entity.id);
+  if (state === undefined) return null;
+  const written = isChartTable(entity) && isCustomChart(entity.source.spec.type);
+  const data = state.data;
+  if (data === undefined)
+    return { status: state.status, ...(state.error === undefined ? {} : { error: state.error }) };
+  const read = {
+    rows: data.rows,
+    basis: data.basis,
+    ...(data.gathered === undefined ? {} : { gathered: data.gathered }),
+  };
+  // Every data set the chart holds, and the box each came from. `drawn` says what
+  // the option asked for; this says what arrived. A data set that came back empty
+  // and one whose column was misspelt look the same in a picture.
+  //
+  // Left out for a chart with nothing but its own reduction and nothing to say
+  // about it — which is most charts, and the reduction is already described
+  // above. A window or a missing column is something to say.
+  const frames = state.frames ?? [];
+  const worthSaying =
+    frames.length > 1 ||
+    frames.some((frame) => frame.missing !== undefined || frame.window !== undefined);
+  const reads = worthSaying ? { reads: frames } : {};
+  return written
+    ? {
+        status: state.status,
+        // The offer, not the answer.
+        offered: {
+          categories: data.categories.length,
+          series: data.series.map((series) => series.name),
+          ...read,
+        },
+        ...reads,
+        note: 'This option was written, so "offered" is the reduction handed to it as the data set "primary" — not a claim that it used any of it. What the series actually read is in drawn.series.',
+      }
+    : {
+        status: state.status,
+        data: { categories: data.categories, series: data.series, ...read },
+        ...reads,
+      };
 };
 
 /**
@@ -178,9 +273,15 @@ export const entityDetail = (
     // chain of them is what the database sees — which on a long chain is the
     // same base transformation on every single answer.
     if (verbose) detail['composed'] = host.composedQuery(entity.id);
+    // What is filling in each `{{name}}`, and from where. Said on a plain read
+    // rather than only when verbose: a statement whose scope comes from somewhere
+    // else reads very differently depending on what is picked there, and the rows
+    // in front of you are the ones that scope produced.
+    const filters = host.filtersOf(entity.id);
+    if (filters.length > 0) detail['scopedBy'] = filters;
   }
   if (entity.source.kind === 'chart') {
-    detail['chart'] = host.chartState(entity.id) ?? null;
+    detail['chart'] = chartRead(host, entity);
     // What the canvas made of it, on a plain read as well as after setting it up:
     // the geometry settles a frame or two later, and asking again should not mean
     // drawing it again.
@@ -242,7 +343,15 @@ export const sessionJson = (host: AgentHost): Record<string, unknown> => {
     hovered: session.hovered,
     selectedColumns: session.selectedColumns,
     hoveredMark: session.hoveredMark,
-    selectedMarks: session.selectedMarks,
+    // Each with what it stands for, where the picture can say: a mark is a series
+    // and a data index, and "the rows behind Sweden" is what somebody wants to do
+    // with it. A mark whose data set has no key is reported as picked and not
+    // traceable, which is the truth about a heatmap that never said which axis
+    // identifies a row.
+    selectedMarks: session.selectedMarks.map((mark) => {
+      const meaning = host.markMeaning(mark.entityId, mark);
+      return meaning === null ? mark : { ...mark, ...meaning };
+    }),
     hoveredAction: session.hoveredAction,
     pressedAction: session.pressedAction,
     expandedAction: session.expandedAction,

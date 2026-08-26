@@ -401,6 +401,13 @@ describe('what only the application knows', () => {
             },
           ],
         }),
+        resolution: () => ({
+          datasets: [{ name: 'primary', dimensions: ['COUNTRY', 'REVENUE'], rows: 2 }],
+          series: [
+            { index: 0, type: 'bar', dataset: 'primary', encode: { x: 'COUNTRY' }, marks: 2 },
+          ],
+          unresolved: ['series[0].encode.y names PROFIT, which data set "primary" has not got'],
+        }),
         toSvg: () => '<svg/>',
         dispose: () => {},
       },
@@ -436,6 +443,25 @@ describe('what only the application knows', () => {
     // A label that fell outside the box is named, because "a label is clipped"
     // is only actionable if you know which.
     expect(drawn?.clipped).toEqual(['over the edge']);
+    // And the other half of the report: what it drew the picture *from*, taken
+    // from the same layout rather than asked for afterwards — one surface lays
+    // out every chart in turn, so later is a different chart's answer.
+    expect(drawn?.datasets).toEqual([
+      { name: 'primary', dimensions: ['COUNTRY', 'REVENUE'], rows: 2 },
+    ]);
+    expect(drawn?.series).toEqual([
+      { index: 0, type: 'bar', dataset: 'primary', encode: { x: 'COUNTRY' }, marks: 2 },
+    ]);
+    // What a picked mark stands for, through the same host an agent asks: a
+    // series and a data index on their own are not something to act on.
+    expect(host.markMeaning(chartId, { series: 0, data: 0 })).toMatchObject({
+      frame: 'primary',
+      row: 0,
+      column: 'COUNTRY',
+    });
+    expect(drawn?.unresolved).toEqual([
+      'series[0].encode.y names PROFIT, which data set "primary" has not got',
+    ]);
   });
 
   it('renames a box through a command, so the name is in the history', async () => {

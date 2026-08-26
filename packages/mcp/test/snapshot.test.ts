@@ -14,6 +14,69 @@ import type { EntityId } from '@panorama/core';
 
 const host = (): FakeHost => new FakeHost();
 
+describe('what a picked mark stands for', () => {
+  it('says which data set and row it is, and the value the rows behind it share', async () => {
+    const fake = host();
+    const chart = fake.add(
+      makeTable(fake.ids, {
+        source: {
+          kind: 'chart',
+          connectionId: TEST_CONNECTION,
+          spec: CHART_SPEC,
+          label: 'a chart',
+          derivedFrom: 'table:base' as never,
+        },
+        mode: 'result',
+        columns: [],
+      }),
+    );
+    fake.core.dispatchSession({
+      type: 'SetSelectedMarks',
+      targets: [{ entityId: chart.id, series: 0, data: 0 }],
+    });
+    const session = (await runOperation(fake, 'session', {})) as {
+      selectedMarks: readonly Record<string, unknown>[];
+    };
+    // A mark on its own is a series and a data index. What anybody wants from one
+    // is "the rows behind Sweden", which is what this adds.
+    expect(session.selectedMarks[0]).toEqual({
+      entityId: chart.id,
+      series: 0,
+      data: 0,
+      frame: 'primary',
+      row: 0,
+      column: 'COUNTRY',
+      value: 'Germany',
+    });
+  });
+
+  it('reports a mark the picture cannot trace as picked and nothing more', async () => {
+    const fake = host();
+    const chart = fake.add(
+      makeTable(fake.ids, {
+        source: {
+          kind: 'chart',
+          connectionId: TEST_CONNECTION,
+          spec: CHART_SPEC,
+          label: 'a chart',
+          derivedFrom: 'table:base' as never,
+        },
+        mode: 'result',
+        columns: [],
+      }),
+    );
+    fake.meaning = null;
+    fake.core.dispatchSession({
+      type: 'SetSelectedMarks',
+      targets: [{ entityId: chart.id, series: 1, data: 2 }],
+    });
+    const session = (await runOperation(fake, 'session', {})) as {
+      selectedMarks: readonly Record<string, unknown>[];
+    };
+    expect(session.selectedMarks[0]).toEqual({ entityId: chart.id, series: 1, data: 2 });
+  });
+});
+
 describe('what a box looks like written down', () => {
   it('names a query by its statement and what it refines', async () => {
     const fake = host();
@@ -81,7 +144,7 @@ describe('what a box looks like written down', () => {
       unknown
     >;
     expect(detail['source']).toMatchObject({ kind: 'chart', spec: CHART_SPEC });
-    expect(detail['chart']).toEqual({ status: 'ready' });
+    expect(detail['chart']).toMatchObject({ status: 'ready', data: { rows: 3, basis: 'exact' } });
   });
 
   it('says which chart a drill-down table follows', async () => {

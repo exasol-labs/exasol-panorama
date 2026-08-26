@@ -7,11 +7,17 @@ import {
 } from '@panorama/core';
 import type {
   ChartData,
+  ChartDatasetResolution,
   ChartDrawList,
+  ChartFrame,
+  ChartMark,
+  ChartResolution,
+  ChartSeriesResolution,
   ChartSurface,
   ChartTheme,
   ChartTypography,
 } from '@panorama/chart';
+import type { CellValue } from '@panorama/table';
 import { EMPTY_CHART_DRAW_LIST, chartMarkAt, emphasiseChart } from '@panorama/chart';
 import type { ChartFigure } from '@panorama/export';
 import { DEFAULT_TABLE_THEME, chartBoxLayout } from '@panorama/renderer';
@@ -33,15 +39,65 @@ import { DEFAULT_TABLE_THEME, chartBoxLayout } from '@panorama/renderer';
  * answer a question that a pointer comparison answers.
  */
 
+/**
+ * The boxes a chart reads, as one string.
+ *
+ * A string rather than a deep comparison because this is asked once per chart per
+ * frame: a handful of short names, sorted, so the same set of arrows is the same
+ * string whichever order they were drawn in.
+ */
+const sourceKey = (sources: ReadonlyMap<string, EntityId>): string =>
+  [...sources]
+    .sort(([left], [right]) => (left < right ? -1 : 1))
+    .map(([name, from]) => `${name}=${from}`)
+    .join('\u0000');
+
 /** What a chart is drawing, or how far it has got towards it. */
 export type ChartState =
   | { readonly status: 'loading' }
-  | { readonly status: 'ready'; readonly data: ChartData }
+  | {
+      readonly status: 'ready';
+      readonly data: ChartData;
+      /** The reduction and every data set the specification named. */
+      readonly frames: readonly ChartFrame[];
+    }
   /** Nothing chosen yet: the controls are open and waiting. */
   | { readonly status: 'unset' }
   /** Chosen, but the table it reads had no rows to give. */
   | { readonly status: 'empty' }
   | { readonly status: 'failed'; readonly error: string };
+
+/** One data set as it is reported: what it is, where from, and how much of it. */
+export interface ChartFrameReport {
+  readonly name: string;
+  readonly from?: string;
+  readonly dimensions: readonly string[];
+  /** The column a mark drawn from this data set can be traced back by. */
+  readonly key?: string;
+  /** Columns it was asked to read that the relation has not got. */
+  readonly missing?: readonly string[];
+  /** Which part of the relation it is, where it is a part. */
+  readonly window?: unknown;
+  /** Rows walked to find the ones it kept, for a window that had to look. */
+  readonly scanned?: number;
+  readonly rows: number;
+  readonly read: number;
+  readonly basis: string;
+}
+
+/**
+ * A chart's state as an answer rather than as working state.
+ *
+ * The data sets described rather than carried: whoever is asking cannot look at
+ * the picture, and a few thousand values would be an answer nobody can read.
+ */
+export type ChartReport =
+  | Exclude<ChartState, { status: 'ready' }>
+  | {
+      readonly status: 'ready';
+      readonly data: ChartData;
+      readonly frames: readonly ChartFrameReport[];
+    };
 
 /** What the renderer draws for a chart box, and what it says underneath. */
 export interface ChartView {
@@ -51,7 +107,14 @@ export interface ChartView {
   readonly caution?: boolean;
 }
 
-/** What the canvas made of a chart, for whoever cannot look at it. */
+/**
+ * What the canvas made of a chart, for whoever cannot look at it.
+ *
+ * The shape of the picture and the source of its numbers, together: a chart can
+ * be laid out perfectly from the wrong column, and a chart drawn from the right
+ * column can have half its labels outside the box. Neither is visible from the
+ * far end of a pipe, so both are measured.
+ */
 export interface ChartGeometry {
   readonly width: number;
   readonly height: number;
@@ -59,6 +122,11 @@ export interface ChartGeometry {
   readonly texts: number;
   readonly bounds: { x: number; y: number; width: number; height: number } | null;
   readonly clipped: readonly string[];
+  readonly datasets: readonly ChartDatasetResolution[];
+  readonly series: readonly ChartSeriesResolution[];
+  readonly unresolved: readonly string[];
+  /** Whether anything drawn can be pointed at; see `ChartResolution`. */
+  readonly pickable: boolean;
 }
 
 interface ChartLayout {
@@ -66,6 +134,13 @@ interface ChartLayout {
   readonly spec: ChartSpec;
   readonly data: ChartData;
   readonly chart: ChartDrawList;
+  /**
+   * What that layout read, taken at the same moment as the geometry.
+   *
+   * One surface lays out every chart in turn, so asking it later would answer
+   * about whichever chart was drawn last.
+   */
+  readonly resolution: ChartResolution;
   readonly width: number;
   readonly height: number;
   readonly fontFamily: string;
@@ -110,7 +185,11 @@ export const chartDataNote = (data: ChartData): string => {
 
 export interface ChartPicturesOptions {
   /** Reduces a table's rows where they are, next to the result set. */
-  readonly reduce: (tableId: EntityId, spec: ChartSpec) => Promise<ChartData | null>;
+  readonly reduce: (
+    tableId: EntityId,
+    spec: ChartSpec,
+    sources: ReadonlyMap<string, EntityId>,
+  ) => Promise<{ readonly data: ChartData; readonly frames: readonly ChartFrame[] } | null>;
   /** Lays a chart out. Absent in a build with no chart library behind it. */
   readonly surface?: ChartSurface;
   readonly theme: () => ChartTheme;
@@ -128,6 +207,8 @@ export interface ChartPicturesOptions {
 export class ChartPictures {
   readonly #options: ChartPicturesOptions;
   readonly #states = new Map<EntityId, ChartState>();
+  /** The boxes each chart was last read against, as one comparable string. */
+  readonly #sources = new Map<EntityId, string>();
   readonly #layouts = new Map<EntityId, ChartLayout>();
   readonly #emphasis = new Map<EntityId, Emphasis>();
 
@@ -143,6 +224,7 @@ export class ChartPictures {
   /** Forgets everything about a chart, for a box that has been closed. */
   forget(tableId: EntityId): void {
     this.#states.delete(tableId);
+    this.#sources.delete(tableId);
     this.#layouts.delete(tableId);
     this.#emphasis.delete(tableId);
   }
@@ -154,13 +236,32 @@ export class ChartPictures {
    * chart of a followed key or of a written query is a chart of what that table
    * is showing, not of the relation underneath it.
    */
-  async load(tableId: EntityId, baseId: EntityId, spec: ChartSpec): Promise<void> {
+  /**
+   * Whether a chart is reading the boxes it is supposed to be reading.
+   *
+   * The arrows are document state and anything can draw or cut one — a pointer,
+   * an agent, an undo — so this is asked every frame rather than fired from
+   * whatever changed them. The same reason the drill-down tables are derived from
+   * the selection: one place decides what should be loaded, and it cannot be
+   * bypassed by a new gesture.
+   */
+  readsFrom(tableId: EntityId, sources: ReadonlyMap<string, EntityId>): boolean {
+    return this.#sources.get(tableId) === sourceKey(sources);
+  }
+
+  async load(
+    tableId: EntityId,
+    baseId: EntityId,
+    spec: ChartSpec,
+    sources: ReadonlyMap<string, EntityId> = new Map(),
+  ): Promise<void> {
     if (!isChartSpecDrawable(spec)) {
       this.#states.set(tableId, { status: 'unset' });
       this.#options.onChange?.();
       return;
     }
     this.#states.set(tableId, { status: 'loading' });
+    this.#sources.set(tableId, sourceKey(sources));
     const settle = (state: ChartState): void => {
       // Only if this is still the specification being asked about: a control
       // moved again while the last answer was in flight should not be
@@ -170,8 +271,12 @@ export class ChartPictures {
       this.#options.onChange?.();
     };
     try {
-      const data = await this.#options.reduce(baseId, spec);
-      settle(data === null ? { status: 'empty' } : { status: 'ready', data });
+      const reduced = await this.#options.reduce(baseId, spec, sources);
+      settle(
+        reduced === null
+          ? { status: 'empty' }
+          : { status: 'ready', data: reduced.data, frames: reduced.frames },
+      );
     } catch (error) {
       settle({
         status: 'failed',
@@ -196,6 +301,17 @@ export class ChartPictures {
   ): ChartView | undefined {
     const state = this.#states.get(tableId);
     if (state === undefined || state.status !== 'ready') {
+      // The picture it had, while the next one is in flight.
+      //
+      // The constraint the whole design answers to does not get an exception for
+      // charts: rows may arrive late and the canvas may not respond late. Moving
+      // along a series would otherwise blank the chart on every step, which is
+      // the one thing a person moving along it cannot use. The note says what is
+      // happening, so nobody mistakes the old picture for the new one.
+      const held = state?.status === 'loading' ? this.#layouts.get(tableId) : undefined;
+      if (held !== undefined) {
+        return { chart: this.#emphasised(tableId), note: `${chartDataNote(held.data)} · reading…` };
+      }
       return {
         chart: EMPTY_CHART_DRAW_LIST,
         note: noteFor(state),
@@ -215,6 +331,7 @@ export class ChartPictures {
       surface.update({
         spec,
         data: state.data,
+        frames: state.frames,
         width,
         height,
         theme: this.#options.theme(),
@@ -224,6 +341,7 @@ export class ChartPictures {
         spec,
         data: state.data,
         chart: surface.draw(),
+        resolution: surface.resolution(),
         width,
         height,
         fontFamily: typography.fontFamily,
@@ -272,12 +390,36 @@ export class ChartPictures {
     return chart;
   }
 
+  /**
+   * What a picked mark stands for: a column, and the value of it.
+   *
+   * One rule for every kind of chart. A mark stamped with a data set is traced
+   * through that data set's own keys; a mark from a series carrying its own
+   * numbers — which is every chart the controls assemble — is traced through the
+   * reduction's, where the data index *is* the category. Both end at the value a
+   * predicate can be built from rather than at the label an axis was written
+   * with, because `String(7)` is a fine label and cannot be compared with a
+   * number.
+   *
+   * `null` where the data set has no key to trace by: a heatmap that never said
+   * which of its axes identifies a row can still be pointed at and picked out,
+   * and there is nothing to open the rows behind it with. Said rather than
+   * guessed at.
+   */
+  keyFor(tableId: EntityId, mark: ChartMark): { column: string; value: CellValue } | null {
+    const state = this.#states.get(tableId);
+    if (state?.status !== 'ready') return null;
+    const frame =
+      mark.frame === undefined
+        ? state.frames[0]
+        : state.frames.find((entry) => entry.name === mark.frame);
+    if (frame?.key === undefined || frame.keys === undefined) return null;
+    const value = frame.keys[mark.row ?? mark.data];
+    return value === undefined ? null : { column: frame.key, value };
+  }
+
   /** The piece of a chart at a point in the box's own coordinates. */
-  markAt(
-    entity: TableEntity,
-    localX: number,
-    localY: number,
-  ): { readonly series: number; readonly data: number } | null {
+  markAt(entity: TableEntity, localX: number, localY: number): ChartMark | null {
     const layout = this.#layouts.get(entity.id);
     if (layout === undefined) return null;
     const box = chartBoxLayout(
@@ -321,18 +463,37 @@ export class ChartPictures {
   geometry(tableId: EntityId): ChartGeometry | null {
     const laid = this.#layouts.get(tableId);
     if (laid === undefined) return null;
-    const { width, height, chart } = laid;
-    const xs: number[] = [];
-    const ys: number[] = [];
+    const { width, height, chart, resolution } = laid;
+    /**
+     * Walked rather than spread.
+     *
+     * `Math.min(...xs)` reads beautifully and is a call with one argument per
+     * coordinate: past about thirty thousand shapes the argument list is longer
+     * than the stack and it throws `Maximum call stack size exceeded`. A chart of
+     * twelve thousand polylines is well past that — and because the failure was in
+     * the *report* rather than in the drawing, the picture appeared and every
+     * attempt to ask about it failed, which read as a box that had gone bad.
+     */
+    let left = Number.POSITIVE_INFINITY;
+    let top = Number.POSITIVE_INFINITY;
+    let right = Number.NEGATIVE_INFINITY;
+    let bottom = Number.NEGATIVE_INFINITY;
+    let seen = 0;
+    const note = (x: number, y: number): void => {
+      seen += 1;
+      if (x < left) left = x;
+      if (x > right) right = x;
+      if (y < top) top = y;
+      if (y > bottom) bottom = y;
+    };
     for (const polygon of chart.polygons) {
       for (let index = 0; index < polygon.corners.length; index += 2) {
-        xs.push(polygon.corners[index] as number);
-        ys.push(polygon.corners[index + 1] as number);
+        note(polygon.corners[index] as number, polygon.corners[index + 1] as number);
       }
     }
     for (const run of chart.texts) {
-      xs.push(run.x, run.x + run.width);
-      ys.push(run.y, run.y + run.height);
+      note(run.x, run.y);
+      note(run.x + run.width, run.y + run.height);
     }
     const past = (value: number, limit: number): boolean => value < -0.5 || value > limit + 0.5;
     return {
@@ -340,15 +501,7 @@ export class ChartPictures {
       height,
       polygons: chart.polygons.length,
       texts: chart.texts.length,
-      bounds:
-        xs.length === 0
-          ? null
-          : {
-              x: Math.min(...xs),
-              y: Math.min(...ys),
-              width: Math.max(...xs) - Math.min(...xs),
-              height: Math.max(...ys) - Math.min(...ys),
-            },
+      bounds: seen === 0 ? null : { x: left, y: top, width: right - left, height: bottom - top },
       // Named, because "a label is clipped" is only actionable if you know which.
       clipped: chart.texts
         .filter(
@@ -359,6 +512,10 @@ export class ChartPictures {
             past(run.y + run.height, height),
         )
         .map((run) => run.text),
+      datasets: resolution.datasets,
+      series: resolution.series,
+      unresolved: resolution.unresolved,
+      pickable: resolution.pickable,
     };
   }
 }

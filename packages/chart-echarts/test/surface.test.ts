@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ChartSpec, ChartType } from '@panorama/core';
-import type { ChartData, ChartTheme, ChartTypography } from '@panorama/chart';
-import { DEFAULT_CHART_THEME } from '@panorama/chart';
+import type { ChartData, ChartFrame, ChartTheme, ChartTypography } from '@panorama/chart';
+import { DEFAULT_CHART_THEME, reductionFrame } from '@panorama/chart';
 import { EChartsSurface, chartOption, mergeOption } from '@panorama/chart-echarts';
 
 /**
@@ -34,6 +34,17 @@ const spec = (overrides: Partial<ChartSpec> = {}): ChartSpec => ({
   ...overrides,
 });
 
+/** The data sets a chart is given: its own reduction, as the worker builds it. */
+const framesOf = (
+  chartSpec: ChartSpec,
+  chartData: ChartData,
+  extra: readonly ChartFrame[] = [],
+): readonly ChartFrame[] => [reductionFrame(chartSpec, chartData), ...extra];
+
+/** The option, with the data sets the worker would have built to go with it. */
+const optionFor = (chartSpec: ChartSpec, chartData: ChartData): Record<string, unknown> =>
+  chartOption(chartSpec, chartData, framesOf(chartSpec, chartData), theme, typography);
+
 const laid = (
   specOverrides: Partial<ChartSpec> = {},
   dataOverrides: Partial<ChartData> = {},
@@ -41,9 +52,12 @@ const laid = (
   height = 274,
 ) => {
   const surface = new EChartsSurface();
+  const laidSpec = spec(specOverrides);
+  const laidData = data(dataOverrides);
   surface.update({
-    spec: spec(specOverrides),
-    data: data(dataOverrides),
+    spec: laidSpec,
+    data: laidData,
+    frames: framesOf(laidSpec, laidData),
     width,
     height,
     theme,
@@ -125,9 +139,25 @@ describe('laying a chart out through ECharts', () => {
 
   it('re-lays out for a new size without being rebuilt', () => {
     const surface = new EChartsSurface();
-    surface.update({ spec: spec(), data: data(), width: 400, height: 260, theme, typography });
+    surface.update({
+      spec: spec(),
+      data: data(),
+      frames: framesOf(spec(), data()),
+      width: 400,
+      height: 260,
+      theme,
+      typography,
+    });
     const wide = surface.draw().polygons.length;
-    surface.update({ spec: spec(), data: data(), width: 200, height: 160, theme, typography });
+    surface.update({
+      spec: spec(),
+      data: data(),
+      frames: framesOf(spec(), data()),
+      width: 200,
+      height: 160,
+      theme,
+      typography,
+    });
     const narrow = surface.draw();
     surface.dispose();
     expect(wide).toBeGreaterThan(0);
@@ -137,11 +167,20 @@ describe('laying a chart out through ECharts', () => {
 
   it('does not resize when the box has not changed', () => {
     const surface = new EChartsSurface();
-    surface.update({ spec: spec(), data: data(), width: 400, height: 260, theme, typography });
+    surface.update({
+      spec: spec(),
+      data: data(),
+      frames: framesOf(spec(), data()),
+      width: 400,
+      height: 260,
+      theme,
+      typography,
+    });
     const first = surface.draw().polygons.length;
     surface.update({
       spec: spec({ type: 'line' }),
       data: data(),
+      frames: framesOf(spec({ type: 'line' }), data()),
       width: 400,
       height: 260,
       theme,
@@ -157,7 +196,15 @@ describe('laying a chart out through ECharts', () => {
 
   it('takes a pointer position and lets go of it again', () => {
     const surface = new EChartsSurface();
-    surface.update({ spec: spec(), data: data(), width: 400, height: 260, theme, typography });
+    surface.update({
+      spec: spec(),
+      data: data(),
+      frames: framesOf(spec(), data()),
+      width: 400,
+      height: 260,
+      theme,
+      typography,
+    });
     surface.point(120, 100);
     expect(surface.draw().polygons.length).toBeGreaterThan(0);
     surface.point(null, null);
@@ -180,7 +227,13 @@ describe('the option handed to ECharts', () => {
     specOverrides: Partial<ChartSpec> = {},
     dataOverrides: Partial<ChartData> = {},
   ): Record<string, unknown> =>
-    chartOption(spec(specOverrides), data(dataOverrides), theme, typography);
+    chartOption(
+      spec(specOverrides),
+      data(dataOverrides),
+      framesOf(spec(specOverrides), data(dataOverrides)),
+      theme,
+      typography,
+    );
 
   it('turns animation off, because the geometry is read once per change', () => {
     expect(option()['animation']).toBe(false);
@@ -282,12 +335,94 @@ describe('the option handed to ECharts', () => {
   });
 });
 
+describe('what a drawn mark came from', () => {
+  it('stamps every mark with the data set and the row it belongs to', () => {
+    // The point of the whole stage: a heatmap cell drawn from a written option
+    // knows which row of which data set it is, so it can be traced back to the
+    // relation exactly as a bar of an assembled chart can.
+    const cells: readonly ChartFrame[] = [
+      {
+        name: 'cells',
+        dimensions: ['BAND', 'TYPE', 'PCT'],
+        rows: [
+          ['A', 'motor', 4],
+          ['B', 'motor', 6],
+          ['A', 'home', 2],
+        ],
+        key: 'BAND',
+        keys: ['A', 'B', 'A'],
+        read: 3,
+        of: 3,
+        basis: 'exact',
+      },
+    ];
+    const chartSpec = spec({
+      type: 'custom',
+      extra: JSON.stringify({
+        xAxis: { type: 'category' },
+        yAxis: { type: 'category' },
+        // A heatmap refuses to draw without one, which is ECharts' own rule.
+        visualMap: { min: 0, max: 10 },
+        series: [
+          {
+            type: 'heatmap',
+            datasetId: 'cells',
+            encode: { x: 'BAND', y: 'TYPE', value: 'PCT' },
+          },
+        ],
+      }),
+    });
+    const chartData = data();
+    const surface = new EChartsSurface();
+    surface.update({
+      spec: chartSpec,
+      data: chartData,
+      frames: framesOf(chartSpec, chartData, cells),
+      width: 420,
+      height: 274,
+      theme,
+      typography,
+    });
+    const list = surface.draw();
+    surface.dispose();
+    const marks = list.polygons.flatMap((polygon) =>
+      polygon.mark === undefined ? [] : [polygon.mark],
+    );
+    expect(marks.length).toBeGreaterThan(0);
+    for (const mark of marks) {
+      expect(mark.frame).toBe('cells');
+      // The row is the data index within that data set, which is what makes it
+      // traceable: `keys[row]` is the value the rows behind it are found by.
+      expect(mark.row).toBe(mark.data);
+      expect(mark.row).toBeLessThan(3);
+    }
+    expect(new Set(marks.map((mark) => mark.row)).size).toBe(3);
+  });
+
+  it('leaves a series carrying its own numbers unstamped', () => {
+    // Every chart the controls assemble: the series hold their values, so there
+    // is no data set to name, and the reduction is where the trace goes instead.
+    const list = laid();
+    const marks = list.polygons.flatMap((polygon) =>
+      polygon.mark === undefined ? [] : [polygon.mark],
+    );
+    expect(marks.length).toBeGreaterThan(0);
+    expect(marks.every((mark) => mark.frame === undefined)).toBe(true);
+  });
+});
+
 describe('the settings the controls produce', () => {
   const option = (
     specOverrides: Partial<ChartSpec> = {},
     dataOverrides: Partial<ChartData> = {},
   ): Record<string, unknown> =>
-    chartOption(spec(specOverrides), data(dataOverrides), theme, typography);
+    chartOption(
+      spec(specOverrides),
+      data(dataOverrides),
+      framesOf(spec(specOverrides), data(dataOverrides)),
+      theme,
+      typography,
+    );
   const axes = (
     specOverrides: Partial<ChartSpec> = {},
   ): { x: Record<string, unknown>; y: Record<string, unknown> } => {
@@ -372,7 +507,7 @@ describe('the settings the controls produce', () => {
   it('shows a legend when useful, always, or never', () => {
     const shown = (specOverrides: Partial<ChartSpec>, count: number): boolean =>
       (
-        chartOption(
+        optionFor(
           spec(specOverrides),
           data({
             series: Array.from({ length: count }, (_, index) => ({
@@ -380,8 +515,6 @@ describe('the settings the controls produce', () => {
               values: [1, 2, 3],
             })),
           }),
-          theme,
-          typography,
         )['legend'] as { show: boolean }
       ).show;
     expect(shown({}, 1)).toBe(false);
@@ -399,7 +532,7 @@ describe('the settings the controls produce', () => {
 
 describe('the escape hatch, merged over the controls', () => {
   it('changes one property without throwing away its neighbours', () => {
-    const built = chartOption(
+    const built = optionFor(
       { ...spec(), extra: '{"legend":{"top":40}}' },
       data({
         series: [
@@ -407,8 +540,6 @@ describe('the escape hatch, merged over the controls', () => {
           { name: 'b', values: [2] },
         ],
       }),
-      theme,
-      typography,
     );
     const legend = built['legend'] as { show: boolean; top: number };
     expect(legend.top).toBe(40);
@@ -419,7 +550,7 @@ describe('the escape hatch, merged over the controls', () => {
   it('recolours one series without replacing the list of them', () => {
     // The commonest override there is, and it only works if lists merge by
     // position rather than wholesale.
-    const built = chartOption(
+    const built = optionFor(
       { ...spec(), extra: '{"series":[{"itemStyle":{"color":"#ff0000"}}]}' },
       data({
         series: [
@@ -427,8 +558,6 @@ describe('the escape hatch, merged over the controls', () => {
           { name: 'b', values: [2] },
         ],
       }),
-      theme,
-      typography,
     );
     const list = built['series'] as readonly Record<string, unknown>[];
     expect(list).toHaveLength(2);
@@ -440,7 +569,13 @@ describe('the escape hatch, merged over the controls', () => {
   });
 
   it('draws as the controls asked when the extra settings do not parse', () => {
-    const built = chartOption({ ...spec(), extra: '{oops' }, data(), theme, typography);
+    const built = chartOption(
+      { ...spec(), extra: '{oops' },
+      data(),
+      framesOf(spec(), data()),
+      theme,
+      typography,
+    );
     expect(built['animation']).toBe(false);
     expect((built['series'] as readonly unknown[]).length).toBe(1);
   });
@@ -466,7 +601,13 @@ describe('the escape hatch, merged over the controls', () => {
 
 describe('a chart whose option was written', () => {
   const custom = (extra: string, dataOverrides: Partial<ChartData> = {}): Record<string, unknown> =>
-    chartOption({ ...spec(), type: 'custom', extra }, data(dataOverrides), theme, typography);
+    chartOption(
+      { ...spec(), type: 'custom', extra },
+      data(dataOverrides),
+      framesOf({ ...spec(), type: 'custom', extra }, data(dataOverrides)),
+      theme,
+      typography,
+    );
 
   it('is the option that was written, and nothing of ours over the top', () => {
     const built = custom('{"series":[{"type":"radar","data":[{"value":[1,2,3]}]}],"radar":{}}');
@@ -495,28 +636,31 @@ describe('a chart whose option was written', () => {
       ],
     });
     // The shape ECharts' own dataset takes, so a written option reaches the data
-    // through `encode` and `dimensions` rather than through anything of ours.
-    expect(built['dataset']).toEqual({
-      source: [
-        ['COUNTRY', 'REVENUE', 'ORDERS'],
-        ['Sweden', 10, 1],
-        ['France', 20, null],
-      ],
-    });
+    // through `encode` and `dimensions` rather than through anything of ours —
+    // and the columns are *declared* rather than left as a header row, which is
+    // what lets an `encode` be checked against them.
+    expect(built['dataset']).toEqual([
+      {
+        id: 'primary',
+        dimensions: ['COUNTRY', 'REVENUE', 'ORDERS'],
+        source: [
+          ['Sweden', 10, 1],
+          ['France', 20, null],
+        ],
+      },
+    ]);
   });
 
   it('names the first column something when no column was chosen', () => {
-    const built = chartOption(
+    const built = optionFor(
       { type: 'custom', category: '', values: [], aggregate: 'count', extra: '{"series":[]}' },
       data({ categories: ['a'], series: [] }),
-      theme,
-      typography,
     );
-    expect((built['dataset'] as { source: unknown[][] }).source[0]).toEqual(['category']);
+    expect((built['dataset'] as { dimensions: unknown[] }[])[0]?.dimensions).toEqual(['category']);
   });
 
   it('gives a cross-tabulation as triples, which is what a heatmap reads', () => {
-    const built = chartOption(
+    const built = optionFor(
       { ...spec(), type: 'custom', breakdown: 'DECILE', extra: '{"series":[{"type":"heatmap"}]}' },
       data({
         categories: ['Sweden', 'France'],
@@ -525,24 +669,25 @@ describe('a chart whose option was written', () => {
           { name: 'bottom', values: [1, null] },
         ],
       }),
-      theme,
-      typography,
     );
     // There is no arrangement of columns that is a triple, which is the whole
     // reason a breakdown exists.
-    expect(built['dataset']).toEqual({
-      source: [
-        ['COUNTRY', 'DECILE', 'REVENUE'],
-        ['Sweden', 'top', 10],
-        ['France', 'top', 20],
-        ['Sweden', 'bottom', 1],
-        ['France', 'bottom', null],
-      ],
-    });
+    expect(built['dataset']).toEqual([
+      {
+        id: 'primary',
+        dimensions: ['COUNTRY', 'DECILE', 'REVENUE'],
+        source: [
+          ['Sweden', 'top', 10],
+          ['France', 'top', 20],
+          ['Sweden', 'bottom', 1],
+          ['France', 'bottom', null],
+        ],
+      },
+    ]);
   });
 
   it('names the measure "rows" in the triples when it is a count', () => {
-    const built = chartOption(
+    const built = optionFor(
       {
         ...spec(),
         type: 'custom',
@@ -552,14 +697,136 @@ describe('a chart whose option was written', () => {
         extra: '{"series":[]}',
       },
       data({ categories: ['a'], series: [{ name: 'top', values: [3] }] }),
-      theme,
-      typography,
     );
-    expect((built['dataset'] as { source: unknown[][] }).source[0]).toEqual([
+    expect((built['dataset'] as { dimensions: unknown[] }[])[0]?.dimensions).toEqual([
       'COUNTRY',
       'DECILE',
       'rows',
     ]);
+  });
+
+  it('offers every data set the specification named, by name', () => {
+    const withFrames: readonly ChartFrame[] = [
+      {
+        name: 'matrix',
+        dimensions: ['BAND', 'TYPE', 'PCT'],
+        rows: [['A', 'motor', 4]],
+        read: 1,
+        of: 1,
+        basis: 'exact',
+      },
+    ];
+    const chartSpec = spec({ type: 'custom', extra: '{"series":[{"type":"heatmap"}]}' });
+    const chartData = data();
+    const built = chartOption(
+      chartSpec,
+      chartData,
+      framesOf(chartSpec, chartData, withFrames),
+      theme,
+      typography,
+    );
+    // The reduction first, under the name an option that says nothing will find,
+    // and then the ones asked for — each with its columns declared, which is what
+    // an `encode` is checked against.
+    expect((built['dataset'] as { id: string }[]).map((entry) => entry.id)).toEqual([
+      'primary',
+      'matrix',
+    ]);
+    expect((built['dataset'] as { dimensions: unknown }[])[1]?.dimensions).toEqual([
+      'BAND',
+      'TYPE',
+      'PCT',
+    ]);
+  });
+
+  it('puts a number a data set worked out where the option asked for it', () => {
+    // The one piece of grammar Panorama adds, and only because ECharts has no
+    // equivalent: a reference line's value is a literal, so a base rate typed
+    // into one goes out of date the moment the query behind it changes.
+    const withScalar: readonly ChartFrame[] = [
+      {
+        name: 'baserate',
+        dimensions: ['PCT'],
+        rows: [[4.91]],
+        read: 100,
+        of: 100,
+        basis: 'exact',
+      },
+    ];
+    const chartSpec = spec({
+      type: 'custom',
+      extra: '{"series":[{"type":"line","markLine":{"data":[{"yAxis":{"$param":"baserate"}}]}}]}',
+    });
+    const chartData = data();
+    const built = chartOption(
+      chartSpec,
+      chartData,
+      framesOf(chartSpec, chartData, withScalar),
+      theme,
+      typography,
+    );
+    const series = built['series'] as { markLine: { data: { yAxis: unknown }[] } }[];
+    expect(series[0]?.markLine.data[0]?.yAxis).toBe(4.91);
+  });
+
+  it('resolves a number for an assembled chart too, through the escape hatch', () => {
+    const withScalar: readonly ChartFrame[] = [
+      { name: 'target', dimensions: ['T'], rows: [[12]], read: 1, of: 1, basis: 'exact' },
+    ];
+    const chartSpec = spec({
+      extra: '{"series":[{"markLine":{"data":[{"yAxis":{"$param":"target"}}]}}]}',
+    });
+    const chartData = data();
+    const built = chartOption(
+      chartSpec,
+      chartData,
+      framesOf(chartSpec, chartData, withScalar),
+      theme,
+      typography,
+    );
+    const series = built['series'] as { markLine: { data: { yAxis: unknown }[] } }[];
+    expect(series[0]?.markLine.data[0]?.yAxis).toBe(12);
+    // And the data sets are there beside it, unused by the series it built.
+    expect((built['dataset'] as { id: string }[]).map((entry) => entry.id)).toEqual([
+      'primary',
+      'target',
+    ]);
+  });
+
+  it('leaves a number nothing answers for exactly where it was', () => {
+    // Rather than substituting a nought, which would draw a line at zero that
+    // somebody then believes. The marker left behind is what the resolution
+    // report names.
+    const chartSpec = spec({
+      type: 'custom',
+      extra: '{"series":[{"type":"line","markLine":{"data":[{"yAxis":{"$param":"nobody"}}]}}]}',
+    });
+    const chartData = data();
+    const built = chartOption(
+      chartSpec,
+      chartData,
+      framesOf(chartSpec, chartData),
+      theme,
+      typography,
+    );
+    const series = built['series'] as { markLine: { data: { yAxis: unknown }[] } }[];
+    expect(series[0]?.markLine.data[0]?.yAxis).toEqual({ $param: 'nobody' });
+  });
+
+  it('leaves a scalar that reduced to nothing alone as well', () => {
+    const empty: readonly ChartFrame[] = [
+      { name: 'base', dimensions: ['PCT'], rows: [[null]], read: 3, of: 3, basis: 'exact' },
+    ];
+    const chartSpec = spec({ type: 'custom', extra: '{"title":{"text":{"$param":"base"}}}' });
+    const chartData = data();
+    const built = chartOption(
+      chartSpec,
+      chartData,
+      framesOf(chartSpec, chartData, empty),
+      theme,
+      typography,
+    );
+    expect((built['title'] as { text: unknown }).text).toEqual({ $param: 'base' });
   });
 
   it('lets the option have the dataset if it wants a different one', () => {
@@ -579,11 +846,9 @@ describe('a chart whose option was written', () => {
     expect(built['animation']).toBe(false);
     expect(built['tooltip']).toEqual({ show: false });
     // And the same for an assembled chart that asked for them.
-    const assembled = chartOption(
+    const assembled = optionFor(
       { ...spec(), extra: '{"animation":true,"tooltip":{"show":true}}' },
       data(),
-      theme,
-      typography,
     );
     expect(assembled['animation']).toBe(false);
     expect(assembled['tooltip']).toEqual({ show: false });

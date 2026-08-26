@@ -1,13 +1,18 @@
-import type { ChartSpec, EntityId } from '@panorama/core';
-import { DEFAULT_CHART_ROWS } from '@panorama/core';
-import { aggregateChart } from '@panorama/chart';
-import type { ResultChunk, TableDataSession, TableDataSource } from '@panorama/table';
+import type { ChartSpec, ColumnDataType, EntityId } from '@panorama/core';
+import type { ChartFrameSpec, ChartWindowSpec } from '@panorama/core';
+import { DEFAULT_CHART_ROWS, MAX_FRAME_ROWS, chartFramesOf } from '@panorama/core';
+import type { ChartFrame, ChartFrameInput } from '@panorama/chart';
+import { aggregateChart, buildFrame, reductionFrame } from '@panorama/chart';
+import type { CellValue, ResultChunk, TableDataSession, TableDataSource } from '@panorama/table';
 import {
   DEFAULT_BLOCK_SIZE,
   FetchScheduler,
   TableDataError,
   blockStartRow,
+  buildVector,
+  cellValue,
   chunkTransferables,
+  createResultChunk,
 } from '@panorama/table';
 import type { ExasolConnection, ExasolCredentials } from '@panorama/exasol';
 import { ExasolTableDataSource } from '@panorama/exasol';
@@ -26,6 +31,75 @@ import type {
 
 /** Rows per protocol fetch while gathering a chart. */
 const CHART_FETCH_ROWS = 4_096;
+
+/**
+ * Rows a value window will walk before it gives up looking.
+ *
+ * A range read on a relation in that order stops as soon as it passes the bound;
+ * on a relation in another order there is nothing to stop it, and walking a
+ * billion rows to draw a line is the thing this whole design exists to avoid. So
+ * it stops, and the answer says it sampled.
+ */
+const MAX_WINDOW_SCAN = 200_000;
+
+/**
+ * The rows of a chunk whose bound column is inside the range, and whether the
+ * chunk ran past it.
+ *
+ * `null` when none of them are, so a chunk entirely before the range costs
+ * nothing. Passing the upper bound is what lets a read in that order stop.
+ */
+const withinRange = (
+  chunk: ResultChunk,
+  columnIndex: number,
+  low: CellValue,
+  high: CellValue,
+  types: readonly ColumnDataType[],
+): { chunk: ResultChunk; passed: boolean } | null => {
+  const empty = createResultChunk(chunk.startRow, 0, []);
+  const vector = columnIndex < 0 ? undefined : chunk.columns[columnIndex];
+  // No such column: nothing can be said to be in range, and treating every row
+  // as inside it would be a lie. Reported as a data set with nothing in it.
+  if (vector === undefined) return { chunk: empty, passed: true };
+  const rows: number[] = [];
+  let passed = false;
+  for (let row = 0; row < chunk.rowCount; row += 1) {
+    const value = cellValue(vector, row);
+    if (value === null) continue;
+    if (compareCells(value, low) < 0) continue;
+    if (compareCells(value, high) > 0) {
+      passed = true;
+      continue;
+    }
+    rows.push(row);
+  }
+  if (rows.length === 0) return passed ? { chunk: empty, passed } : null;
+  return {
+    chunk: createResultChunk(
+      chunk.startRow,
+      rows.length,
+      chunk.columns.map((column, index) =>
+        buildVector(
+          types[index] as ColumnDataType,
+          rows.map((row) => cellValue(column, row)),
+        ),
+      ),
+    ),
+    passed,
+  };
+};
+
+/** Two cells, ordered the way the column would order them. */
+const compareCells = (left: CellValue, right: CellValue): number => {
+  if (typeof left === 'number' && typeof right === 'number') return left - right;
+  const a = String(left);
+  const b = String(right);
+  return a < b ? -1 : a > b ? 1 : 0;
+};
+
+/** The window a data set asked for, where its kind can have one. */
+const windowOf = (frame: ChartFrameSpec): ChartWindowSpec | undefined =>
+  frame.kind === 'rows' || frame.kind === 'resample' ? frame.window : undefined;
 
 /**
  * The worker half.
@@ -151,7 +225,7 @@ export class DataWorker {
       case 'summariseColumn':
         return this.#summarise(message.requestId, message.tableId, message.column);
       case 'chartData':
-        return this.#chartData(message.requestId, message.tableId, message.spec);
+        return this.#chartData(message.requestId, message.tableId, message.spec, message.sources);
       case 'cancelExport':
         this.#exports.get(message.exportId)?.controller.abort();
         this.#reply(message.requestId, null);
@@ -244,36 +318,152 @@ export class DataWorker {
    * whole — but "usually" is not "always", so the answer carries its own basis
    * and the chart says so on its face.
    */
-  async #chartData(requestId: number, tableId: EntityId, spec: ChartSpec): Promise<void> {
+  async #chartData(
+    requestId: number,
+    tableId: EntityId,
+    spec: ChartSpec,
+    sources: Readonly<Record<string, EntityId>> | undefined,
+  ): Promise<void> {
     const entry = this.#tables.get(tableId);
     if (entry === undefined) {
       this.#fail(requestId, new TableDataError('not-found', `Table ${tableId} is not open`));
       return;
     }
     await this.#run(requestId, async (): Promise<ChartDataResult> => {
-      const session = entry.session;
-      const total = session.rowCount;
       const wanted = Math.max(1, spec.rowLimit ?? DEFAULT_CHART_ROWS);
-      const target = total === null ? wanted : Math.min(wanted, total);
-      const chunks: ResultChunk[] = [];
-      let read = 0;
-      while (read < target) {
-        const chunk = await session.fetch({
-          startPosition: read,
-          maxRows: Math.min(CHART_FETCH_ROWS, target - read),
-        });
-        if (chunk.rowCount === 0) break;
+      // The chart's own reduction reads the beginning, as it always has: a window
+      // is a data set's business, and the reduction is a picture of the whole.
+      const own = await this.#chartInput(tableId, spec, wanted);
+      if (own === null) return null;
+      const data = aggregateChart(own);
+      const named = chartFramesOf(spec);
+      // Grouped by the box they read, so a chart with three data sets from one
+      // table reads that table once. A data set is a question about a result set;
+      // three questions are not three fetches.
+      const elsewhere = new Map<EntityId, ChartFrameSpec[]>();
+      const mine: ChartFrameSpec[] = [];
+      for (const frame of named) {
+        const from = sources?.[frame.name];
+        if (from === undefined || from === tableId) {
+          mine.push(frame);
+          continue;
+        }
+        elsewhere.set(from, [...(elsewhere.get(from) ?? []), frame]);
+      }
+      const built = new Map<string, ChartFrame>();
+      const empty = (name: string): ChartFrame => ({
+        name,
+        dimensions: [],
+        rows: [],
+        read: 0,
+        of: null,
+        basis: 'exact',
+      });
+      for (const frame of mine) {
+        // A window is read for the data set that asked for it, so two data sets
+        // looking at different parts of the same relation each get their own —
+        // which is what a picture with an overview and a detail is made of.
+        const input =
+          windowOf(frame) === undefined
+            ? own
+            : await this.#chartInput(tableId, spec, wanted, windowOf(frame));
+        built.set(frame.name, input === null ? empty(frame.name) : buildFrame(frame, input));
+      }
+      for (const [from, frames] of elsewhere) {
+        for (const frame of frames) {
+          // A box that is not open has nothing to read: reported as a data set
+          // with no rows rather than as a failure, because the other data sets are
+          // still worth drawing and the report says which one was empty.
+          const input = await this.#chartInput(from, spec, wanted, windowOf(frame));
+          built.set(frame.name, input === null ? empty(frame.name) : buildFrame(frame, input));
+        }
+      }
+      return {
+        data,
+        // In the order the specification named them, whatever order they were
+        // read in.
+        frames: [
+          reductionFrame(spec, data),
+          ...named.flatMap((frame) => {
+            const found = built.get(frame.name);
+            return found === undefined ? [] : [found];
+          }),
+        ],
+      };
+    });
+  }
+
+  /**
+   * Rows from one open table, bounded, as a chart's data sets read them.
+   *
+   * A window says which rows. Without one it is the beginning of the relation,
+   * which is what every chart read before there were windows.
+   */
+  async #chartInput(
+    tableId: EntityId,
+    spec: ChartSpec,
+    wanted: number,
+    window?: ChartWindowSpec,
+  ): Promise<ChartFrameInput | null> {
+    const entry = this.#tables.get(tableId);
+    if (entry === undefined) return null;
+    const session = entry.session;
+    const total = session.rowCount;
+    const columns = session.schema.columns.map((column) => column.name);
+
+    // A position window is the table's own mechanism: an offset and a count,
+    // fetched the way a scrolled table fetches.
+    const start = window?.by === 'position' ? Math.max(0, Math.trunc(window.from)) : 0;
+    const asked = window?.by === 'position' ? Math.max(1, Math.trunc(window.count)) : wanted;
+    const target = total === null ? asked : Math.max(0, Math.min(asked, total - start));
+
+    // A value window is a range along a column. Read in order and stopped as soon
+    // as the column passes the upper bound, which for a relation already in that
+    // order — a statement with an `ORDER BY`, which is what a series is drawn from
+    // — makes this a range read rather than a scan of everything. For a relation
+    // in another order it is a bounded scan, and the answer says how far it got.
+    const bound = window?.by === 'value' ? window : undefined;
+    const boundAt = bound === undefined ? -1 : columns.indexOf(bound.column);
+    const chunks: ResultChunk[] = [];
+    let read = 0;
+    let scanned = 0;
+    let passed = false;
+    // A bounded read stops when the column has passed the range, whatever it has
+    // kept; an unbounded one stops when it has what it asked for.
+    while (bound === undefined ? read < target : !passed) {
+      if (bound !== undefined && scanned >= MAX_WINDOW_SCAN) break;
+      const chunk = await session.fetch({
+        startPosition: start + scanned,
+        maxRows: Math.min(CHART_FETCH_ROWS, bound === undefined ? target - read : CHART_FETCH_ROWS),
+      });
+      if (chunk.rowCount === 0) break;
+      scanned += chunk.rowCount;
+      if (bound === undefined) {
         chunks.push(chunk);
         read += chunk.rowCount;
+        continue;
       }
-      if (chunks.length === 0) return null;
-      return aggregateChart({
-        spec,
-        columns: session.schema.columns.map((column) => column.name),
-        chunks,
-        totalRows: total,
-      });
-    });
+      const kept = withinRange(
+        chunk,
+        boundAt,
+        bound.from,
+        bound.to,
+        session.schema.columns.map((column) => column.type),
+      );
+      if (kept !== null) {
+        chunks.push(kept.chunk);
+        read += kept.chunk.rowCount;
+      }
+      passed = kept?.passed === true || read >= MAX_FRAME_ROWS;
+    }
+    if (chunks.length === 0) return null;
+    return {
+      spec,
+      columns,
+      chunks,
+      totalRows: total,
+      ...(window === undefined ? {} : { window, scanned }),
+    };
   }
 
   async #run(requestId: number, action: () => Promise<unknown>): Promise<void> {

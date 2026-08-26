@@ -48,6 +48,8 @@ export const agentHostFor = (workspace: Workspace): AgentHost => ({
   chartGeometry: (tableId) => workspace.chartGeometry(tableId),
   chartColumns: (tableId) => workspace.chartColumns(tableId),
   chartState: (tableId) => workspace.chartState(tableId),
+  markMeaning: (tableId, mark) => workspace.markMeaning(tableId, mark),
+  filtersOf: (tableId) => workspace.filtersOf(tableId),
   editingCharts: () => workspace.editingCharts(),
   exportJobs: () =>
     workspace.exportJobs().map((job) => ({

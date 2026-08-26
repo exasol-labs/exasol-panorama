@@ -405,6 +405,141 @@ describe('switching a query box back and forth', () => {
   });
 });
 
+describe('a statement scoped by what is picked out in a chart', () => {
+  const metrics = {
+    measureText: (text: string, size: number): number => text.length * size * 0.55,
+    fontFamily: 'test',
+  };
+
+  /** A chart, a query box that leaves a predicate to it, and the arrow between. */
+  const wired = async (): Promise<{
+    harness: ReturnType<typeof createAppHarness>;
+    chartId: EntityId;
+    queryId: EntityId;
+  }> => {
+    const { harness, baseId } = await openBase();
+    const { tableId: chartId } = await harness.workspace.openChart(baseId);
+    harness.workspace.setChartDraft(chartId, {
+      type: 'bar',
+      category: 'COUNTRY',
+      values: ['REVENUE'],
+      aggregate: 'sum',
+    });
+    await harness.settle();
+    harness.workspace.chartFor(
+      harness.workspace.core.world.entities.get(chartId) as never,
+      400,
+      240,
+      metrics,
+    );
+    const { tableId: queryId } = await harness.workspace.openQuery(baseId);
+    await harness.workspace.runQuery(queryId, `SELECT * FROM ${DERIVED_TABLE} WHERE {{picked}}`);
+    await harness.settle();
+    const bound = harness.workspace.core.dispatch({
+      type: 'CreateBinding',
+      binding: {
+        id: harness.workspace.core.ids.binding(),
+        kind: 'filter',
+        fromId: chartId,
+        toId: queryId,
+        from: { mode: 'auto' },
+        to: { mode: 'auto' },
+        directed: true,
+        label: 'picked',
+      },
+    });
+    expect(bound.ok ? 'ok' : bound.error.message).toBe('ok');
+    return { harness, chartId, queryId };
+  };
+
+  const pick = async (
+    harness: ReturnType<typeof createAppHarness>,
+    chartId: EntityId,
+    marks: readonly { series: number; data: number }[],
+  ): Promise<void> => {
+    harness.workspace.core.dispatchSession({
+      type: 'SetSelectedMarks',
+      targets: marks.map((mark) => ({ entityId: chartId, ...mark })),
+    });
+    harness.workspace.update(16);
+    await harness.settle();
+  };
+
+  it('shows everything until something is picked, then only that', async () => {
+    const { harness, chartId, queryId } = await wired();
+    // A knob at rest shows the data: a statement that hid everything until
+    // somebody clicked would look broken.
+    expect(harness.workspace.composedQuery(queryId)).toContain('1 = 1');
+    expect(harness.workspace.viewOfTable(queryId)?.rowCount ?? 0).toBeGreaterThan(0);
+
+    const mark = harness.workspace.chartMarkAt(chartId, 40, 200) ?? { series: 0, data: 0 };
+    await pick(harness, chartId, [mark]);
+    // Nothing fired the re-run: the frame tick noticed the scope had changed.
+    const composed = harness.workspace.composedQuery(queryId);
+    expect(composed).toContain('"COUNTRY" =');
+    expect(composed).not.toContain('{{picked}}');
+    // What the database is asked is what this can prove: the mock behind the
+    // harness answers a statement without reading it, so the row count is the
+    // mock's and the predicate is the fact.
+    expect(harness.sourceRequests.at(-1)?.sql).toContain('"COUNTRY" =');
+    expect(harness.workspace.viewOfTable(queryId)?.rowCount ?? 0).toBeGreaterThan(0);
+  });
+
+  it('runs nothing again when the same scope is picked out twice', async () => {
+    const { harness, chartId, queryId } = await wired();
+    const mark = harness.workspace.chartMarkAt(chartId, 40, 200) ?? { series: 0, data: 0 };
+    await pick(harness, chartId, [mark]);
+    const ran = harness.sourceRequests.length;
+    // A second measure of the same category is the same rows, so the statement is
+    // the same statement — and an identical statement is not a reason to re-run.
+    await pick(harness, chartId, [mark, { series: mark.series, data: mark.data }]);
+    expect(harness.sourceRequests.length).toBe(ran);
+    expect(harness.workspace.viewOfTable(queryId)?.rowCount).toBeGreaterThan(0);
+  });
+
+  it('says what is filling each name in, and from where', async () => {
+    const { harness, chartId, queryId } = await wired();
+    expect(harness.workspace.filtersOf(queryId)).toEqual([
+      { name: 'picked', from: chartId, picked: 0, predicate: '1 = 1' },
+    ]);
+    const mark = harness.workspace.chartMarkAt(chartId, 40, 200) ?? { series: 0, data: 0 };
+    await pick(harness, chartId, [mark]);
+    const [reported] = harness.workspace.filtersOf(queryId);
+    expect(reported?.picked).toBe(1);
+    expect(reported?.predicate).toContain('"COUNTRY" =');
+  });
+
+  it('leaves a name no arrow answers for in the statement, so the database refuses it', async () => {
+    const { harness, baseId } = await openBase();
+    const { tableId } = await harness.workspace.openQuery(baseId);
+    await harness.workspace
+      .runQuery(tableId, `SELECT * FROM ${DERIVED_TABLE} WHERE {{nobody}}`)
+      .catch(() => undefined);
+    await harness.settle();
+    // Better than a silent `1 = 1`: a statement that quietly ran unfiltered is
+    // the worse failure, and this one says which name nothing answered for.
+    expect(harness.workspace.composedQuery(tableId)).toContain('{{nobody}}');
+  });
+
+  it('stops scoping when the arrow is cut', async () => {
+    const { harness, chartId, queryId } = await wired();
+    const mark = harness.workspace.chartMarkAt(chartId, 40, 200) ?? { series: 0, data: 0 };
+    await pick(harness, chartId, [mark]);
+    const scoped = harness.workspace.viewOfTable(queryId)?.rowCount ?? 0;
+
+    const arrow = [...harness.workspace.core.world.bindings.values()].find(
+      (binding) => binding.kind === 'filter',
+    );
+    harness.workspace.core.dispatch({ type: 'RemoveBindings', ids: [arrow?.id as never] });
+    harness.workspace.update(16);
+    await harness.settle();
+    // The name is nobody's again, so the statement is refused rather than run
+    // unfiltered — cutting the arrow is a decision, not a widening.
+    expect(harness.workspace.composedQuery(queryId)).toContain('{{picked}}');
+    expect(scoped).toBeGreaterThan(0);
+  });
+});
+
 describe('a chain of refinements', () => {
   const connectedChain = async (
     options: Parameters<typeof createAppHarness>[0] = {},

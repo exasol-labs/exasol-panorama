@@ -250,8 +250,18 @@ export class DataWorkerClient implements TableDataGateway {
    *
    * `tableId` is the table being charted: a chart has no result set of its own.
    */
-  chartData(tableId: EntityId, spec: ChartSpec): Promise<ChartDataResult> {
-    return this.#request((requestId) => ({ type: 'chartData', requestId, tableId, spec }));
+  chartData(
+    tableId: EntityId,
+    spec: ChartSpec,
+    sources?: Readonly<Record<string, EntityId>>,
+  ): Promise<ChartDataResult> {
+    return this.#request((requestId) => ({
+      type: 'chartData',
+      requestId,
+      tableId,
+      spec,
+      ...(sources === undefined || Object.keys(sources).length === 0 ? {} : { sources }),
+    }));
   }
 
   openTable(request: OpenTableRequest): Promise<OpenTableResult> {

@@ -1,3 +1,5 @@
+import { dataSourcesOf, filterSourcesOf } from './bindings.js';
+import { PRIMARY_FRAME } from './chart-spec.js';
 import type { Command, CommandError } from './commands.js';
 import { commandError } from './commands.js';
 import type { WorldConstraints } from './constraints.js';
@@ -5,6 +7,7 @@ import { DEFAULT_CONSTRAINTS } from './constraints.js';
 import type { Entity, QuerySource, TableColumnView, TableEntity } from './entities.js';
 import { isChartTable, isConfigurableTable, isQueryTable, isTableEntity } from './entities.js';
 import { clamp } from './geometry.js';
+import { derivedTreeOf, isPlaceholderName } from './query-chain.js';
 import type { EntityId } from './ids.js';
 import type { Result } from './result.js';
 import { err, ok } from './result.js';
@@ -309,6 +312,96 @@ export const applyCommand = (
       for (const id of [binding.fromId, binding.toId]) {
         if (!world.entities.has(id)) {
           return err(commandError('entity-not-found', `No entity with id ${id}`));
+        }
+      }
+      // A data binding says more than "there is a line here": it supplies one of
+      // a chart's named data sets, and the name is the label. So the things that
+      // make that meaningful are checked here rather than discovered as a data
+      // set that reads nothing.
+      if (binding.kind === 'data') {
+        const target = world.entities.get(binding.toId);
+        if (target === undefined || !isTableEntity(target) || !isChartTable(target)) {
+          return err(
+            commandError(
+              'wrong-entity-type',
+              `A data binding feeds a chart; ${binding.toId} is not one`,
+            ),
+          );
+        }
+        const name = binding.label ?? '';
+        if (name.trim() === '') {
+          return err(
+            commandError('invalid-argument', 'A data binding is named by its label: the data set'),
+          );
+        }
+        if (name === PRIMARY_FRAME) {
+          return err(
+            commandError(
+              'invalid-argument',
+              `"${PRIMARY_FRAME}" is the chart's own reduction; a data set needs another name`,
+            ),
+          );
+        }
+        const taken = dataSourcesOf(world, binding.toId).get(name);
+        if (taken !== undefined) {
+          return err(
+            commandError(
+              'invalid-argument',
+              `${binding.toId} already reads a data set called "${name}"`,
+            ),
+          );
+        }
+      }
+      // A filter binding says what *scopes* what: the box it comes from decides a
+      // predicate, and the box it points at writes that name in its statement. The
+      // things that make that meaningful are checked here rather than discovered
+      // as a statement the database refuses.
+      if (binding.kind === 'filter') {
+        const source = world.entities.get(binding.fromId);
+        if (source === undefined || !isTableEntity(source) || !isChartTable(source)) {
+          return err(
+            commandError(
+              'wrong-entity-type',
+              `A filter comes from what is picked out in a chart; ${binding.fromId} is not one`,
+            ),
+          );
+        }
+        const target = world.entities.get(binding.toId);
+        if (target === undefined || !isTableEntity(target) || !isQueryTable(target)) {
+          return err(
+            commandError(
+              'wrong-entity-type',
+              `A filter fills in a {{name}} in a statement; ${binding.toId} has none to fill`,
+            ),
+          );
+        }
+        const name = binding.label ?? '';
+        if (!isPlaceholderName(name)) {
+          return err(
+            commandError(
+              'invalid-argument',
+              'A filter is named by its label, which is the {{name}} it fills in: a letter or an underscore, then letters, digits or underscores',
+            ),
+          );
+        }
+        if (filterSourcesOf(world, binding.toId).has(name)) {
+          return err(
+            commandError(
+              'invalid-argument',
+              `${binding.toId} already has a filter called "${name}"`,
+            ),
+          );
+        }
+        // The one loop worth refusing: a chart built on the box it scopes would
+        // re-scope itself every time it re-read its own rows, and what settled
+        // would depend on which frame won.
+        if (derivedTreeOf(world, binding.toId).some((entity) => entity.id === binding.fromId)) {
+          return err(
+            commandError(
+              'invalid-argument',
+              `${binding.fromId} is built on ${binding.toId}, so it cannot also decide what ${binding.toId} reads`,
+            ),
+          );
         }
       }
       for (const anchor of [binding.from, binding.to]) {

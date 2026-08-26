@@ -597,6 +597,82 @@ polygons and text runs. Tooltips and animation are turned off because neither
 survives the seam: the geometry is read once per change, so an animation would be
 captured as a still frame of itself.
 
+**A chart reads named data sets, and the reduction is one of them.** The
+reduction — a category, its measures, one row per group — is what a bar chart
+wants and cannot express a matrix with a third column to colour by, a scatter
+sized by a fourth, or a graph's edge list. So a specification may name data sets
+of its own: `rows` for the rows as they are, `group` for another grouping of them,
+`scalar` for one number. Each is offered to the layout under its own name with its
+columns declared, so a written option reads it the way any ECharts example does —
+`datasetId` and `encode`, no Panorama grammar to learn. The one exception is a
+scalar, which ECharts has no concept of: `{"$param": "name"}` anywhere in an
+option becomes the number, and is left in place and reported when nothing answers
+to the name, because a nought substituted for a base rate is a line somebody
+believes. All of it is built from one read of the rows, in the worker, next to
+them. The declaration is document state and the contents are session state, like
+a table and its rows.
+
+**Which box a data set reads is an arrow, not a field.** A chart's specification
+says what shape each data set has; a binding of kind `data`, labelled with the data
+set's name, says which box supplies its rows. One fact in one place, and three
+things fall out of it: the canvas shows what feeds what, because a data binding is
+drawn like any other line; cutting the line is how you stop it feeding; and it is
+in the history, so it undoes with everything else. A name with no arrow reads the
+chart's own relation, which is what every chart did before there were arrows. The
+worker groups the data sets by the box they read and reads each box once — three
+data sets are three questions about a result set, not three fetches of it.
+
+**Anything measured over a big list is walked, not spread.** `Math.min(...xs)` is
+a call with one argument per coordinate, and past about thirty thousand shapes the
+argument list is longer than the stack: the geometry report threw
+`Maximum call stack size exceeded` on a chart of twelve thousand polylines. The
+picture had drawn fine, so what failed was every attempt to _ask about_ it — which
+read as a box that had gone bad rather than as a bug in one function. Spreading a
+list into a call is now treated as a size limit rather than as a style, here and in
+the display-list walk.
+
+**A picked mark is traced back through its data set, not through the chart's
+settings.** Every mark carries the data set and the row it was drawn from, stamped
+as the geometry is read out of the layout — the only moment anything knows which
+row a triangle belongs to. Each data set carries the column its rows are
+identified by and the _values_ of it, kept beside the rows because a label and a
+value are different things: `String(7)` writes a fine axis label and cannot be
+compared with a number. So resolving a pick is one rule for every kind of chart —
+a heatmap cell, a sankey ribbon and a bar all end at a column and a value — and
+selection, hovering and drilling in stopped being features of the built-in
+reduction. A row filter is one predicate, so a matrix cell drills down on whichever
+axis it named as its key; a data set that named none can be picked out and not
+drilled into, and says so rather than guessing that its first column is the
+subject.
+
+**What scopes a statement is an arrow, and what fills it in is a selection.** A
+statement may leave a predicate open as `{{name}}`; a binding of kind `filter`,
+labelled with that name, says which chart decides it. What is picked out there
+becomes the predicate, through the same resolution that opens the rows behind a
+mark — so a cell means one thing whether it opens a table of its own or narrows a
+box on the other side of the canvas. Two choices are worth stating. Braces rather
+than a bare identifier: an unresolved identifier is valid SQL and would query the
+wrong thing, and a predicate has no such spelling, so a `{{name}}` nothing answers
+for is a statement the database refuses rather than one that quietly ran
+unfiltered. And nothing picked is `1 = 1`, not `1 = 0`: a knob at rest shows the
+data. The re-run is decided in the frame tick from what is true now, like every
+other derived thing here, so an arrow drawn by a pointer, an agent or an undo all
+take effect the same way.
+
+**A series longer than the screen is a window, and the reduction happens where the
+rows are.** A data set may say which part of a relation it reads — a row offset and
+a count, which is the table's own mechanism and right when the relation is already
+in the order the axis is in; or a range along a column, which is what survives a
+change of scope, and which stops reading as soon as the column has passed the
+bound. A `resample` data set then cuts what it read down to a few hundred points in
+the worker, keeping the extremes of each bucket by default because a mean hides the
+spike that was the reason to look. Two rules make this safe to move along. The
+limit on points is the _layout_, not the database: a million points is nothing to
+an engine and impossible for a walk that visits every element in JavaScript. And
+the chart keeps drawing the window it has while the next one is in flight —
+§1 does not get an exception for charts, and blanking on every step is the one
+thing a person moving along a series cannot use.
+
 **A cross-tabulation is two columns, not two measures.** A second grouping column
 makes the series its distinct values, which is the only way to express claim type
 against decile. A grouped bar chart, a stacked one and a heatmap are then the same
@@ -777,16 +853,17 @@ register of the gaps.
 
 An honest register. Nothing here is urgent; all of it is real.
 
-| Weakness                                                              | Why it is one                                                                                                                    | Direction                                                                                                 |
-| --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `workspace.ts` is ~1 800 lines                                        | Down from 2 200 after three collaborators were extracted, but the chart _actions_ and the table lifecycle still share one object | Extract the chart actions once a fourth kind of box arrives, which is when the seam will be obvious       |
-| `table-draw.ts` is ~1 100 lines                                       | One pure function that draws everything about a table — chrome, rows, halo, panels, charts                                       | Low-risk to split by region, because it is pure; no reason to until it changes shape                      |
-| `interaction.ts` is ~850 lines                                        | One object routing every gesture; the cases are flat but there are many                                                          | Table-driven dispatch would compress it, at the cost of the plain reading it has now                      |
-| The agent's command table mirrors the core by hand                    | Two descriptions of one shape, held together by a seam test rather than by construction                                          | Generating one from the other needs runtime type information the build deliberately does not keep         |
-| No persistence                                                        | The world lives for the session; nothing is written                                                                              | The history DAG is already a serialisable value; the missing part is a store and a document identity      |
-| One connection at a time                                              | `connectionId` is a single value on the workspace, and entities carry it                                                         | The model already names it per entity, so this is a shell and worker change, not a model change           |
-| Charts hover and select only where the library reports a series index | An exotic series may draw beautifully and pick nothing                                                                           | Reported in the tool description rather than hidden; a mark could be inferred from geometry if it matters |
-| The agent endpoint is development-only                                | Deliberate, but it means an agent cannot drive a deployed page                                                                   | If that is wanted, it is a hosted endpoint with authentication, not a flag                                |
+| Weakness                                           | Why it is one                                                                                                                                                                                                                 | Direction                                                                                                                                   |
+| -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `workspace.ts` is ~1 800 lines                     | Down from 2 200 after three collaborators were extracted, but the chart _actions_ and the table lifecycle still share one object                                                                                              | Extract the chart actions once a fourth kind of box arrives, which is when the seam will be obvious                                         |
+| `table-draw.ts` is ~1 100 lines                    | One pure function that draws everything about a table — chrome, rows, halo, panels, charts                                                                                                                                    | Low-risk to split by region, because it is pure; no reason to until it changes shape                                                        |
+| `interaction.ts` is ~850 lines                     | One object routing every gesture; the cases are flat but there are many                                                                                                                                                       | Table-driven dispatch would compress it, at the cost of the plain reading it has now                                                        |
+| The agent's command table mirrors the core by hand | Two descriptions of one shape, held together by a seam test rather than by construction                                                                                                                                       | Generating one from the other needs runtime type information the build deliberately does not keep                                           |
+| No persistence                                     | The world lives for the session; nothing is written                                                                                                                                                                           | The history DAG is already a serialisable value; the missing part is a store and a document identity                                        |
+| One connection at a time                           | `connectionId` is a single value on the workspace, and entities carry it                                                                                                                                                      | The model already names it per entity, so this is a shell and worker change, not a model change                                             |
+| A calendar heatmap draws and cannot be pointed at  | Its cells are drawn by the calendar component and carry no row index anywhere in the display list, so the structural search has nothing to find. Every other series type Panorama has met links its elements back to its rows | Reported rather than hidden: `drawn.pickable` is false and says so, which makes it measurable instead of a caveat to remember               |
+| A matrix cell drills down on one axis              | A row filter is one predicate, so a data set names one key column and a cell of a cross-tabulation opens the rows of whichever axis that is                                                                                   | A predicate of several clauses, which cross-filtering wants too — [plans/panorama-chart-data-plan.md](../plans/panorama-chart-data-plan.md) |
+| The agent endpoint is development-only             | Deliberate, but it means an agent cannot drive a deployed page                                                                                                                                                                | If that is wanted, it is a hosted endpoint with authentication, not a flag                                                                  |
 
 ---
 

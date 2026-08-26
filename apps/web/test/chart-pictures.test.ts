@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ChartSpec, EntityId, SessionState, TableEntity } from '@panorama/core';
 import { applySessionCommand, emptySession } from '@panorama/core';
-import type { ChartData, ChartDrawList, ChartSurface } from '@panorama/chart';
+import type { ChartData, ChartDrawList, ChartFrame, ChartSurface } from '@panorama/chart';
+import { reductionFrame } from '@panorama/chart';
 import { ChartPictures, chartDataNote } from '../src/panorama/chart-pictures.js';
 import { createAppHarness, firstTableId } from './harness.js';
 
@@ -55,6 +56,9 @@ const drawn = (mark?: { series: number; data: number }): ChartDrawList => ({
   ],
 });
 
+/** The data sets that come with it: the reduction, as the worker builds it. */
+const FRAMES: readonly ChartFrame[] = [reductionFrame(SPEC, DATA)];
+
 interface Setup {
   pictures: ChartPictures;
   readonly surface: ChartSurface & { updates: number };
@@ -74,6 +78,11 @@ const setup = (options: { reduce?: () => Promise<ChartData | null> } = {}): Setu
     },
     point: () => null,
     draw: () => drawn({ series: 0, data: 0 }),
+    resolution: () => ({
+      datasets: [{ name: 'primary', dimensions: ['COUNTRY', 'REVENUE'], rows: 2 }],
+      series: [{ index: 0, type: 'bar', dataset: 'primary', marks: 1 }],
+      unresolved: ['series[0].encode.y names PROFIT, which data set "primary" has not got'],
+    }),
     toSvg: () => '<svg/>',
     dispose: () => {},
   } as unknown as ChartSurface & { updates: number };
@@ -86,7 +95,7 @@ const setup = (options: { reduce?: () => Promise<ChartData | null> } = {}): Setu
     changes: [] as number[],
   } as Setup as { -readonly [K in keyof Setup]: Setup[K] };
   state.pictures = new ChartPictures({
-    reduce: options.reduce ?? (() => Promise.resolve(DATA)),
+    reduce: options.reduce ?? (() => Promise.resolve({ data: DATA, frames: FRAMES })),
     surface,
     theme: () => ({
       background: [1, 1, 1, 1],
@@ -116,7 +125,11 @@ describe('what a chart reduced to', () => {
   it('reads the rows, and says when there were none', async () => {
     const box = setup();
     await box.pictures.load('table:1' as EntityId, 'table:0' as EntityId, SPEC);
-    expect(box.pictures.stateOf('table:1' as EntityId)).toEqual({ status: 'ready', data: DATA });
+    expect(box.pictures.stateOf('table:1' as EntityId)).toEqual({
+      status: 'ready',
+      data: DATA,
+      frames: FRAMES,
+    });
     const empty = setup({ reduce: () => Promise.resolve(null) });
     await empty.pictures.load('table:1' as EntityId, 'table:0' as EntityId, SPEC);
     expect(empty.pictures.stateOf('table:1' as EntityId)).toEqual({ status: 'empty' });
@@ -231,6 +244,90 @@ describe('what a chart drew', () => {
     box.pictures.forget('table:1' as EntityId);
     expect(box.pictures.stateOf('table:1' as EntityId)).toBeUndefined();
     expect(box.pictures.geometry('table:1' as EntityId)).toBeNull();
+  });
+});
+
+describe('a picture with a great many shapes in it', () => {
+  it('measures it without asking for a stack frame per coordinate', async () => {
+    // The defect this replaces: the geometry report used `Math.min(...xs)`, which
+    // is a call with one argument per coordinate. Past about thirty thousand
+    // shapes it threw `Maximum call stack size exceeded` — and because the throw
+    // was in the *report* rather than in the drawing, the chart appeared and every
+    // question about it failed, which read as a box that had gone bad.
+    const many = 60_000;
+    const polygons = Array.from({ length: many }, (_, index) => ({
+      corners: [index, 1, index + 1, 1, index + 1, 2, index, 2] as const,
+      color: [0, 0, 1, 1] as const,
+    }));
+    const box = setup();
+    const surface = box.surface as unknown as { draw: () => ChartDrawList };
+    surface.draw = (): ChartDrawList => ({ polygons, texts: [] });
+    await box.pictures.load('table:1' as EntityId, 'table:0' as EntityId, SPEC);
+    box.pictures.view('table:1' as EntityId, SPEC, 400, 260, TYPOGRAPHY);
+    const geometry = box.pictures.geometry('table:1' as EntityId);
+    expect(geometry?.polygons).toBe(many);
+    // And the bounds are the bounds, measured in one walk.
+    expect(geometry?.bounds).toEqual({ x: 0, y: 1, width: many, height: 1 });
+  });
+});
+
+describe('the boxes a chart reads', () => {
+  it('asks again when an arrow is drawn, cut or pointed somewhere else', async () => {
+    const asked: string[] = [];
+    const box = setup({
+      reduce: (_tableId, _spec, sources) => {
+        asked.push([...sources].map(([name, from]) => `${name}=${String(from)}`).join(','));
+        return Promise.resolve({ data: DATA, frames: FRAMES });
+      },
+    });
+    const chart = 'table:1' as EntityId;
+    const none = new Map<string, EntityId>();
+    const one = new Map([['matrix', 'table:9' as EntityId]]);
+
+    await box.pictures.load(chart, 'table:0' as EntityId, SPEC, none);
+    // What it read is what it was asked for, so nothing is stale yet.
+    expect(box.pictures.readsFrom(chart, none)).toBe(true);
+    // An arrow drawn since is a different question, and it says so.
+    expect(box.pictures.readsFrom(chart, one)).toBe(false);
+
+    await box.pictures.load(chart, 'table:0' as EntityId, SPEC, one);
+    expect(box.pictures.readsFrom(chart, one)).toBe(true);
+    expect(box.pictures.readsFrom(chart, none)).toBe(false);
+    // Pointed at another box: the same name, a different answer.
+    expect(box.pictures.readsFrom(chart, new Map([['matrix', 'table:8' as EntityId]]))).toBe(false);
+    expect(asked).toEqual(['', 'matrix=table:9']);
+  });
+
+  it('does not care which order the arrows were drawn in', async () => {
+    const box = setup();
+    const chart = 'table:1' as EntityId;
+    await box.pictures.load(
+      chart,
+      'table:0' as EntityId,
+      SPEC,
+      new Map([
+        ['a', 'table:7' as EntityId],
+        ['b', 'table:8' as EntityId],
+      ]),
+    );
+    expect(
+      box.pictures.readsFrom(
+        chart,
+        new Map([
+          ['b', 'table:8' as EntityId],
+          ['a', 'table:7' as EntityId],
+        ]),
+      ),
+    ).toBe(true);
+  });
+
+  it('forgets what a closed chart was reading', async () => {
+    const box = setup();
+    const chart = 'table:1' as EntityId;
+    const one = new Map([['matrix', 'table:9' as EntityId]]);
+    await box.pictures.load(chart, 'table:0' as EntityId, SPEC, one);
+    box.pictures.forget(chart);
+    expect(box.pictures.readsFrom(chart, one)).toBe(false);
   });
 });
 

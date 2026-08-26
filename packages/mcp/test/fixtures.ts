@@ -58,6 +58,18 @@ export const CHART_SPEC: ChartSpec = {
  * `PanoramaCore` for the parts that are the document, and recorded answers for
  * the parts that are the running application.
  */
+/** One data set as the workspace reports it. */
+interface FakeFrameReport {
+  readonly name: string;
+  readonly from?: string;
+  readonly dimensions: readonly string[];
+  readonly key?: string;
+  readonly missing?: readonly string[];
+  readonly rows: number;
+  readonly read: number;
+  readonly basis: string;
+}
+
 export class FakeHost implements AgentHost {
   readonly core: PanoramaCore;
   readonly ids: IdFactory;
@@ -214,6 +226,16 @@ export class FakeHost implements AgentHost {
     texts: number;
     bounds: { x: number; y: number; width: number; height: number } | null;
     clipped: readonly string[];
+    datasets: readonly { name?: string; dimensions: readonly string[]; rows: number }[];
+    series: readonly {
+      index: number;
+      type: string;
+      dataset?: string;
+      encode?: Readonly<Record<string, string>>;
+      marks: number;
+    }[];
+    unresolved: readonly string[];
+    pickable: boolean;
   } | null = {
     width: 400,
     height: 260,
@@ -221,6 +243,10 @@ export class FakeHost implements AgentHost {
     texts: 5,
     bounds: { x: 0, y: 0, width: 400, height: 260 },
     clipped: [],
+    datasets: [{ name: 'primary', dimensions: ['COUNTRY', 'REVENUE'], rows: 3 }],
+    series: [{ index: 0, type: 'bar', dataset: 'primary', marks: 3 }],
+    unresolved: [],
+    pickable: true,
   };
 
   chartGeometry(): typeof this.geometry {
@@ -234,8 +260,50 @@ export class FakeHost implements AgentHost {
     ];
   }
 
-  chartState(): { status: string } | undefined {
-    return { status: 'ready' };
+  /** What fills in each `{{name}}` of a statement, as the workspace would say. */
+  filters: readonly { name: string; from: EntityId; picked: number; predicate: string }[] = [];
+
+  filtersOf(): typeof this.filters {
+    return this.filters;
+  }
+
+  /** What the picture says a mark stands for; `null` when nothing keyed it. */
+  meaning: { frame: string; row: number; column: string; value: string } | null = {
+    frame: 'primary',
+    row: 0,
+    column: 'COUNTRY',
+    value: 'Germany',
+  };
+
+  markMeaning(): typeof this.meaning {
+    return this.meaning;
+  }
+
+  /** The data sets a chart holds, as the workspace would describe them. */
+  reads: readonly FakeFrameReport[] = [];
+
+  chartState():
+    | {
+        status: string;
+        data?: {
+          categories: readonly string[];
+          series: readonly { name: string }[];
+          rows: number;
+          basis: string;
+        };
+        frames?: readonly FakeFrameReport[];
+      }
+    | undefined {
+    return {
+      status: 'ready',
+      data: {
+        categories: ['Germany', 'Denmark', 'France'],
+        series: [{ name: 'REVENUE' }],
+        rows: 3,
+        basis: 'exact',
+      },
+      ...(this.reads.length === 0 ? {} : { frames: this.reads }),
+    };
   }
 
   editingCharts(): readonly EntityId[] {

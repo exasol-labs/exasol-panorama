@@ -3,6 +3,9 @@ import type { Binding, BindingId, TableEntity, WorldState } from '@panorama/core
 import {
   describeCommand,
   AUTO_ANCHOR,
+  buildTableEntity,
+  dataSourcesOf,
+  filterSourcesOf,
   resolveAnchor,
   applyCommand,
   bindingsFrom,
@@ -16,9 +19,10 @@ import {
   resolveBinding,
   sideAnchor,
   unwrap,
+  withBinding,
   withEntity,
 } from '@panorama/core';
-import { makeTable, testIds } from './fixtures.js';
+import { TEST_CONNECTION, makeTable, testIds } from './fixtures.js';
 
 const ids = testIds();
 
@@ -33,6 +37,39 @@ const below = place(makeTable(ids), 0, 400);
 
 const worldWith = (...entities: readonly TableEntity[]): WorldState =>
   entities.reduce<WorldState>((world, entity) => withEntity(world, entity), emptyWorld());
+
+/** A filter arrow coming from something with nothing picked out. */
+const scopedBy = (
+  from: TableEntity,
+  to: TableEntity,
+): { type: 'CreateBinding'; binding: Binding } => ({
+  type: 'CreateBinding',
+  binding: {
+    id: ids.binding(),
+    kind: 'filter',
+    fromId: from.id,
+    toId: to.id,
+    from: AUTO_ANCHOR,
+    to: AUTO_ANCHOR,
+    directed: true,
+    label: 'picked',
+  },
+});
+
+/** A data arrow pointing at something that cannot read one. */
+const feedInto = (to: TableEntity): { type: 'CreateBinding'; binding: Binding } => ({
+  type: 'CreateBinding',
+  binding: {
+    id: ids.binding(),
+    kind: 'data',
+    fromId: left.id,
+    toId: to.id,
+    from: AUTO_ANCHOR,
+    to: AUTO_ANCHOR,
+    directed: true,
+    label: 'matrix',
+  },
+});
 
 const connector = (
   from: TableEntity,
@@ -281,6 +318,234 @@ describe('CreateBinding', () => {
         }),
       }).ok,
     ).toBe(true);
+  });
+});
+
+describe('an arrow that supplies a chart with a data set', () => {
+  const chart = place(
+    buildTableEntity(ids, {
+      source: {
+        kind: 'chart',
+        connectionId: TEST_CONNECTION,
+        spec: { type: 'bar', category: 'C', values: ['V'], aggregate: 'sum' },
+        label: 'a chart',
+        derivedFrom: left.id,
+      },
+      mode: 'result',
+      columns: [],
+    }),
+    900,
+    0,
+  );
+
+  const feed = (name: string | undefined, to: TableEntity = chart): Binding =>
+    connector(right, to, { kind: 'data', ...(name === undefined ? {} : { label: name }) });
+
+  it('says which box supplies each name', () => {
+    const binding = feed('matrix');
+    const world = unwrap(
+      applyCommand(worldWith(left, right, chart), { type: 'CreateBinding', binding }),
+    );
+    expect([...dataSourcesOf(world, chart.id)]).toEqual([['matrix', right.id]]);
+    // And it is an ordinary line as well: drawn, hoverable, cut like any other.
+    expect(bindingsOf(world, chart.id)).toEqual([binding]);
+  });
+
+  it('says nothing about a chart nothing feeds', () => {
+    expect([...dataSourcesOf(worldWith(left, right, chart), chart.id)]).toEqual([]);
+  });
+
+  it('refuses one that feeds something that is not a chart', () => {
+    const result = applyCommand(worldWith(left, right), feedInto(right));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe('wrong-entity-type');
+  });
+
+  it('refuses one with no name, and the name the reduction already has', () => {
+    const world = worldWith(left, right, chart);
+    for (const name of [undefined, '  ', 'primary']) {
+      const result = applyCommand(world, { type: 'CreateBinding', binding: feed(name) });
+      expect(result.ok, `${String(name)} should be refused`).toBe(false);
+      if (!result.ok) expect(result.error.code).toBe('invalid-argument');
+    }
+  });
+
+  it('refuses a second arrow for a name already being fed', () => {
+    // A data set answers to one box at a time; two would be a picture drawn from
+    // whichever won, and it could not say which.
+    const world = unwrap(
+      applyCommand(worldWith(left, right, chart), {
+        type: 'CreateBinding',
+        binding: feed('matrix'),
+      }),
+    );
+    const again = applyCommand(world, {
+      type: 'CreateBinding',
+      binding: connector(left, chart, { kind: 'data', label: 'matrix' }),
+    });
+    expect(again.ok).toBe(false);
+    if (!again.ok) expect(again.error.message).toMatch(/already reads a data set called "matrix"/u);
+  });
+
+  it('stops feeding when the arrow is cut', () => {
+    const binding = feed('matrix');
+    const fed = unwrap(
+      applyCommand(worldWith(left, right, chart), { type: 'CreateBinding', binding }),
+    );
+    const cut = unwrap(applyCommand(fed, { type: 'RemoveBindings', ids: [binding.id] }));
+    expect([...dataSourcesOf(cut, chart.id)]).toEqual([]);
+  });
+});
+
+describe('an arrow that scopes a statement', () => {
+  const chart = place(
+    buildTableEntity(ids, {
+      source: {
+        kind: 'chart',
+        connectionId: TEST_CONNECTION,
+        spec: { type: 'bar', category: 'C', values: ['V'], aggregate: 'sum' },
+        label: 'a chart',
+        derivedFrom: left.id,
+      },
+      mode: 'result',
+      columns: [],
+    }),
+    900,
+    0,
+  );
+
+  const query = (base = right.id): TableEntity =>
+    place(
+      buildTableEntity(ids, {
+        source: {
+          kind: 'query',
+          connectionId: TEST_CONNECTION,
+          sql: 'SELECT * FROM derived_table WHERE {{picked}}',
+          label: 'a query',
+          derivedFrom: base,
+        },
+        mode: 'result',
+        columns: [],
+      }),
+      1200,
+      0,
+    );
+
+  const scopes = (from: TableEntity, to: TableEntity, name = 'picked'): Binding =>
+    connector(from, to, { kind: 'filter', label: name });
+
+  it('says which chart decides each name', () => {
+    const box = query();
+    const binding = scopes(chart, box);
+    const world = unwrap(
+      applyCommand(worldWith(left, right, chart, box), { type: 'CreateBinding', binding }),
+    );
+    expect([...filterSourcesOf(world, box.id)]).toEqual([['picked', chart.id]]);
+  });
+
+  it('refuses one that comes from something with nothing picked out', () => {
+    const box = query();
+    const result = applyCommand(worldWith(left, right, box), scopedBy(right, box));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe('wrong-entity-type');
+  });
+
+  it('refuses one that points at a box with no statement to fill in', () => {
+    const result = applyCommand(worldWith(left, right, chart), {
+      type: 'CreateBinding',
+      binding: scopes(chart, right),
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe('wrong-entity-type');
+  });
+
+  it('refuses a name that could never be written as one', () => {
+    const box = query();
+    const world = worldWith(left, right, chart, box);
+    for (const name of ['', ' ', '1bad', 'has space']) {
+      const result = applyCommand(world, {
+        type: 'CreateBinding',
+        binding: scopes(chart, box, name),
+      });
+      expect(result.ok, `${name} should be refused`).toBe(false);
+    }
+  });
+
+  it('refuses a second arrow for a name already decided', () => {
+    const box = query();
+    const world = unwrap(
+      applyCommand(worldWith(left, right, chart, box), {
+        type: 'CreateBinding',
+        binding: scopes(chart, box),
+      }),
+    );
+    const again = applyCommand(world, { type: 'CreateBinding', binding: scopes(chart, box) });
+    expect(again.ok).toBe(false);
+    if (!again.ok) expect(again.error.message).toMatch(/already has a filter called "picked"/u);
+  });
+
+  it('refuses a chart built on the very box it would scope', () => {
+    // The one loop worth refusing: it would re-scope itself every time it re-read
+    // its own rows, and what settled would depend on which frame won.
+    const box = query();
+    const built = place(
+      buildTableEntity(ids, {
+        source: {
+          kind: 'chart',
+          connectionId: TEST_CONNECTION,
+          spec: { type: 'bar', category: 'C', values: ['V'], aggregate: 'sum' },
+          label: 'a chart of the query',
+          derivedFrom: box.id,
+        },
+        mode: 'result',
+        columns: [],
+      }),
+      1500,
+      0,
+    );
+    const result = applyCommand(worldWith(left, right, box, built), {
+      type: 'CreateBinding',
+      binding: scopes(built, box),
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toMatch(/is built on .*so it cannot also decide/u);
+  });
+
+  it('stops scoping when the arrow is cut', () => {
+    const box = query();
+    const binding = scopes(chart, box);
+    const scoped = unwrap(
+      applyCommand(worldWith(left, right, chart, box), { type: 'CreateBinding', binding }),
+    );
+    const cut = unwrap(applyCommand(scoped, { type: 'RemoveBindings', ids: [binding.id] }));
+    expect([...filterSourcesOf(cut, box.id)]).toEqual([]);
+  });
+});
+
+describe('an arrow with no name on it', () => {
+  it('feeds and scopes nothing, whichever kind it is', () => {
+    // Refused when it is made, so this is belt and braces — and worth having,
+    // because a nameless arrow that fed *something* would feed whichever data set
+    // happened to be first.
+    const chart = place(
+      buildTableEntity(ids, {
+        source: {
+          kind: 'chart',
+          connectionId: TEST_CONNECTION,
+          spec: { type: 'bar', category: 'C', values: ['V'], aggregate: 'sum' },
+          label: 'a chart',
+          derivedFrom: left.id,
+        },
+        mode: 'result',
+        columns: [],
+      }),
+      900,
+      0,
+    );
+    const nameless = withBinding(worldWith(left, chart), connector(left, chart, { kind: 'data' }));
+    expect([...dataSourcesOf(nameless, chart.id)]).toEqual([]);
+    const scoping = withBinding(worldWith(left, chart), connector(chart, left, { kind: 'filter' }));
+    expect([...filterSourcesOf(scoping, left.id)]).toEqual([]);
   });
 });
 

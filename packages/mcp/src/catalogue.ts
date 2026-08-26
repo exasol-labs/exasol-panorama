@@ -66,7 +66,15 @@ const VERBOSE: ArgsSpec = {
 const CHART_TYPE_NAMES: readonly string[] = ['bar', 'line', 'area', 'scatter', 'pie', 'custom'];
 
 /** The chart specification, described where an agent will read it. */
-const CHART_SPEC_SCHEMA: Record<string, unknown> = {
+/**
+ * The chart specification, as JSON Schema.
+ *
+ * Exported because `readChartSpec` reads its property names to decide what a
+ * specification may contain: the schema an agent is given and the check it is
+ * judged by are then one list, and a field cannot be documented without being
+ * accepted or accepted without being documented.
+ */
+export const CHART_SPEC_SCHEMA: Record<string, unknown> = {
   type: 'object',
   description: 'The chart specification.',
   properties: {
@@ -99,6 +107,93 @@ const CHART_SPEC_SCHEMA: Record<string, unknown> = {
       type: 'string',
       description:
         'An ECharts option as a JSON *string*, not an object. Merged over the settings above, or the whole chart when type is custom.',
+    },
+    precision: {
+      type: 'integer',
+      description:
+        'Decimal places the measured figures are read to — two for money, whatever the addition came out as. Left out, figures carry twelve significant digits: enough for anything this could have measured, and short of the noise binary addition leaves behind, which is what put 3483.7700000000004 on a label.',
+    },
+    frames: {
+      type: 'array',
+      description:
+        'Data sets of your own, beyond the reduction every chart is given as "primary". Each is read by name from the option in extra: as dataset.source through datasetId, or — for a scalar — as {"$param": "name"} anywhere a number belongs. All of them read the rows of the box this chart was opened on. This is how a heatmap, a matrix, a scatter sized by a fourth column or a reference line at a computed base rate becomes a chart that stays true when the query changes, rather than an array typed into extra.',
+      items: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'What the option refers to it by; not "primary"' },
+          from: {
+            type: 'string',
+            description:
+              "The box whose rows it reads, when that is not the box this chart was opened on. Give it and the arrow is drawn for you — a data binding labelled with this name, which is what makes a panel of several aggregations, a graph of nodes and edges, or a tree of parents possible in one chart. Left out, it reads the chart's own box.",
+          },
+          kind: {
+            type: 'string',
+            enum: ['group', 'rows', 'scalar'],
+            description:
+              "group: one row per category, as the chart's own reduction is — its own question entirely, so it does not take the chart's breakdown unless it names one. rows: the rows as they are, projected to the columns named — the shape a heatmap, a scatter with a size channel, a graph's edges or a tree's parents needs. scalar: one number, for a threshold or a reference line.",
+          },
+          columns: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'kind rows: the columns to read, in the order wanted.',
+          },
+          key: {
+            type: 'string',
+            description:
+              'kind rows: which of those columns says what a drawn mark stands for. Give it and picking a mark out means something — the rows behind it can be opened, and "session" reports the value each picked mark carries. Left out, a mark can be hovered and picked and traced back to nothing. One column, because a row filter is one predicate: a matrix cell drills down on the axis named here.',
+          },
+          category: { type: 'string', description: 'kind group: the column to group by.' },
+          breakdown: { type: 'string', description: 'kind group: a second column to group by.' },
+          values: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'kind group: the columns to measure.',
+          },
+          column: { type: 'string', description: 'kind scalar: the column to reduce.' },
+          aggregate: { type: 'string', enum: ['sum', 'average', 'count', 'min', 'max'] },
+          sort: { type: 'string', enum: ['size', 'name', 'natural'] },
+          categoryLimit: { type: 'integer' },
+          rowLimit: {
+            type: 'integer',
+            description:
+              'kind rows: rows carried, 5000 by default and 20000 at most. The limit is the layout, not the database: every row becomes elements to lay out and walk.',
+          },
+          precision: {
+            type: 'integer',
+            description: 'kind group: decimal places its figures are read to; see spec.precision.',
+          },
+          x: {
+            type: 'string',
+            description: 'kind resample: the column along the axis, usually a time.',
+          },
+          method: {
+            type: 'string',
+            enum: ['extremes', 'mean', 'lttb'],
+            description:
+              'kind resample: extremes keeps the highest and lowest of each bucket, which is the honest default for a series — a mean hides the spike that was the reason to look. mean is for a trend; lttb keeps the points that make the shape.',
+          },
+          points: {
+            type: 'integer',
+            description:
+              "kind resample: points to carry, 600 by default and 4000 at most. A box's width in pixels is a good number: more points than pixels is waste that the layout pays for.",
+          },
+          window: {
+            type: 'object',
+            description:
+              'Which part of the relation this data set reads — kind rows or resample. {by: "position", from, count} is a row offset and a count, right when the relation is already in the order the axis is in (say ORDER BY in the statement behind it). {by: "value", column, from, to} is a range along a column, which is what survives a change of scope: position four billion means nothing after a filter, and a range of dates means the same thing. A range read stops as soon as the column passes the upper bound, so on an ordered relation it reads the range rather than scanning everything; on an unordered one it is a bounded scan and the answer says it sampled. Left out, the data set reads the beginning.',
+            properties: {
+              by: { type: 'string', enum: ['position', 'value'] },
+              from: { type: 'string' },
+              to: { type: 'string' },
+              count: { type: 'integer' },
+              column: { type: 'string' },
+            },
+            required: ['by'],
+          },
+        },
+        required: ['name', 'kind'],
+        additionalProperties: false,
+      },
     },
   },
   required: ['type'],
@@ -336,13 +431,19 @@ export const AGENT_TOOLS: readonly AgentToolSpec[] = [
   {
     name: 'query',
     describe:
-      'Writes and runs a statement on a query box, and answers with the shape of the result and the first few rows.\n\nA box is where a person reads a result, not where heavy work belongs: this runs through the browser and a cache sized for drawing. Compute on the shortest route you have — the local `exasol` CLI where the engine is on this machine, a native Exasol server otherwise — and put a statement here when its result is something somebody should see, be able to move, and derive from.\n\nRead from whatever the box\'s "readsFrom" says: a box built on a stored relation reads that relation by name, and only a box built on another query or chart reads "derived_table" — which stands for that box and is composed into one statement when the query runs. Writing "derived_table" where the relation has a name works, but says less.\n\nA box holds one statement, so running another replaces it — the old one is still in the history, but the box is showing the new one. Pass newBox to run this as a *sibling* instead: a fresh box beside the same parent, leaving this one as it was, which is what to do when a result is worth keeping. Pass label to name whichever box it ends up in.',
+      'Writes and runs a statement on a query box, and answers with the shape of the result and the first few rows.\n\nA box is where a person reads a result, not where heavy work belongs: this runs through the browser and a cache sized for drawing. Compute on the shortest route you have — the local `exasol` CLI where the engine is on this machine, a native Exasol server otherwise — and put a statement here when its result is something somebody should see, be able to move, and derive from.\n\nRead from whatever the box\'s "readsFrom" says: a box built on a stored relation reads that relation by name, and only a box built on another query or chart reads "derived_table" — which stands for that box and is composed into one statement when the query runs. Writing "derived_table" where the relation has a name works, but says less.\n\nA box holds one statement, so running another replaces it — the old one is still in the history, but the box is showing the new one. Pass newBox to run this as a *sibling* instead: a fresh box beside the same parent, leaving this one as it was, which is what to do when a result is worth keeping. Pass label to name whichever box it ends up in.\n\nA statement may leave a predicate to a chart: write {{name}} where a condition belongs — WHERE {{picked}} — and pass filters [{name: "picked", from: chartId} ] to say which chart decides it. Whatever is picked out in that chart becomes the predicate, and picking something else re-runs this box and everything built on it: cross-filtering, with the arrow on the canvas showing what scopes what. Nothing picked is 1 = 1, so the box shows the data until somebody chooses. A {{name}} nothing answers for is left in the statement, which the database refuses — better than a query that quietly ran unfiltered.',
     args: {
       ...TABLE_ID,
       sql: { kind: 'string', describe: 'The statement to run' },
       preview: {
         kind: 'integer',
         describe: `Rows to return with the result, up to ${MAX_ROWS}. Five by default; 0 for none.`,
+        optional: true,
+      },
+      filters: {
+        kind: 'object-array',
+        describe:
+          'Which chart fills in each {{name}} in the statement, as [{name, from}]. The arrow is drawn for you, so it is on the canvas and in the history; cut it to stop the chart scoping this box.',
         optional: true,
       },
       newBox: {
@@ -363,10 +464,29 @@ export const AGENT_TOOLS: readonly AgentToolSpec[] = [
   {
     name: 'chart',
     describe:
-      'Sets up a chart and shows it. type: bar, line, area, scatter, pie — or custom. category is the column to group by; values are the columns to measure; aggregate is sum, average, min, max or count. breakdown groups by a second column instead of by several measures — claim type by decile — which is the only way to get a cross-tabulation, and reaches a custom chart as [category, breakdown, value] triples for a heatmap. Optional: sort, orientation, curve, scale, legend, stacked, showPoints, showValues, showGrid, hole, rowLimit, categoryLimit, and extra for raw ECharts options as JSON, merged over the settings above.\n\ntype "custom" is the whole of ECharts: extra becomes the entire option rather than an addition to one, so any series type the library draws — radar, sankey, heatmap, treemap, graph, gauge, boxplot, candlestick and the rest — is available, configured however it likes. The reduced rows arrive as dataset.source with a header row of [category, ...values], so a series can read them through encode or dimensions, or ignore them and carry its own data. Nothing of Panorama\'s is merged on top except a transparent background, the canvas palette and font, and three settings that cannot be honoured: animation and tooltips are off (the geometry is read back once per change, and a tooltip is a DOM overlay this seam has no room for) and the font family is the canvas\'s (there is one glyph atlas). Hover and selection need a series index to attach a mark to, so an exotic series may draw beautifully and pick nothing.\n\nThe picture is reduced and drawn over the frames that follow, so the status here may still be "loading". The answer also says what the canvas made of it — the rectangle it was laid out for, how many shapes and labels it drew, what it covers, and any label that ended up outside the box — which is the only way to iterate on a layout from here. Ask "chart" or "entity" again to see it settle.',
+      'Sets up a chart and shows it. type: bar, line, area, scatter, pie — or custom. category is the column to group by; values are the columns to measure; aggregate is sum, average, min, max or count. breakdown groups by a second column instead of by several measures — claim type by decile — which is the only way to get a cross-tabulation, and reaches a custom chart as [category, breakdown, value] triples for a heatmap. Optional: sort, orientation, curve, scale, legend, stacked, showPoints, showValues, showGrid, hole, rowLimit, categoryLimit, and extra for raw ECharts options as JSON, merged over the settings above.\n\ntype "custom" is the whole of ECharts: extra becomes the entire option rather than an addition to one, so any series type the library draws — radar, sankey, heatmap, treemap, graph, gauge, boxplot, candlestick and the rest — is available, configured however it likes. The data arrives as ECharts data sets, each with its columns declared and an id to read it by. The reduction is always there as \"primary\" — [category, ...values], or [category, breakdown, value] triples where a breakdown makes it a cross-tabulation. Name your own in spec.frames for anything that shape cannot express: kind \"rows\" projects the rows as they are, which is what a heatmap, a scatter sized by a fourth column, a graph\'s edge list or a tree\'s parent list needs; kind \"group\" is another grouping of the same rows, for a marginal beside a matrix; kind \"scalar\" is one number, read as {\"$param\": \"name\"} anywhere in the option — a markLine at a computed base rate rather than at a literal that goes stale. Read one with datasetId and encode: frames [{name: \"m\", kind: \"rows\", columns: [\"BAND\", \"TYPE\", \"PCT\"]}] with extra {\"series\":[{\"type\":\"heatmap\",\"datasetId\":\"m\",\"encode\":{\"x\":\"BAND\",\"y\":\"TYPE\",\"value\":\"PCT\"}}]}. visualMap and symbolSize then read real dimensions, so nothing has to be typed into the option as an array. Every data set reads the rows of the box this chart was opened on unless its "from" names another.\n\nA series longer than the screen is two things: kind \"resample\", which reduces it to a few hundred points where the rows are, and a window, which says which part of the relation it reads. Move the window along with pan {frame, pages} — one commit, so it undoes — and the chart keeps the picture it had until the next window arrives. Nothing of Panorama\'s is merged on top except a transparent background, the canvas palette and font, and three settings that cannot be honoured: animation and tooltips are off (the geometry is read back once per change, and a tooltip is drawn by the canvas rather than by the library) and the font family is the canvas\'s (there is one glyph atlas). Hovering and picking work for any series the library links back to its rows, which is most of them: a mark is found in the geometry rather than per series type, and a data set with a key says what a picked mark stands for. The known exception is a calendar heatmap, whose cells are drawn by the calendar component and carry no row anywhere in the display list — a correct picture that is inert. \"drawn.pickable\" says which you have, so it is measurable rather than a caveat to remember.\n\nThe picture is reduced and drawn over the frames that follow, so the status here may still be "loading". The answer also says what the canvas made of it, in two halves. The *shape*: the rectangle it was laid out for, how many shapes and labels it drew, what it covers, and any label that ended up outside the box. And the *source*: which data sets it was given with their dimensions, what each series read and through which channels, how many marks each drew, and — first among them — "unresolved", where a channel naming a column its data set has not got is spelled out. A series with no marks and an unresolved channel is the failure that otherwise looks like success. Ask "chart" or "entity" again to see it settle.\n\nFor a written option, "chart.offered" is what the reduction produced and handed over as a data set; it is not a claim that the option used any of it. What it used is in "drawn.series".',
     args: {
       ...TABLE_ID,
-      spec: { kind: 'object', describe: 'The chart specification', schema: CHART_SPEC_SCHEMA },
+      spec: {
+        kind: 'object',
+        describe: 'The chart specification. Omit only when panning a window.',
+        schema: CHART_SPEC_SCHEMA,
+        optional: true,
+      },
+      pan: {
+        kind: 'object',
+        describe:
+          "Moves a data set's window along, as {frame, pages}: pages 1 is the next windowful, -1 the last. Only a position window moves this way — what comes after a range of values is a question about the data, so name the next range instead. A commit, so it undoes like anything else.",
+        optional: true,
+        schema: {
+          type: 'object',
+          properties: {
+            frame: { type: 'string', description: 'The data set whose window moves' },
+            pages: { type: 'number', description: 'Windows to move by; 1 is the next one' },
+          },
+          required: ['frame', 'pages'],
+        },
+      },
       label: { kind: 'string', describe: 'A name for the box', optional: true },
       ...VERBOSE,
     },

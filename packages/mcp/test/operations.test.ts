@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { EntityId } from '@panorama/core';
 import {
   AGENT_HANDLERS,
   AGENT_TOOLS,
@@ -453,6 +454,487 @@ describe('editing', () => {
     expect(host.drafts.get(query.id)).toBeUndefined();
   });
 
+  it('draws the arrow a {{name}} asked for, and says what it did', async () => {
+    const host = new FakeHost();
+    const base = host.add(makeTable(host.ids));
+    const chart = host.add(
+      makeTable(host.ids, {
+        source: {
+          kind: 'chart',
+          connectionId: TEST_CONNECTION,
+          spec: CHART_SPEC,
+          label: 'a chart',
+          derivedFrom: base.id,
+        },
+        mode: 'result',
+        columns: [],
+      }),
+    );
+    const box = host.add(
+      makeTable(host.ids, {
+        source: {
+          kind: 'query',
+          connectionId: TEST_CONNECTION,
+          sql: 'SELECT * FROM derived_table',
+          label: 'a query',
+          derivedFrom: base.id,
+        },
+        mode: 'result',
+        columns: [],
+      }),
+    );
+    const answer = (await run(host, 'query', {
+      tableId: box.id,
+      sql: 'SELECT * FROM derived_table WHERE {{picked}}',
+      filters: [{ name: 'picked', from: chart.id }],
+    })) as { scopedBy: readonly { name: string; from: string; did: string }[] };
+    expect(answer.scopedBy).toEqual([{ name: 'picked', from: chart.id, did: 'now scopes it' }]);
+    // Through a command, so the arrow is on the canvas and in the history.
+    const drawn = [...host.core.world.bindings.values()].filter(
+      (binding) => binding.kind === 'filter',
+    );
+    expect(drawn).toHaveLength(1);
+    expect(drawn[0]).toMatchObject({ fromId: chart.id, toId: box.id, label: 'picked' });
+
+    // Asked for again, left exactly as it was.
+    const again = (await run(host, 'query', {
+      tableId: box.id,
+      sql: 'SELECT * FROM derived_table WHERE {{picked}}',
+      filters: [{ name: 'picked', from: chart.id }],
+    })) as { scopedBy: readonly { did: string }[] };
+    expect(again.scopedBy[0]?.did).toBe('was already scoping it');
+
+    // Pointed at another chart, the old arrow is cut rather than left beside it:
+    // one name is decided by one box.
+    const second = host.add(
+      makeTable(host.ids, {
+        source: {
+          kind: 'chart',
+          connectionId: TEST_CONNECTION,
+          spec: CHART_SPEC,
+          label: 'another chart',
+          derivedFrom: base.id,
+        },
+        mode: 'result',
+        columns: [],
+      }),
+    );
+    const moved = (await run(host, 'query', {
+      tableId: box.id,
+      sql: 'SELECT * FROM derived_table WHERE {{picked}}',
+      filters: [{ name: 'picked', from: second.id }],
+    })) as { scopedBy: readonly { did: string }[] };
+    expect(moved.scopedBy[0]?.did).toBe('now scopes it instead');
+    const one = [...host.core.world.bindings.values()].filter((b) => b.kind === 'filter');
+    expect(one).toHaveLength(1);
+    expect(one[0]).toMatchObject({ fromId: second.id });
+  });
+
+  it('says what stopped a {{name}} being wired up', async () => {
+    const host = new FakeHost();
+    const base = host.add(makeTable(host.ids));
+    const box = host.add(
+      makeTable(host.ids, {
+        source: {
+          kind: 'query',
+          connectionId: TEST_CONNECTION,
+          sql: 'SELECT 1',
+          label: 'a query',
+          derivedFrom: base.id,
+        },
+        mode: 'result',
+        columns: [],
+      }),
+    );
+    const ask = (filters: unknown): Promise<unknown> =>
+      run(host, 'query', { tableId: box.id, sql: 'SELECT * WHERE {{a}}', filters });
+    await expect(ask([{ name: 'a', from: 'table:nope' }])).rejects.toThrow(/no such box/u);
+    await expect(ask([{ name: 'a' }])).rejects.toThrow(/needs a name and the chart/u);
+    // Refused by the argument check before the handler sees it, which is where a
+    // list of objects is already a stated requirement.
+    await expect(ask(['a'])).rejects.toThrow(/filters must be a list of objects/u);
+    // A box with nothing picked out in it cannot decide anything, and the core
+    // says so in its own words.
+    await expect(ask([{ name: 'a', from: base.id }])).rejects.toThrow(/is not one/u);
+  });
+
+  it('draws the arrow a data set asked for, and says it did', async () => {
+    const host = new FakeHost();
+    const source = host.add(makeTable(host.ids));
+    const chart = host.add(
+      makeTable(host.ids, {
+        source: {
+          kind: 'chart',
+          connectionId: TEST_CONNECTION,
+          spec: CHART_SPEC,
+          label: 'SALES.ORDERS · Chart',
+          derivedFrom: source.id,
+        },
+        mode: 'editing',
+        columns: [],
+      }),
+    );
+    const spec = {
+      ...CHART_SPEC,
+      type: 'custom',
+      extra: '{"series":[{"type":"heatmap","datasetId":"matrix"}]}',
+      frames: [{ name: 'matrix', kind: 'rows', columns: ['COUNTRY'], from: source.id }],
+    };
+    const answer = (await run(host, 'chart', { tableId: chart.id, spec })) as {
+      reading: readonly { name: string; from: string; did: string }[];
+    };
+    expect(answer.reading).toEqual([{ name: 'matrix', from: source.id, did: 'now reads it' }]);
+    // Through a command, so the arrow is in the history and undoes with the rest.
+    const drawn = [...host.core.world.bindings.values()].filter(
+      (binding) => binding.kind === 'data',
+    );
+    expect(drawn).toHaveLength(1);
+    expect(drawn[0]).toMatchObject({ fromId: source.id, toId: chart.id, label: 'matrix' });
+
+    // Asked for again, it is left exactly as it was rather than redrawn.
+    const again = (await run(host, 'chart', { tableId: chart.id, spec })) as {
+      reading: readonly { did: string }[];
+    };
+    expect(again.reading[0]?.did).toBe('was already reading it');
+    expect([...host.core.world.bindings.values()].filter((b) => b.kind === 'data')).toHaveLength(1);
+
+    // Pointed somewhere else, the old arrow is cut rather than left beside it.
+    const elsewhere = host.add(makeTable(host.ids));
+    const moved = (await run(host, 'chart', {
+      tableId: chart.id,
+      spec: { ...spec, frames: [{ ...spec.frames[0], from: elsewhere.id }] },
+    })) as { reading: readonly { did: string }[] };
+    expect(moved.reading[0]?.did).toBe('now reads it instead');
+    const one = [...host.core.world.bindings.values()].filter((b) => b.kind === 'data');
+    expect(one).toHaveLength(1);
+    expect(one[0]).toMatchObject({ fromId: elsewhere.id });
+  });
+
+  it("refuses a chart that would read itself, in the core's own words", async () => {
+    const host = new FakeHost();
+    const chart = host.add(
+      makeTable(host.ids, {
+        source: {
+          kind: 'chart',
+          connectionId: TEST_CONNECTION,
+          spec: CHART_SPEC,
+          label: 'a chart',
+          derivedFrom: 'table:base' as never,
+        },
+        mode: 'editing',
+        columns: [],
+      }),
+    );
+    // The box exists, so the check before the cut passes; what refuses it is the
+    // document rule, and its message is the one worth passing on.
+    await expect(
+      run(host, 'chart', {
+        tableId: chart.id,
+        spec: {
+          ...CHART_SPEC,
+          frames: [{ name: 'itself', kind: 'rows', columns: ['C'], from: chart.id }],
+        },
+      }),
+    ).rejects.toThrow(/needs two different entities.*Everything else was set up/su);
+  });
+
+  it('says what stopped an arrow being drawn, and that the rest was set up', async () => {
+    const host = new FakeHost();
+    const chart = host.add(
+      makeTable(host.ids, {
+        source: {
+          kind: 'chart',
+          connectionId: TEST_CONNECTION,
+          spec: CHART_SPEC,
+          label: 'SALES.ORDERS · Chart',
+          derivedFrom: 'table:base' as never,
+        },
+        mode: 'editing',
+        columns: [],
+      }),
+    );
+    await expect(
+      run(host, 'chart', {
+        tableId: chart.id,
+        spec: {
+          ...CHART_SPEC,
+          frames: [{ name: 'matrix', kind: 'rows', columns: ['C'], from: 'table:nope' }],
+        },
+      }),
+    ).rejects.toThrow(/cannot read table:nope: there is no such box/u);
+  });
+
+  it('moves a data set along by whole windows, as a commit', async () => {
+    const host = new FakeHost();
+    const spec = {
+      type: 'custom',
+      category: 'COUNTRY',
+      values: ['REVENUE'],
+      aggregate: 'sum',
+      extra: '{"series":[{"type":"line","datasetId":"line"}]}',
+      frames: [
+        {
+          name: 'line',
+          kind: 'resample',
+          x: 'ORDER_ID',
+          values: ['REVENUE'],
+          window: { by: 'position', from: 0, count: 500 },
+        },
+      ],
+    };
+    const chart = host.add(
+      makeTable(host.ids, {
+        source: {
+          kind: 'chart',
+          connectionId: TEST_CONNECTION,
+          spec: spec as never,
+          label: 'a series',
+          derivedFrom: 'table:base' as never,
+        },
+        mode: 'result',
+        columns: [],
+      }),
+    );
+    const commits = host.core.history.commits.size;
+    await run(host, 'chart', { tableId: chart.id, pan: { frame: 'line', pages: 1 } });
+    // Where a picture is looking is part of what the picture is, so it commits —
+    // and undoes, and branches, like anything else.
+    expect(host.core.history.commits.size).toBe(commits + 1);
+    const moved = host.core.world.entities.get(chart.id);
+    const frames = (moved as { source: { spec: { frames: readonly Record<string, unknown>[] } } })
+      .source.spec.frames;
+    expect(frames[0]?.['window']).toEqual({ by: 'position', from: 500, count: 500 });
+
+    // And back again.
+    await run(host, 'chart', { tableId: chart.id, pan: { frame: 'line', pages: -2 } });
+    const back = host.core.world.entities.get(chart.id) as {
+      source: { spec: { frames: readonly Record<string, unknown>[] } };
+    };
+    // Never past the beginning: there is no row before the first.
+    expect(back.source.spec.frames[0]?.['window']).toEqual({
+      by: 'position',
+      from: 0,
+      count: 500,
+    });
+  });
+
+  it("passes on the document's refusal when a moved window cannot be committed", async () => {
+    const host = new FakeHost();
+    const chart = host.add(
+      makeTable(host.ids, {
+        source: {
+          kind: 'chart',
+          connectionId: TEST_CONNECTION,
+          spec: {
+            type: 'custom',
+            category: 'COUNTRY',
+            values: ['REVENUE'],
+            aggregate: 'sum',
+            extra: '{"series":[]}',
+            frames: [
+              {
+                name: 'line',
+                kind: 'rows',
+                columns: ['COUNTRY'],
+                window: { by: 'position', from: 0, count: 10 },
+              },
+            ],
+          } as never,
+          label: 'a series',
+          derivedFrom: 'table:base' as never,
+        },
+        mode: 'result',
+        columns: [],
+      }),
+    );
+    // Closed out from under it: the window still moves in arithmetic, and the
+    // document says there is nothing to move it on.
+    host.core.dispatch({ type: 'RemoveEntities', ids: [chart.id] });
+    await expect(
+      run(host, 'chart', { tableId: chart.id, pan: { frame: 'line', pages: 1 } }),
+    ).rejects.toThrow(/table:/u);
+  });
+
+  it('says why a window cannot be moved rather than moving the wrong thing', async () => {
+    const host = new FakeHost();
+    const withFrames = (frames: readonly unknown[]): Record<string, unknown> => ({
+      type: 'custom',
+      category: 'COUNTRY',
+      values: ['REVENUE'],
+      aggregate: 'sum',
+      extra: '{"series":[]}',
+      frames,
+    });
+    const chartWith = (frames: readonly unknown[]): EntityId =>
+      host.add(
+        makeTable(host.ids, {
+          source: {
+            kind: 'chart',
+            connectionId: TEST_CONNECTION,
+            spec: withFrames(frames) as never,
+            label: 'a chart',
+            derivedFrom: 'table:base' as never,
+          },
+          mode: 'result',
+          columns: [],
+        }),
+      ).id;
+
+    const noWindow = chartWith([{ name: 'raw', kind: 'rows', columns: ['COUNTRY'] }]);
+    await expect(
+      run(host, 'chart', { tableId: noWindow, pan: { frame: 'raw', pages: 1 } }),
+    ).rejects.toThrow(/has no window to move/u);
+    await expect(
+      run(host, 'chart', { tableId: noWindow, pan: { frame: 'nope', pages: 1 } }),
+    ).rejects.toThrow(/no data set called "nope"/u);
+    await expect(
+      run(host, 'chart', { tableId: noWindow, pan: { frame: 'raw', pages: 'far' } }),
+    ).rejects.toThrow(/pan is \{frame, pages\}/u);
+
+    const scalar = chartWith([
+      { name: 'total', kind: 'scalar', column: 'REVENUE', aggregate: 'sum' },
+    ]);
+    await expect(
+      run(host, 'chart', { tableId: scalar, pan: { frame: 'total', pages: 1 } }),
+    ).rejects.toThrow(/is a scalar, which reads no window/u);
+
+    const ranged = chartWith([
+      {
+        name: 'range',
+        kind: 'rows',
+        columns: ['ORDER_DATE'],
+        window: { by: 'value', column: 'ORDER_DATE', from: '2026-01-01', to: '2026-02-01' },
+      },
+    ]);
+    // What comes after a range of values is a question about the data, not
+    // arithmetic — so it says to name the next range.
+    await expect(
+      run(host, 'chart', { tableId: ranged, pan: { frame: 'range', pages: 1 } }),
+    ).rejects.toThrow(/send the next range instead/u);
+
+    // And neither a spec nor a pan is nothing to do.
+    await expect(run(host, 'chart', { tableId: noWindow })).rejects.toThrow(
+      /Send a spec, or a pan/u,
+    );
+  });
+
+  it('tells a written option what it was offered rather than what it must have used', async () => {
+    const host = new FakeHost();
+    const chart = host.add(
+      makeTable(host.ids, {
+        source: {
+          kind: 'chart',
+          connectionId: TEST_CONNECTION,
+          spec: { ...CHART_SPEC, type: 'custom', extra: '{"series":[{"type":"pie"}]}' },
+          label: 'SALES.ORDERS · Chart',
+          derivedFrom: 'table:base' as never,
+        },
+        mode: 'editing',
+        columns: [],
+      }),
+    );
+    host.geometry = {
+      ...(host.geometry as NonNullable<typeof host.geometry>),
+      series: [{ index: 0, type: 'pie', dataset: 'primary', marks: 3 }],
+      unresolved: ['series[0].encode.value names PROFIT, which data set "primary" has not got'],
+    };
+    const answer = (await run(host, 'entity', { tableId: chart.id })) as {
+      chart: Record<string, unknown>;
+      drawn: Record<string, unknown>;
+    };
+    // The reduction ran, as it does for every chart — but this option may have
+    // ignored every number in it, so it is reported as an offer and nothing more.
+    expect('data' in answer.chart).toBe(false);
+    expect(answer.chart['offered']).toEqual({
+      categories: 3,
+      series: ['REVENUE'],
+      rows: 3,
+      basis: 'exact',
+    });
+    expect(String(answer.chart['note'])).toContain('drawn.series');
+    // And the failure that looks like success is named.
+    expect(answer.drawn['unresolved']).toEqual([
+      'series[0].encode.value names PROFIT, which data set "primary" has not got',
+    ]);
+  });
+
+  it('says outright when a picture drew shapes that cannot be pointed at', async () => {
+    const host = new FakeHost();
+    const chart = host.add(
+      makeTable(host.ids, {
+        source: {
+          kind: 'chart',
+          connectionId: TEST_CONNECTION,
+          spec: CHART_SPEC,
+          label: 'a calendar',
+          derivedFrom: 'table:base' as never,
+        },
+        mode: 'result',
+        columns: [],
+      }),
+    );
+    host.geometry = {
+      ...(host.geometry as NonNullable<typeof host.geometry>),
+      polygons: 3_891,
+      pickable: false,
+    };
+    const answer = (await run(host, 'entity', { tableId: chart.id })) as {
+      drawn: Record<string, unknown>;
+    };
+    // A correct picture that is inert. No amount of rewriting the option changes
+    // it, so it is reported as a property of the picture rather than a mistake.
+    expect(answer.drawn['pickable']).toBe(false);
+    expect(String(answer.drawn['note'])).toContain('cannot reach this picture');
+
+    // And nothing is said where it can be pointed at.
+    host.geometry = { ...(host.geometry as NonNullable<typeof host.geometry>), pickable: true };
+    const fine = (await run(host, 'entity', { tableId: chart.id })) as {
+      drawn: Record<string, unknown>;
+    };
+    expect('pickable' in fine.drawn).toBe(false);
+  });
+
+  it('names a column a data set was asked for and the rows have not got', async () => {
+    const host = new FakeHost();
+    const chart = host.add(
+      makeTable(host.ids, {
+        source: {
+          kind: 'chart',
+          connectionId: TEST_CONNECTION,
+          spec: CHART_SPEC,
+          label: 'a chart',
+          derivedFrom: 'table:base' as never,
+        },
+        mode: 'result',
+        columns: [],
+      }),
+    );
+    host.reads = [
+      {
+        name: 'cells',
+        dimensions: ['COUNTRY', 'PROFIT'],
+        missing: ['PROFIT'],
+        rows: 5,
+        read: 5,
+        basis: 'exact',
+      },
+    ];
+    const answer = (await run(host, 'entity', { tableId: chart.id })) as {
+      drawn: { unresolved?: readonly string[] };
+    };
+    // It used to be a dimension with nothing in it and no marks drawn, which is a
+    // picture of nothing that says nothing about why.
+    expect(answer.drawn.unresolved).toContain(
+      'data set "cells" was asked to read PROFIT, which the rows behind it have not got',
+    );
+    // And the data set is described even though it is the only one: a missing
+    // column is something worth saying about it.
+    const detail = (await run(host, 'entity', { tableId: chart.id })) as {
+      chart: { reads?: readonly Record<string, unknown>[] };
+    };
+    expect(detail.chart.reads?.[0]).toMatchObject({ name: 'cells', missing: ['PROFIT'] });
+  });
+
   it('reports a drawn chart, and says when a label fell outside the box', async () => {
     const host = new FakeHost();
     const chart = host.add(
@@ -475,6 +957,10 @@ describe('editing', () => {
       texts: 12,
       bounds: null,
       clipped: ['a title nobody can read'],
+      datasets: [{ name: 'primary', dimensions: ['COUNTRY', 'REVENUE'], rows: 3 }],
+      series: [{ index: 0, type: 'bar', dataset: 'primary', encode: { x: 'COUNTRY' }, marks: 3 }],
+      unresolved: [],
+      pickable: true,
     };
     const answer = (await run(host, 'chart', { tableId: chart.id, spec: CHART_SPEC })) as {
       drawn: Record<string, unknown>;
@@ -733,9 +1219,23 @@ describe('editing', () => {
     })) as Record<string, unknown>;
     expect(host.chartDrafts.get(chart.id)?.type).toBe('line');
     expect(host.shown).toEqual([chart.id]);
-    expect(answer['chart']).toEqual({ status: 'ready' });
+    // A built chart is drawn from the reduction, so the reduction is what it is.
+    expect(answer['chart']).toEqual({
+      status: 'ready',
+      data: {
+        categories: ['Germany', 'Denmark', 'France'],
+        series: [{ name: 'REVENUE' }],
+        rows: 3,
+        basis: 'exact',
+      },
+    });
     // What the canvas made of it, which is the only feedback there is here.
     expect(answer['drawn']).toMatchObject({ box: { width: 400, height: 260 }, labels: 5 });
+    // And what it drew it from: the half of the feedback a picture cannot show.
+    expect(answer['drawn']).toMatchObject({
+      datasets: [{ name: 'primary', dimensions: ['COUNTRY', 'REVENUE'], rows: 3 }],
+      series: [{ index: 0, type: 'bar', dataset: 'primary', marks: 3 }],
+    });
     expect('chartColumns' in answer).toBe(false);
     const verbose = (await run(host, 'chart', {
       tableId: chart.id,

@@ -190,6 +190,419 @@ report.chartNamed = (
 const settled = await callTool('entity', { tableId: chartId });
 report.renderFeedback = settled.drawn;
 
+// 6c. The other half of the feedback: what the picture was drawn *from*. A
+//     written option that reads a column the data set has not got lays out
+//     perfectly and draws nothing, so the report has to say so by name — and a
+//     misspelt *setting* has to be refused rather than dropped, because a chart
+//     that comes back looking fine is a chart an agent will believe in.
+const written = await callTool('chart', {
+  tableId: chartId,
+  spec: {
+    type: 'custom',
+    category: 'COUNTRY',
+    values: ['REVENUE'],
+    aggregate: 'sum',
+    extra: JSON.stringify({
+      xAxis: { type: 'category' },
+      yAxis: { type: 'value' },
+      series: [{ type: 'bar', datasetId: 'primary', encode: { x: 'COUNTRY', y: 'PROFIT' } }],
+    }),
+  },
+});
+await page.waitForTimeout(1500);
+const resolved = await callTool('entity', { tableId: chartId });
+report.dataFeedback = {
+  // Read once it has settled: the `chart` call comes back while the reduction is
+  // still in flight, and "loading" has no numbers to describe either way.
+  whileLoading: written.chart?.status,
+  offeredRatherThanClaimed:
+    resolved.chart?.offered !== undefined && resolved.chart?.data === undefined,
+  offered: resolved.chart?.offered,
+  datasets: resolved.drawn?.datasets,
+  series: resolved.drawn?.series,
+  unresolved: resolved.drawn?.unresolved,
+};
+// 6d. A data set of the chart's own: a heatmap of raw rows, which the reduction
+//     cannot express at all, plus a reference line at a number the database
+//     worked out. Both are the point of naming data sets rather than typing
+//     arrays into the option.
+const framed = await callTool('chart', {
+  tableId: chartId,
+  spec: {
+    type: 'custom',
+    category: 'COUNTRY',
+    values: ['REVENUE'],
+    aggregate: 'sum',
+    frames: [
+      { name: 'cells', kind: 'rows', columns: ['COUNTRY', 'ORDER_DATE', 'REVENUE'], rowLimit: 40 },
+      { name: 'mean', kind: 'scalar', column: 'REVENUE', aggregate: 'average' },
+    ],
+    extra: JSON.stringify({
+      xAxis: { type: 'category' },
+      yAxis: { type: 'category' },
+      visualMap: { min: 0, max: 500, calculable: true },
+      series: [
+        {
+          type: 'heatmap',
+          datasetId: 'cells',
+          encode: { x: 'COUNTRY', y: 'ORDER_DATE', value: 'REVENUE' },
+          markLine: { data: [{ yAxis: { $param: 'mean' } }] },
+        },
+      ],
+    }),
+  },
+});
+await page.waitForTimeout(1800);
+const framedRead = await callTool('entity', { tableId: chartId, verbose: true });
+report.namedDataSets = {
+  accepted: framed.error ?? null,
+  datasets: framedRead.drawn?.datasets,
+  series: framedRead.drawn?.series,
+  unresolved: framedRead.drawn?.unresolved ?? [],
+  // A heatmap of raw rows is a mark per row: the shape the reduction could not
+  // have produced, drawn from a data set that stays true when the query changes.
+  drewCells: (framedRead.drawn?.series ?? []).reduce((total, entry) => total + entry.marks, 0),
+};
+
+// 6e. A data set that reads *another* box: a marginal beside the chart's own
+//     numbers, which one box's rows cannot produce. The arrow is asked for by
+//     name and drawn by the tool, so it is in the history and on the canvas.
+const second = await callTool('open_table', { schema: 'PANORAMA_DEMO', table: 'SAMPLE_100' });
+await page.waitForTimeout(700);
+const panelled = await callTool('chart', {
+  tableId: chartId,
+  spec: {
+    type: 'custom',
+    category: 'COUNTRY',
+    values: ['REVENUE'],
+    aggregate: 'sum',
+    frames: [
+      {
+        name: 'marginal',
+        kind: 'group',
+        category: 'COUNTRY',
+        values: ['REVENUE'],
+        aggregate: 'count',
+        from: second.id,
+      },
+    ],
+    extra: JSON.stringify({
+      grid: [{ right: '55%' }, { left: '55%' }],
+      xAxis: [
+        { type: 'category', gridIndex: 0 },
+        { type: 'value', gridIndex: 1 },
+      ],
+      yAxis: [
+        { type: 'value', gridIndex: 0 },
+        { type: 'category', gridIndex: 1 },
+      ],
+      series: [
+        { type: 'bar', datasetId: 'primary', xAxisIndex: 0, yAxisIndex: 0 },
+        {
+          type: 'bar',
+          datasetId: 'marginal',
+          xAxisIndex: 1,
+          yAxisIndex: 1,
+          // `count` names its measure `rows`, which is what the report said when
+          // this asked for REVENUE — the check earning its keep on its own probe.
+          encode: { x: 'rows', y: 'COUNTRY' },
+        },
+      ],
+    }),
+  },
+});
+await page.waitForTimeout(1800);
+const panelRead = await callTool('entity', { tableId: chartId });
+report.readsAnotherBox = {
+  arrowsDrawn: panelled.reading,
+  reads: panelRead.chart?.reads,
+  series: panelRead.drawn?.series,
+  unresolved: panelRead.drawn?.unresolved ?? [],
+  // The arrow is an ordinary binding: on the canvas, in the history, undoable.
+  onTheCanvas: await page.evaluate(
+    (id) =>
+      [...globalThis.__panorama.core.world.bindings.values()]
+        .filter((binding) => binding.kind === 'data' && binding.toId === id)
+        .map((binding) => ({ label: binding.label, from: binding.fromId })),
+    chartId,
+  ),
+};
+
+// 6f. What a picked mark *means*. A heatmap cell drawn from a keyed data set can
+//     be traced back to the relation, which is what makes selection, hovering and
+//     drilling in mean the same thing for every kind of chart.
+const keyed = await callTool('chart', {
+  tableId: chartId,
+  spec: {
+    type: 'custom',
+    category: 'COUNTRY',
+    values: ['REVENUE'],
+    aggregate: 'sum',
+    frames: [
+      {
+        name: 'cells',
+        kind: 'rows',
+        columns: ['COUNTRY', 'ORDER_DATE', 'REVENUE'],
+        key: 'COUNTRY',
+        rowLimit: 30,
+      },
+    ],
+    extra: JSON.stringify({
+      xAxis: { type: 'category' },
+      yAxis: { type: 'category' },
+      visualMap: { min: 0, max: 500 },
+      series: [
+        {
+          type: 'heatmap',
+          datasetId: 'cells',
+          encode: { x: 'COUNTRY', y: 'ORDER_DATE', value: 'REVENUE' },
+        },
+      ],
+    }),
+  },
+});
+await page.waitForTimeout(1500);
+// A mark found by pointing at the picture, the way a person would.
+const cell = await page.evaluate((id) => {
+  const workspace = globalThis.__panorama;
+  const entity = workspace.core.world.entities.get(id);
+  workspace.chartFor(entity, 400, 260, {
+    measureText: (text, size) => text.length * size * 0.55,
+    fontFamily: 'sans-serif',
+  });
+  for (let y = 20; y < 250; y += 6) {
+    for (let x = 10; x < 390; x += 6) {
+      const mark = workspace.chartMarkAt(id, x, y);
+      if (mark !== null) return mark;
+    }
+  }
+  return null;
+}, chartId);
+const behind = await callTool('action', { tableId: chartId, action: 'rows' });
+await callTool('session_dispatch', {
+  command: { type: 'SetSelectedMarks', targets: [{ entityId: chartId, ...cell }] },
+});
+await page.waitForTimeout(1200);
+const picked = await callTool('session');
+const drilled = await callTool('entity', { tableId: behind.opened?.[0]?.id });
+const settledKeyed = await callTool('entity', { tableId: chartId });
+report.whatAPickedMarkMeans = {
+  // Read once it has settled: the `chart` call comes back while the rows are
+  // still being read, and a data set nobody has built yet has no key to report.
+  whileLoading: keyed.chart?.status,
+  keyedBy: settledKeyed.chart?.reads?.find((frame) => frame.name === 'cells')?.key ?? null,
+  markOnTheCanvas: cell,
+  reported: picked.selectedMarks?.[0],
+  // The rows behind the cell, in a table of their own — which is what identity is
+  // for, and what a heatmap could not do at all before.
+  rowsBehindIt: drilled.rows,
+};
+
+// 6g. Cross-filtering: a statement that leaves a predicate to the chart, wired by
+//     an arrow. A cell is already picked out from the step above, so this shows the
+//     canvas working as an instrument — pick something, and what is downstream of
+//     the arrow re-scopes.
+//
+//     The box is made through the workspace rather than by running a statement:
+//     the sample relations have no database behind them, so nothing can be run
+//     against them. What the *database would be sent* is what matters here, and
+//     that is what is read back.
+const scopedId = await page.evaluate((id) => {
+  const workspace = globalThis.__panorama;
+  const base = workspace.core.world.entities.get(id);
+  const entity = {
+    id: workspace.core.ids.entity('table'),
+    type: 'table',
+    source: {
+      kind: 'query',
+      connectionId: 'connection:demo',
+      sql: 'SELECT COUNTRY, REVENUE FROM derived_table WHERE {{picked}}',
+      label: 'scoped by the chart',
+      derivedFrom: id,
+    },
+    mode: 'editing',
+    transform: {
+      x: base.transform.x + base.transform.width + 60,
+      y: base.transform.y + 320,
+      z: 0,
+      width: 330,
+      height: 175,
+    },
+    columns: [],
+    view: { rowHeight: 24, headerHeight: 72, horizontalOffset: 0 },
+  };
+  const created = workspace.core.dispatch({ type: 'CreateTableEntity', entity });
+  return created.ok ? entity.id : null;
+}, tableId);
+const wired = await callTool('dispatch', {
+  command: {
+    type: 'CreateBinding',
+    binding: {
+      id: `binding:filter-${Date.now()}`,
+      kind: 'filter',
+      fromId: chartId,
+      toId: scopedId,
+    },
+  },
+});
+report.crossFiltering = {
+  refusedWithoutAName: wired.error ?? null,
+};
+const named = await callTool('dispatch', {
+  command: {
+    type: 'CreateBinding',
+    binding: {
+      id: `binding:filter2-${Date.now()}`,
+      kind: 'filter',
+      fromId: chartId,
+      toId: scopedId,
+      label: 'picked',
+    },
+  },
+});
+await page.waitForTimeout(600);
+const scopedBox = await callTool('entity', { tableId: scopedId, verbose: true });
+report.crossFiltering.arrowDrawn = named.did ?? named.error;
+report.crossFiltering.scopedBy = scopedBox.scopedBy;
+// The statement as the database would see it: the placeholder filled in from what
+// is picked out in the chart, not from anything typed here.
+report.crossFiltering.composed = scopedBox.composed;
+// Letting the selection go widens it again, with nothing retyped.
+await callTool('session_dispatch', { command: { type: 'SetSelectedMarks', targets: [] } });
+await page.waitForTimeout(600);
+report.crossFiltering.afterLettingGo = (
+  await callTool('entity', { tableId: scopedId, verbose: true })
+).composed;
+report.crossFiltering.onTheCanvas = await page.evaluate(
+  (id) =>
+    [...globalThis.__panorama.core.world.bindings.values()]
+      .filter((binding) => binding.kind === 'filter' && binding.toId === id)
+      .map((binding) => ({ label: binding.label, from: binding.fromId })),
+  scopedId,
+);
+
+// 6h. A series longer than the screen: resampled where the rows are, read through
+//     a window, and moved along by whole windows in one call. The picture it had
+//     stays on screen while the next window is in flight — the constraint the
+//     whole design answers to does not get an exception for charts.
+const seriesSpec = (from) => ({
+  type: 'custom',
+  category: 'COUNTRY',
+  values: ['REVENUE'],
+  aggregate: 'sum',
+  frames: [
+    {
+      name: 'line',
+      kind: 'resample',
+      x: 'ORDER_DATE',
+      values: ['REVENUE'],
+      method: 'extremes',
+      points: 120,
+      key: 'ORDER_DATE',
+      window: { by: 'position', from, count: 40 },
+    },
+  ],
+  extra: JSON.stringify({
+    xAxis: { type: 'category' },
+    yAxis: { type: 'value' },
+    series: [{ type: 'line', datasetId: 'line', encode: { x: 'ORDER_DATE', y: 'REVENUE' } }],
+  }),
+});
+await callTool('chart', { tableId: chartId, spec: seriesSpec(0) });
+await page.waitForTimeout(1500);
+const firstWindow = await callTool('entity', { tableId: chartId });
+// Moved along by a windowful, in one call and as a commit.
+const commitsBefore = (await callTool('history')).commits?.length ?? 0;
+// One windowful along. The sample relation is a hundred rows, so a window of
+// forty has two and a bit of them in it.
+const panned = await callTool('chart', { tableId: chartId, pan: { frame: 'line', pages: 1 } });
+await page.waitForTimeout(1500);
+const movedWindow = await callTool('entity', { tableId: chartId });
+report.movingAlongASeries = {
+  read: firstWindow.chart?.reads?.find((frame) => frame.name === 'line'),
+  panned: panned.error ?? 'moved',
+  after: movedWindow.chart?.reads?.find((frame) => frame.name === 'line'),
+  committed: ((await callTool('history')).commits?.length ?? 0) - commitsBefore,
+  marks: movedWindow.drawn?.series,
+  // And it can be traced back, so a point of a series drills in like anything
+  // else.
+  keyed: movedWindow.chart?.reads?.find((frame) => frame.name === 'line')?.key ?? null,
+};
+
+// 6i. Three things an agent found by using this. The sample relation is a hundred
+//     rows, so the shape count here is modest — the stack overflow it used to
+//     throw needed about thirty thousand shapes and is pinned by a unit test.
+//     What this checks is the rest of it: that measuring a picture answers, that
+//     asking twice answers again (which is what "the box is poisoned" looked
+//     like), that a picture says whether it can be pointed at, and that a label
+//     carries no binary noise.
+const heavy = await callTool('chart', {
+  tableId: chartId,
+  spec: {
+    type: 'custom',
+    category: 'COUNTRY',
+    values: ['REVENUE'],
+    aggregate: 'sum',
+    frames: [{ name: 'points', kind: 'rows', columns: ['ORDER_ID', 'REVENUE'], rowLimit: 5_000 }],
+    extra: JSON.stringify({
+      xAxis: { type: 'value' },
+      yAxis: { type: 'value' },
+      series: [
+        {
+          type: 'scatter',
+          datasetId: 'points',
+          symbolSize: 6,
+          encode: { x: 'ORDER_ID', y: 'REVENUE' },
+        },
+      ],
+    }),
+  },
+});
+await page.waitForTimeout(2000);
+const measured = await callTool('entity', { tableId: chartId });
+report.aPictureMeasured = {
+  refused: heavy.error ?? null,
+  polygons: measured.drawn?.polygons,
+  // Measured in one walk rather than one stack frame per coordinate.
+  covers: measured.drawn?.covers,
+  pickable: measured.drawn?.pickable ?? true,
+  // And asking twice is still an answer, which is what "the box is poisoned"
+  // looked like.
+  again: (await callTool('entity', { tableId: chartId })).drawn?.polygons,
+};
+
+const rounded = await callTool('chart', {
+  tableId: chartId,
+  spec: {
+    type: 'bar',
+    category: 'COUNTRY',
+    values: ['REVENUE'],
+    aggregate: 'sum',
+    precision: 2,
+    showValues: true,
+  },
+});
+await page.waitForTimeout(1200);
+report.figuresWithoutNoise = {
+  refused: rounded.error ?? null,
+  // Every label on the picture, which is where 3483.7700000000004 used to appear.
+  labels: await page.evaluate((id) => {
+    const workspace = globalThis.__panorama;
+    const view = workspace.chartFor(workspace.core.world.entities.get(id), 420, 260, {
+      measureText: (text, size) => text.length * size * 0.55,
+      fontFamily: 'sans-serif',
+    });
+    return (view?.chart.texts ?? []).map((run) => run.text).filter((text) => /\d/u.test(text));
+  }, chartId),
+};
+
+report.refusesAMisspeltSetting = (
+  await callTool('chart', {
+    tableId: chartId,
+    spec: { type: 'bar', category: 'COUNTRY', values: ['REVENUE'], aggregate: 'sum', pivot: 'X' },
+  })
+).error;
+
 // 7. Selecting a mark, which is what fills a drill-down table.
 await callTool('session_dispatch', {
   command: { type: 'SetSelectedMarks', targets: [{ entityId: chartId, series: 0, data: 0 }] },

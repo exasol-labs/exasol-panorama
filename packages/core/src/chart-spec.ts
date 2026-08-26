@@ -98,6 +98,164 @@ export const DEFAULT_CHART_ROWS = 20_000;
 /** Categories a chart draws before the rest are gathered into one. */
 export const DEFAULT_CHART_CATEGORIES = 24;
 
+/**
+ * Rows a data set of unreduced rows carries before it says it has not read them
+ * all.
+ *
+ * Far below the row limit, and for a reason that is not the database: every row
+ * of an unreduced data set becomes elements in a layout, and the layout is walked
+ * per element in JavaScript to read its geometry back. The engine will happily
+ * return a million; the walk is what cannot.
+ */
+export const DEFAULT_FRAME_ROWS = 5_000;
+
+/** The most an unreduced data set will carry however much is asked for. */
+export const MAX_FRAME_ROWS = 20_000;
+
+/** The name the chart's own reduction is always offered under. */
+export const PRIMARY_FRAME = 'primary';
+
+/**
+ * Which part of a relation a data set reads.
+ *
+ * The answer to "a series longer than the screen". A chart of a billion points is
+ * a chart of a few hundred pixels' worth of them, and which few hundred is a
+ * question the picture asks as somebody moves along it — so a data set says where
+ * it is looking rather than always starting at the beginning.
+ *
+ * Two ways to say where, because they answer different questions. A *position*
+ * window is the table's own mechanism — a row offset and a count — and is right
+ * when the relation is already in the order the axis is in, which for a series
+ * means `ORDER BY` in the statement behind it. A *value* window says which values
+ * of a column it wants, which is what survives a change of scope: position four
+ * billion means nothing after a filter, and "the first of March to the eighth"
+ * means the same thing whatever else moved.
+ */
+export type ChartWindowSpec =
+  | { readonly by: 'position'; readonly from: number; readonly count: number }
+  | {
+      readonly by: 'value';
+      readonly column: string;
+      readonly from: CellLike;
+      readonly to: CellLike;
+    };
+
+/** What a window's bounds may be: whatever a cell of that column can hold. */
+export type CellLike = string | number | boolean | null;
+
+/** How a series longer than the screen is reduced to fit it. */
+export type ChartResampleMethod = 'extremes' | 'mean' | 'lttb';
+
+export const CHART_RESAMPLE_METHODS: readonly ChartResampleMethod[] = Object.freeze([
+  'extremes',
+  'mean',
+  'lttb',
+]);
+
+/** Points a resampled data set carries when nothing said how many. */
+export const DEFAULT_RESAMPLE_POINTS = 600;
+
+/** The most any resampling will carry: more points than a box has pixels is waste. */
+export const MAX_RESAMPLE_POINTS = 4_000;
+
+/**
+ * A named data set a chart reads, beyond the reduction it always gets.
+ *
+ * The reduction — a category, its measures, and one row per group — is the shape
+ * a bar chart wants and the only shape there was. It cannot express a matrix with
+ * a third column to colour by, a scatter whose points are sized by a fourth, or
+ * anything at all that is not one row per category. So a specification may name
+ * data sets of its own, each shaped the way the picture needs, and a written
+ * option reads them by name.
+ *
+ * Every kind reads the same relation the chart was opened on. Reading *another*
+ * box is a binding, which is a fact about the document rather than about the
+ * picture, and is not this.
+ */
+export type ChartFrameSpec =
+  /**
+   * A reduction, as the chart's own is: one row per category, a column per
+   * measure — or `[category, breakdown, value]` triples where a second grouping
+   * column makes it a cross-tabulation.
+   */
+  | {
+      readonly name: string;
+      readonly kind: 'group';
+      readonly category: string;
+      readonly values: readonly string[];
+      readonly aggregate: ChartAggregate;
+      readonly breakdown?: string;
+      readonly sort?: ChartSort;
+      readonly categoryLimit?: number;
+      /** Decimal places its figures are read to; see `ChartSpec.precision`. */
+      readonly precision?: number;
+    }
+  /**
+   * Rows as they are, projected to the columns named.
+   *
+   * The shape a heatmap, a scatter with a size channel, a graph's edges and a
+   * tree's parents all need, and the one thing a reduction can never be.
+   */
+  | {
+      readonly name: string;
+      readonly kind: 'rows';
+      readonly columns: readonly string[];
+      /**
+       * The column that says which rows a drawn mark stands for.
+       *
+       * What makes a picked mark mean something. Without it a heatmap cell can be
+       * hovered and picked out like anything else, and there is nothing to open
+       * the rows behind it with — the cell knows where it is in a data set and
+       * nothing about the relation the data set came from.
+       *
+       * One column, not several: `x AND y` is two predicates, and a row filter is
+       * one. A cell of a matrix therefore drills down on whichever of its axes is
+       * named here, which is a partial answer that says so rather than a whole one
+       * that is not available yet.
+       */
+      readonly key?: string;
+      readonly rowLimit?: number;
+      readonly window?: ChartWindowSpec;
+    }
+  /**
+   * A long series, reduced to fit the pixels it will be drawn in.
+   *
+   * The one kind that exists for a reason that is not the database: a million
+   * points is nothing to an engine and impossible for a layout, which walks every
+   * element in JavaScript to read its geometry back. So the reduction happens
+   * where the rows are and what crosses is a few hundred points.
+   *
+   * `extremes` keeps the highest and lowest of each bucket, which is the honest
+   * default for a series: a mean of a bucket hides the spike that was the reason
+   * to look. `mean` is for a trend. `lttb` keeps the points that make the shape.
+   */
+  | {
+      readonly name: string;
+      readonly kind: 'resample';
+      /** The column along the axis — usually a time. */
+      readonly x: string;
+      /** The columns measured against it. */
+      readonly values: readonly string[];
+      readonly method?: ChartResampleMethod;
+      /** Points to carry; a box's width in pixels is a good number. */
+      readonly points?: number;
+      readonly window?: ChartWindowSpec;
+      readonly key?: string;
+    }
+  /**
+   * One number, for a reference line or a threshold.
+   *
+   * Read through `{"$param": "name"}` anywhere in a written option, because a
+   * base rate typed into a `markLine` is an annotation that goes quietly out of
+   * date the moment the query behind it changes.
+   */
+  | {
+      readonly name: string;
+      readonly kind: 'scalar';
+      readonly column: string;
+      readonly aggregate: ChartAggregate;
+    };
+
 export interface ChartSpec {
   readonly type: ChartType;
   /** The column whose values become the categories, or the horizontal axis. */
@@ -127,6 +285,23 @@ export interface ChartSpec {
   readonly rowLimit?: number;
   /** Categories kept; the remainder are gathered rather than dropped. */
   readonly categoryLimit?: number;
+  /**
+   * Decimal places the measured figures are read to.
+   *
+   * For a chart somebody quotes from: a sum of money wants two places whatever
+   * the addition came out as. Left out, figures carry twelve significant digits —
+   * enough for anything this could have measured, and short of the noise binary
+   * addition leaves behind.
+   */
+  readonly precision?: number;
+  /**
+   * Data sets of the chart's own, beyond the reduction it always gets.
+   *
+   * Absent for every chart the controls can produce, which is why nothing about
+   * the simple path changes: a bar chart of a category and a measure needs no
+   * data set it has to name.
+   */
+  readonly frames?: readonly ChartFrameSpec[];
 
   /** Sums the series on top of each other rather than side by side. */
   readonly stacked?: boolean;
@@ -251,6 +426,87 @@ export const defaultChartSpec = (columns: readonly ChartColumnHint[]): ChartSpec
 };
 
 /** True where the series are the values of a column rather than the columns. */
+/** The kinds of data set a specification may name. */
+export const CHART_FRAME_KINDS: readonly ChartFrameSpec['kind'][] = Object.freeze([
+  'group',
+  'rows',
+  'resample',
+  'scalar',
+]);
+
+/** What is wrong with a window, or `null` where nothing is. */
+export const chartWindowProblem = (window: ChartWindowSpec): string | null => {
+  if (window.by === 'position') {
+    if (!Number.isFinite(window.from) || window.from < 0) return 'a window starts at a row, from 0';
+    if (!Number.isFinite(window.count) || window.count < 1) return 'a window covers at least a row';
+    return null;
+  }
+  if (window.column.trim() === '') return 'a window by value needs a column to bound';
+  if (window.from === null || window.to === null) return 'a window by value needs both bounds';
+  return null;
+};
+
+/**
+ * The same window, moved along by whole windows.
+ *
+ * Only a position window can be moved without knowing the data: a value window's
+ * next page is whatever the axis says comes next, and only the picture knows that.
+ */
+export const shiftedWindow = (window: ChartWindowSpec, pages: number): ChartWindowSpec | null => {
+  if (window.by !== 'position') return null;
+  const from = Math.max(0, Math.round(window.from + pages * window.count));
+  return from === window.from ? window : { ...window, from };
+};
+
+/**
+ * What is wrong with a list of data sets, or `null` where nothing is.
+ *
+ * One check, used by the boundary that reads a specification from an agent and by
+ * the reduction that builds the data sets: a name nothing can refer to, or two
+ * data sets answering to one name, is a picture that draws from the wrong numbers
+ * and cannot say so.
+ */
+export const chartFramesProblem = (frames: readonly ChartFrameSpec[]): string | null => {
+  const seen = new Set<string>();
+  for (const frame of frames) {
+    if (frame.name.trim() === '') return 'a data set needs a name to be read by';
+    if (frame.name === PRIMARY_FRAME) {
+      return `"${PRIMARY_FRAME}" is the name of the chart's own reduction; a data set needs another`;
+    }
+    if (seen.has(frame.name)) return `two data sets are called "${frame.name}"`;
+    seen.add(frame.name);
+    if (frame.kind === 'rows' && frame.columns.length === 0) {
+      return `data set "${frame.name}" names no columns to read`;
+    }
+    if (frame.kind === 'rows' && frame.key !== undefined && !frame.columns.includes(frame.key)) {
+      return `data set "${frame.name}" says its key is ${frame.key}, which it does not read`;
+    }
+    if (frame.kind === 'resample') {
+      if (frame.x.trim() === '') return `data set "${frame.name}" needs a column along the axis`;
+      if (frame.values.length === 0) {
+        return `data set "${frame.name}" needs at least one column to measure`;
+      }
+    }
+    if (frame.kind !== 'group' && frame.kind !== 'scalar' && frame.window !== undefined) {
+      const problem = chartWindowProblem(frame.window);
+      if (problem !== null) return `data set "${frame.name}": ${problem}`;
+    }
+    if (frame.kind === 'group' && frame.category.trim() === '') {
+      return `data set "${frame.name}" needs a category to group by`;
+    }
+    if (frame.kind === 'group' && frame.aggregate !== 'count' && frame.values.length === 0) {
+      return `data set "${frame.name}" needs a column to measure, or the count aggregate`;
+    }
+    if (frame.kind === 'scalar' && frame.column.trim() === '') {
+      return `data set "${frame.name}" needs a column to reduce to a number`;
+    }
+  }
+  return null;
+};
+
+/** The data sets a specification names, which is none for almost every chart. */
+export const chartFramesOf = (spec: ChartSpec): readonly ChartFrameSpec[] => spec.frames ?? [];
+
 export const isBrokenDown = (spec: ChartSpec): boolean =>
   spec.breakdown !== undefined && spec.breakdown !== '' && spec.breakdown !== spec.category;
 

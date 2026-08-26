@@ -112,6 +112,84 @@ export const identifierRanges = (sql: string, name: string): readonly SqlRange[]
 export const derivedTableRanges = (sql: string): readonly SqlRange[] =>
   identifierRanges(sql, DERIVED_TABLE);
 
+/** A placeholder a statement leaves for a predicate somebody else decides. */
+export interface SqlPlaceholder extends SqlRange {
+  readonly name: string;
+}
+
+const PLACEHOLDER_NAME = /^\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/u;
+
+/**
+ * Every `{{name}}` a statement leaves to be filled in.
+ *
+ * Lexed with the same walk that finds an identifier, so a `{{sel}}` inside a
+ * string literal or a comment is text and not a placeholder — which matters more
+ * here than it does for an identifier, because what goes in is a *predicate* and
+ * a predicate spliced into a literal changes what the literal says.
+ *
+ * Braces rather than a bare word on purpose. An identifier standing in for a table
+ * name is valid SQL wherever it appears, so leaving one unresolved is a query
+ * against the wrong table; a predicate has no such spelling, so this is chosen to
+ * be a syntax error when nothing fills it in. A statement that quietly ran
+ * unfiltered would be the worse failure.
+ */
+export const placeholderRanges = (sql: string): readonly SqlPlaceholder[] => {
+  const found: SqlPlaceholder[] = [];
+  let index = 0;
+  while (index < sql.length) {
+    const char = sql[index];
+    if (char === "'" || char === '"') {
+      index = skipQuoted(sql, index, char);
+      continue;
+    }
+    if (char === '-' && sql[index + 1] === '-') {
+      const newline = sql.indexOf('\n', index);
+      index = newline < 0 ? sql.length : newline + 1;
+      continue;
+    }
+    if (char === '/' && sql[index + 1] === '*') {
+      const close = sql.indexOf('*/', index + 2);
+      index = close < 0 ? sql.length : close + 2;
+      continue;
+    }
+    if (char === '{' && sql[index + 1] === '{') {
+      const match = PLACEHOLDER_NAME.exec(sql.slice(index));
+      if (match !== null) {
+        found.push({ from: index, to: index + match[0].length, name: match[1] as string });
+        index += match[0].length;
+        continue;
+      }
+    }
+    index += 1;
+  }
+  return found;
+};
+
+/**
+ * Fills in what it can and leaves the rest exactly as it was.
+ *
+ * A name nothing answers to stays a placeholder, so the database refuses the
+ * statement and the box says why — rather than a silent `1 = 1` that returns
+ * every row and looks like an answer.
+ */
+export const replacePlaceholders = (
+  sql: string,
+  resolve: (name: string) => string | null,
+): string => {
+  let out = '';
+  let last = 0;
+  for (const range of placeholderRanges(sql)) {
+    const filled = resolve(range.name);
+    if (filled === null) continue;
+    out += sql.slice(last, range.from) + filled;
+    last = range.to;
+  }
+  return out + sql.slice(last);
+};
+
+/** A name a placeholder can be written with, so a binding cannot promise one it cannot. */
+export const isPlaceholderName = (name: string): boolean => PLACEHOLDER_NAME.test(`{{${name}}}`);
+
 /**
  * Renames the input, wherever the statement refers to it.
  *
@@ -396,6 +474,12 @@ export const composeQuery = (
   world: WorldState,
   tableId: EntityId,
   relationName: (source: RelationSource) => string,
+  /**
+   * The statement each step contributes, for a caller that has something to fill
+   * in first. A placeholder is resolved per step, because the box that left it is
+   * the box whose arrows say what fills it.
+   */
+  statementOf: (step: QueryStep) => string = (step) => step.source.sql,
 ): Result<string, QueryChainError> => {
   const chain = derivedChain(world, tableId);
   if (!chain.ok) return chain;
@@ -403,8 +487,10 @@ export const composeQuery = (
   const expressions: string[] = [];
   let input: string | null = relation === undefined ? null : relationName(relation);
 
-  const resolve = (step: QueryStep): string =>
-    input === null ? step.source.sql : replaceDerivedTable(step.source.sql, input);
+  const resolve = (step: QueryStep): string => {
+    const sql = statementOf(step);
+    return input === null ? sql : replaceDerivedTable(sql, input);
+  };
 
   /**
    * A name for this step that no step has used for anything else.
@@ -413,7 +499,7 @@ export const composeQuery = (
    * name in a clause is an error at best and the wrong table at worst. So the
    * generated names give way to the written ones.
    */
-  const taken = steps.map((step) => step.source.sql);
+  const taken = steps.map((step) => statementOf(step));
   const freeName = (step: number): string => {
     let name = derivedStepName(step);
     while (taken.some((sql) => identifierRanges(sql, name).length > 0)) name = `${name}_x`;

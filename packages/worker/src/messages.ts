@@ -1,5 +1,5 @@
 import type { ChartSpec, EntityId } from '@panorama/core';
-import type { ChartData } from '@panorama/chart';
+import type { ChartData, ChartFrame } from '@panorama/chart';
 import type {
   DesiredBlock,
   ResultChunk,
@@ -166,6 +166,14 @@ export interface ChartDataMessage {
   readonly requestId: number;
   readonly tableId: EntityId;
   readonly spec: ChartSpec;
+  /**
+   * Which open table each named data set reads, where it is not this one.
+   *
+   * From the chart's data bindings: the arrow on the canvas says where a data
+   * set's rows come from, and this is that fact on the wire. A name absent here
+   * reads the chart's own relation.
+   */
+  readonly sources?: Readonly<Record<string, EntityId>>;
 }
 
 export interface CancelExportMessage {
@@ -263,5 +271,19 @@ export type DescribeTableResult = TableSchema;
 /** What a column summary comes back as; `null` when the source cannot say. */
 export type SummariseColumnResult = ColumnSummary | null;
 
-/** `null` when the table is open but has no rows to read yet. */
-export type ChartDataResult = ChartData | null;
+/**
+ * What a chart's rows came back as: the reduction, and every data set the
+ * specification named.
+ *
+ * Both from one read of the rows. A chart that names three data sets is asking
+ * three questions of the same result set, and fetching it three times would be
+ * paying three times for one answer.
+ *
+ * `null` when the table is open but has no rows to read yet.
+ */
+export interface ChartReduction {
+  readonly data: ChartData;
+  readonly frames: readonly ChartFrame[];
+}
+
+export type ChartDataResult = ChartReduction | null;

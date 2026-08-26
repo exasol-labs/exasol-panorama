@@ -38,13 +38,30 @@ export const AUTO_ANCHOR: BindingAnchor = Object.freeze({ mode: 'auto' });
 /**
  * Kinds of binding.
  *
- * `connector` draws a line between two entities and moves neither of them. The
- * next kind will be an attachment, where `fromId`'s transform is derived from
- * `toId`'s — a note stuck to a table. It plugs in at `resolveBinding` and in
- * the renderer, and needs an entity type that can be attached, which Stage 1
- * does not yet have.
+ * `connector` draws a line between two entities and moves neither of them: a
+ * followed foreign key, a query built on a table, a chart of one.
+ *
+ * `data` is a connector that also *means* something to the box it points at: it
+ * supplies one of a chart's named data sets, and its label is the name. That is
+ * the whole of the mechanism — a chart's specification says what shape each data
+ * set has, and the arrow says which box it reads. Drawn the same way as any other
+ * line, deliberately: the canvas then shows what feeds what, and removing the
+ * arrow is how you stop it feeding.
+ *
+ * `filter` is the other way round: it does not supply rows, it supplies a
+ * *predicate*. What is picked out in the box it comes from becomes the `{{name}}`
+ * its label names, wherever the box it points at writes that name in a statement.
+ * Cross-filtering, declared spatially — click a cell, and everything downstream
+ * of the arrow re-scopes.
+ *
+ * The next kind will be an attachment, where `fromId`'s transform is derived from
+ * `toId`'s — a note stuck to a table. It plugs in at `resolveBinding` and in the
+ * renderer, and needs an entity type that can be attached, which Stage 1 does not
+ * yet have.
  */
-export type BindingKind = 'connector';
+export type BindingKind = 'connector' | 'data' | 'filter';
+
+export const BINDING_KINDS: readonly BindingKind[] = Object.freeze(['connector', 'data', 'filter']);
 
 export interface Binding {
   readonly id: BindingId;
@@ -61,6 +78,49 @@ export interface Binding {
   /** Machine-readable detail for agents and for reopening the target. */
   readonly meta?: Readonly<Record<string, string>>;
 }
+
+/**
+ * Which box supplies each of a chart's named data sets.
+ *
+ * Read from the bindings rather than from the specification, so the fact lives in
+ * one place: the specification says what shape a data set has and the arrow says
+ * where its rows come from. A name with no arrow reads the chart's own relation,
+ * which is what every chart did before there were arrows.
+ */
+export const dataSourcesOf = (
+  world: WorldState,
+  chartId: EntityId,
+): ReadonlyMap<string, EntityId> => {
+  const sources = new Map<string, EntityId>();
+  for (const binding of world.bindings.values()) {
+    if (binding.kind !== 'data' || binding.toId !== chartId) continue;
+    const name = binding.label ?? '';
+    // A data binding with no name feeds nothing: there is no data set to be.
+    // Refused when it is made, so this is only ever belt and braces.
+    if (name !== '' && !sources.has(name)) sources.set(name, binding.fromId);
+  }
+  return sources;
+};
+
+/**
+ * Which box decides each `{{name}}` a statement leaves open.
+ *
+ * The same shape as `dataSourcesOf` and for the same reason: the arrow is the
+ * fact, so the canvas shows what scopes what and cutting the line is how you stop
+ * it scoping.
+ */
+export const filterSourcesOf = (
+  world: WorldState,
+  tableId: EntityId,
+): ReadonlyMap<string, EntityId> => {
+  const sources = new Map<string, EntityId>();
+  for (const binding of world.bindings.values()) {
+    if (binding.kind !== 'filter' || binding.toId !== tableId) continue;
+    const name = binding.label ?? '';
+    if (name !== '' && !sources.has(name)) sources.set(name, binding.fromId);
+  }
+  return sources;
+};
 
 export const bindingsOf = (world: WorldState, entityId: EntityId): readonly Binding[] =>
   [...world.bindings.values()].filter(

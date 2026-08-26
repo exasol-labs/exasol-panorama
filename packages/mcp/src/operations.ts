@@ -1,9 +1,16 @@
 import type { CommitId, EntityActionId, EntityId } from '@panorama/core';
-import { DERIVED_TABLE, describeCommand } from '@panorama/core';
+import type { ChartSpec, TableEntity } from '@panorama/core';
+import {
+  AUTO_ANCHOR,
+  DERIVED_TABLE,
+  chartFramesOf,
+  describeCommand,
+  shiftedWindow,
+} from '@panorama/core';
 import { MAX_ROWS, toolNamed } from './catalogue.js';
-import { readChartSpec, readCommand, readSessionCommand } from './commands.js';
+import { readChartSources, readChartSpec, readCommand, readSessionCommand } from './commands.js';
 import type { AgentHost } from './host.js';
-import { AgentError, obj, optional, readArgs, str } from './schema.js';
+import { AgentError, isRecord, obj, optional, readArgs, str } from './schema.js';
 import {
   chartDrawn,
   entityBrief,
@@ -179,6 +186,10 @@ export const AGENT_HANDLERS: Readonly<Record<string, AgentHandler>> = {
     if (label !== undefined) host.setTableLabel(tableId, label);
     const sql = str(args, 'sql');
     const reads = host.readsFrom(tableId);
+    // The arrows before the statement runs: a `{{name}}` with nothing to fill it
+    // in is a statement the database refuses, and drawing the arrow afterwards
+    // would mean refusing it once on purpose.
+    const scoped = wireFilters(host, tableId, args);
     host.setQueryDraft(tableId, sql);
     await host.runQuery(tableId, sql);
     const verbose = optional(args, 'verbose', false);
@@ -189,6 +200,7 @@ export const AGENT_HANDLERS: Readonly<Record<string, AgentHandler>> = {
     if (preview > 0) await host.ensureRows(tableId, 0, preview);
     const detail = {
       ...entityDetail(host, entityOr(host, tableId), verbose),
+      ...(scoped.length === 0 ? {} : { scopedBy: scoped }),
       ...(preview > 0
         ? {
             preview: (rowsJson(host, { tableId, from: 0, limit: preview }) as { rows: unknown })
@@ -216,15 +228,215 @@ export const AGENT_HANDLERS: Readonly<Record<string, AgentHandler>> = {
     }
     const label = optional<string | undefined>(args, 'label', undefined);
     if (label !== undefined) host.setTableLabel(tableId, label);
-    host.setChartDraft(tableId, readChartSpec(obj(args, 'spec')));
-    host.showChart(tableId);
+    const panned = optional<Readonly<Record<string, unknown>> | undefined>(args, 'pan', undefined);
+    const asked = optional<Readonly<Record<string, unknown>> | undefined>(args, 'spec', undefined);
+    if (asked === undefined && panned === undefined) {
+      throw new AgentError('Send a spec, or a pan to move a window of the one it has.');
+    }
+    /**
+     * A move along a series, or a new question about it.
+     *
+     * A pan changes one window of the specification the box already has, and
+     * nothing else about it: not the arrows, which are the same boxes; not the
+     * mode, which is already showing; not the line's label, which says what the
+     * chart is and not where it is looking. So it is one commit rather than the
+     * handful that setting a chart up costs, and undoing it is one step back
+     * along the series.
+     */
+    let bound: readonly { name: string; from: string; did: string }[] = [];
+    if (panned !== undefined) {
+      const wanted = panChart(entity, panned);
+      host.setChartDraft(tableId, wanted);
+      const applied = host.core.dispatch({ type: 'SetChartSpec', tableId, spec: wanted });
+      if (!applied.ok) throw new AgentError(applied.error.message);
+    } else {
+      const spec = asked as Readonly<Record<string, unknown>>;
+      host.setChartDraft(tableId, readChartSpec(spec));
+      // The arrows a data set asked for, drawn before the picture is shown: a
+      // data set with no arrow reads the chart's own box, so drawing them second
+      // would mean a first frame made of the wrong rows.
+      bound = wireDataSources(host, tableId, readChartSources(spec));
+      host.showChart(tableId);
+    }
     return {
       ...entityDetail(host, entityOr(host, tableId), optional(args, 'verbose', false)),
+      ...(bound.length === 0 ? {} : { reading: bound }),
       // What the canvas made of it, which is the only feedback there is on a
       // written option: a picture cannot be looked at from here.
       ...chartDrawn(host, entityOr(host, tableId)),
     };
   },
+};
+
+/**
+ * The same chart, looking at the next part of a series.
+ *
+ * Where a picture is looking is part of what the picture *is*, so this produces a
+ * specification to commit rather than a piece of session state — it undoes, it
+ * branches, and a gesture doing the same thing would leave the same history.
+ */
+const panChart = (entity: TableEntity, pan: Readonly<Record<string, unknown>>): ChartSpec => {
+  const name = pan['frame'];
+  const pages = pan['pages'];
+  if (typeof name !== 'string' || typeof pages !== 'number' || !Number.isFinite(pages)) {
+    throw new AgentError('pan is {frame, pages}: which data set, and how many windows to move it');
+  }
+  const spec = entity.source.kind === 'chart' ? entity.source.spec : undefined;
+  if (spec === undefined) throw new AgentError('Only a chart has a window to move.');
+  const frames = chartFramesOf(spec);
+  const found = frames.find((frame) => frame.name === name);
+  if (found === undefined) {
+    throw new AgentError(
+      `This chart has no data set called "${name}". It has: ${frames.map((frame) => frame.name).join(', ') || 'none'}.`,
+    );
+  }
+  if (found.kind !== 'rows' && found.kind !== 'resample') {
+    throw new AgentError(`The data set "${name}" is a ${found.kind}, which reads no window.`);
+  }
+  if (found.window === undefined) {
+    throw new AgentError(
+      `The data set "${name}" has no window to move. Give it one — {by: "position", from, count} — and it can be moved along.`,
+    );
+  }
+  const moved = shiftedWindow(found.window, pages);
+  if (moved === null) {
+    throw new AgentError(
+      `The data set "${name}" is windowed by value, and what comes after a range is a question about the data: send the next range instead.`,
+    );
+  }
+  return {
+    ...spec,
+    frames: frames.map((frame) => (frame.name === name ? { ...frame, window: moved } : frame)),
+  };
+};
+
+/**
+ * Draws the arrows a statement's `{{name}}`s asked for.
+ *
+ * One binding per name, labelled with it, from the chart that decides it — the
+ * same mechanism as a data set's arrow and for the same reasons: the canvas shows
+ * what scopes what, cutting the line stops it, and it is in the history.
+ */
+const wireFilters = (
+  host: AgentHost,
+  tableId: EntityId,
+  args: Readonly<Record<string, unknown>>,
+): readonly { readonly name: string; readonly from: string; readonly did: string }[] => {
+  const asked = optional<readonly unknown[]>(args, 'filters', []);
+  const done: { name: string; from: string; did: string }[] = [];
+  for (const entry of asked) {
+    if (!isRecord(entry)) throw new AgentError('each filter is {name, from}');
+    const name = entry['name'];
+    const from = entry['from'];
+    if (typeof name !== 'string' || name === '' || typeof from !== 'string' || from === '') {
+      throw new AgentError('each filter needs a name and the chart it comes from: {name, from}');
+    }
+    const existing = [...host.core.world.bindings.values()].find(
+      (binding) => binding.kind === 'filter' && binding.toId === tableId && binding.label === name,
+    );
+    if (existing !== undefined && existing.fromId === (from as EntityId)) {
+      done.push({ name, from, did: 'was already scoping it' });
+      continue;
+    }
+    if (!host.core.world.entities.has(from as EntityId)) {
+      throw new AgentError(
+        `{{${name}}} cannot be decided by ${from}: there is no such box. Use "entities" to see what is open.`,
+      );
+    }
+    // Cut without checking: the id came from the world a line ago, and removing a
+    // binding that is there is the one command that cannot be refused.
+    if (existing !== undefined) {
+      host.core.dispatch({ type: 'RemoveBindings', ids: [existing.id] });
+    }
+    const made = host.core.dispatch({
+      type: 'CreateBinding',
+      binding: {
+        id: host.core.ids.binding(),
+        kind: 'filter',
+        fromId: from as EntityId,
+        toId: tableId,
+        from: AUTO_ANCHOR,
+        to: AUTO_ANCHOR,
+        directed: true,
+        label: name,
+        meta: { kind: 'filter' },
+      },
+    });
+    if (!made.ok) {
+      throw new AgentError(`{{${name}}} cannot be decided by ${from}: ${made.error.message}`);
+    }
+    done.push({
+      name,
+      from,
+      did: existing === undefined ? 'now scopes it' : 'now scopes it instead',
+    });
+  }
+  return done;
+};
+
+/**
+ * Draws the arrows a chart's data sets asked for.
+ *
+ * One binding per named data set, labelled with the name — which is the whole
+ * mechanism: the chart's specification says what shape each data set has, and the
+ * arrow says which box it reads. Done through commands like everything else, so
+ * the arrows are in the history and undo with the chart.
+ *
+ * A name already reading the box asked for is left alone; one reading a different
+ * box is cut and redrawn, because a data set answers to one box at a time.
+ */
+const wireDataSources = (
+  host: AgentHost,
+  chartId: EntityId,
+  sources: ReadonlyMap<string, string>,
+): readonly { readonly name: string; readonly from: string; readonly did: string }[] => {
+  const done: { name: string; from: string; did: string }[] = [];
+  for (const [name, from] of sources) {
+    const existing = [...host.core.world.bindings.values()].find(
+      (binding) => binding.kind === 'data' && binding.toId === chartId && binding.label === name,
+    );
+    if (existing !== undefined && existing.fromId === (from as EntityId)) {
+      done.push({ name, from, did: 'was already reading it' });
+      continue;
+    }
+    // Checked before anything is cut: a name that ends up reading nothing because
+    // its new box does not exist is worse than one still reading its old box.
+    if (!host.core.world.entities.has(from as EntityId)) {
+      throw new AgentError(
+        `The data set "${name}" cannot read ${from}: there is no such box. Use "entities" to see what is open. Everything else was set up.`,
+      );
+    }
+    // Cut without checking: the id came from the world a line ago, and removing a
+    // binding that is there is the one command that cannot be refused.
+    if (existing !== undefined) {
+      host.core.dispatch({ type: 'RemoveBindings', ids: [existing.id] });
+    }
+    const made = host.core.dispatch({
+      type: 'CreateBinding',
+      binding: {
+        id: host.core.ids.binding(),
+        kind: 'data',
+        fromId: from as EntityId,
+        toId: chartId,
+        from: AUTO_ANCHOR,
+        to: AUTO_ANCHOR,
+        directed: true,
+        label: name,
+        meta: { kind: 'data-set' },
+      },
+    });
+    if (!made.ok) {
+      throw new AgentError(
+        `The data set "${name}" cannot read ${from}: ${made.error.message}. Everything else was set up.`,
+      );
+    }
+    done.push({
+      name,
+      from,
+      did: existing === undefined ? 'now reads it' : 'now reads it instead',
+    });
+  }
+  return done;
 };
 
 /** Runs a tool against the live application. */

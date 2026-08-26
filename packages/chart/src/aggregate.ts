@@ -58,14 +58,36 @@ const reduce = (measure: Measure, spec: ChartSpec): number | null => {
   if (measure.count === 0) return null;
   switch (spec.aggregate) {
     case 'sum':
-      return measure.total;
+      return settled(measure.total, spec);
     case 'average':
-      return measure.total / measure.count;
+      return settled(measure.total / measure.count, spec);
     case 'min':
-      return measure.min;
+      return settled(measure.min, spec);
     default:
-      return measure.max;
+      return settled(measure.max, spec);
   }
+};
+
+/**
+ * A figure without the noise floating-point addition leaves behind.
+ *
+ * Adding a few hundred two-decimal amounts in binary gives 3483.7700000000004,
+ * and that reaches an axis label and a chart somebody quotes from. The last three
+ * digits of a double are not information about the data, so they are dropped:
+ * twelve significant digits keeps every figure any of this could honestly have
+ * measured and loses the artefact.
+ *
+ * `precision` is the explicit form, for a figure that should be read to a stated
+ * number of decimals — the label on a chart of money wants two, whatever the sum
+ * came out as.
+ */
+const settled = (value: number, spec: ChartSpec): number => {
+  const places = spec.precision;
+  if (places !== undefined && Number.isFinite(places)) {
+    const factor = 10 ** Math.max(0, Math.min(12, Math.trunc(places)));
+    return Math.round(value * factor) / factor;
+  }
+  return Number.isFinite(value) ? Number(value.toPrecision(12)) : value;
 };
 
 /**

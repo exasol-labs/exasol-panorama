@@ -10,8 +10,10 @@ import {
 } from '@panorama/core';
 import { TEST_CONNECTION, makeTable, testIds } from './fixtures.js';
 import {
+  CHART_SPEC_SCHEMA,
   COMMAND_TYPES,
   describeCommands,
+  readChartSources,
   readChartSpec,
   readCommand,
   readSessionCommand,
@@ -149,6 +151,293 @@ describe('reading a connector', () => {
 
 describe('readChartSpec', () => {
   const base = { type: 'bar', category: 'COUNTRY', values: ['REVENUE'], aggregate: 'sum' };
+
+  it('refuses a setting it does not have, rather than dropping it', () => {
+    // The failure this replaces: `pivot` was read past, the chart came back
+    // looking fine, and an agent had every reason to believe a pivot had been
+    // applied. A refusal is a fact; a silent omission is a wrong picture
+    // presented as a right one.
+    expect(() => readChartSpec({ ...base, pivot: 'RISK_BAND' })).toThrow(
+      /spec.pivot is not a chart setting/u,
+    );
+    // And it says what there is, plus the one door out.
+    expect(() => readChartSpec({ ...base, pivot: 'RISK_BAND' })).toThrow(/categoryLimit/u);
+    expect(() => readChartSpec({ ...base, pivot: 'RISK_BAND' })).toThrow(/type "custom"/u);
+  });
+
+  it('is judged by exactly the settings its own schema advertises', () => {
+    // One list, read twice: the schema an agent is given and the check it is
+    // judged by. Written down because they were two lists for a while, and the
+    // difference was invisible from either side.
+    const advertised = Object.keys(CHART_SPEC_SCHEMA['properties'] as Record<string, unknown>);
+    expect(advertised.length).toBeGreaterThan(10);
+    for (const name of advertised) {
+      // Nothing advertised may be refused for *existing*. It may still be
+      // refused for its value — that is the field's own check, and this is not
+      // trying to guess a valid value for every one of them.
+      let refused = '';
+      try {
+        readChartSpec({ ...base, [name]: null });
+      } catch (error) {
+        refused = String(error);
+      }
+      expect(
+        refused.includes('not a chart setting'),
+        `${name} is advertised but not accepted`,
+      ).toBe(false);
+    }
+    // And nothing outside the list is.
+    expect(() => readChartSpec({ ...base, pivots: true })).toThrow(/not a chart setting/u);
+  });
+
+  it('reads how many places a figure should be read to', () => {
+    const spec = readChartSpec({
+      ...base,
+      precision: 2,
+      frames: [
+        {
+          name: 'money',
+          kind: 'group',
+          category: 'C',
+          values: ['V'],
+          aggregate: 'sum',
+          precision: 0,
+        },
+      ],
+    });
+    expect(spec.precision).toBe(2);
+    expect(spec.frames?.[0]).toMatchObject({ precision: 0 });
+  });
+
+  it('reads the data sets a specification names', () => {
+    const spec = readChartSpec({
+      ...base,
+      type: 'custom',
+      extra: '{"series":[{"type":"heatmap","datasetId":"matrix"}]}',
+      frames: [
+        {
+          name: 'matrix',
+          kind: 'group',
+          category: 'CLAIM_TYPE',
+          breakdown: 'RISK_BAND',
+          values: ['FRAUD_PCT'],
+          aggregate: 'average',
+          sort: 'name',
+          categoryLimit: 8,
+        },
+        { name: 'points', kind: 'rows', columns: ['X', 'Y', 'SIZE'], rowLimit: 500 },
+        { name: 'baserate', kind: 'scalar', column: 'FRAUD_PCT', aggregate: 'average' },
+      ],
+    });
+    expect(spec.frames).toEqual([
+      {
+        name: 'matrix',
+        kind: 'group',
+        category: 'CLAIM_TYPE',
+        breakdown: 'RISK_BAND',
+        values: ['FRAUD_PCT'],
+        aggregate: 'average',
+        sort: 'name',
+        categoryLimit: 8,
+      },
+      { name: 'points', kind: 'rows', columns: ['X', 'Y', 'SIZE'], rowLimit: 500 },
+      { name: 'baserate', kind: 'scalar', column: 'FRAUD_PCT', aggregate: 'average' },
+    ]);
+  });
+
+  it('reads which box each data set was told to read, apart from its shape', () => {
+    // Different kinds of fact: the shape is the question the chart asks and lives
+    // in its specification; the box is an arrow on the canvas.
+    const sent = {
+      ...base,
+      frames: [
+        { name: 'matrix', kind: 'rows', columns: ['X'], from: 'table:7' },
+        { name: 'mine', kind: 'rows', columns: ['Y'] },
+      ],
+    };
+    expect([...readChartSources(sent)]).toEqual([['matrix', 'table:7']]);
+    // And `from` never reaches the specification.
+    expect(readChartSpec(sent).frames?.[0]).toEqual({
+      name: 'matrix',
+      kind: 'rows',
+      columns: ['X'],
+    });
+  });
+
+  it('says nothing about sources where there are none to read', () => {
+    expect([...readChartSources({ ...base })]).toEqual([]);
+    expect([...readChartSources({ ...base, frames: 'matrix' })]).toEqual([]);
+    expect([
+      ...readChartSources({ ...base, frames: [7, { name: 'a' }, { from: 'table:1' }] }),
+    ]).toEqual([]);
+  });
+
+  it('refuses a field a data set does not have', () => {
+    expect(() =>
+      readChartSpec({
+        ...base,
+        frames: [{ name: 'a', kind: 'rows', columns: ['X'], pivot: true }],
+      }),
+    ).toThrow(/spec.frames\[0\].pivot is not part of a data set/u);
+  });
+
+  it('leaves the data sets out entirely when none were named', () => {
+    // Absent means exactly today's chart, which is what keeps the simple path
+    // simple: a bar chart of a category and a measure names no data set.
+    expect('frames' in readChartSpec({ ...base })).toBe(false);
+    expect('frames' in readChartSpec({ ...base, frames: [] })).toBe(false);
+  });
+
+  it('says what is wrong with a data set rather than drawing from nothing', () => {
+    const frames =
+      (frame: unknown): (() => unknown) =>
+      (): unknown =>
+        readChartSpec({ ...base, frames: [frame] });
+    expect(frames('matrix')).toThrow(/spec.frames\[0\] must be an object/u);
+    expect(frames({ kind: 'rows', columns: ['X'] })).toThrow(/name must be a string/u);
+    expect(frames({ name: 'x', kind: 'pivot' })).toThrow(
+      /kind must be one of group, rows, resample, scalar/u,
+    );
+    expect(frames({ name: 'x', kind: 'rows' })).toThrow(/names no columns to read/u);
+    expect(frames({ name: 'x', kind: 'rows', columns: 'X' })).toThrow(
+      /columns must be a list of column names/u,
+    );
+    expect(frames({ name: 'x', kind: 'group', values: ['A'] })).toThrow(
+      /category is required for a group data set/u,
+    );
+    expect(frames({ name: 'x', kind: 'group', category: 'C' })).toThrow(
+      /needs a column to measure, or the count aggregate/u,
+    );
+    expect(frames({ name: 'x', kind: 'scalar' })).toThrow(
+      /column is required for a scalar data set/u,
+    );
+    expect(frames({ name: 'x', kind: 'rows', columns: ['X'], rowLimit: 'lots' })).toThrow(
+      /rowLimit must be a number/u,
+    );
+    expect(frames({ name: 'x', kind: 'rows', columns: ['X'], key: 7 })).toThrow(
+      /key must name one of the columns it reads/u,
+    );
+    expect(frames({ name: 'x', kind: 'rows', columns: ['X'], key: 'Y' })).toThrow(
+      /says its key is Y, which it does not read/u,
+    );
+    expect(
+      frames({ name: 'x', kind: 'group', category: 'C', values: ['V'], breakdown: 7 }),
+    ).toThrow(/breakdown must name a second column/u);
+    expect(readChartSpec({ ...base, frames: null })).toBeDefined();
+    expect(() => readChartSpec({ ...base, frames: 'matrix' })).toThrow(
+      /spec.frames must be a list of data sets/u,
+    );
+  });
+
+  it('reads which part of a relation a data set says it reads', () => {
+    const spec = readChartSpec({
+      ...base,
+      frames: [
+        {
+          name: 'page',
+          kind: 'rows',
+          columns: ['T'],
+          window: { by: 'position', from: 1_000.7, count: 500.2 },
+        },
+        {
+          name: 'line',
+          kind: 'resample',
+          x: 'T',
+          values: ['V'],
+          method: 'lttb',
+          points: 900,
+          key: 'T',
+          window: { by: 'value', column: 'T', from: '2026-01-01', to: '2026-02-01' },
+        },
+      ],
+    });
+    // Whole rows, because half a row is not a row.
+    expect(spec.frames?.[0]).toEqual({
+      name: 'page',
+      kind: 'rows',
+      columns: ['T'],
+      window: { by: 'position', from: 1_000, count: 500 },
+    });
+    expect(spec.frames?.[1]).toEqual({
+      name: 'line',
+      kind: 'resample',
+      x: 'T',
+      values: ['V'],
+      method: 'lttb',
+      points: 900,
+      key: 'T',
+      window: { by: 'value', column: 'T', from: '2026-01-01', to: '2026-02-01' },
+    });
+  });
+
+  it('says what is wrong with a window rather than reading the wrong rows', () => {
+    const window =
+      (value: unknown): (() => unknown) =>
+      (): unknown =>
+        readChartSpec({
+          ...base,
+          frames: [{ name: 'p', kind: 'rows', columns: ['T'], window: value }],
+        });
+    expect(window('page 2')).toThrow(/window must be an object/u);
+    expect(window({ by: 'sideways' })).toThrow(/window.by must be "position" or "value"/u);
+    expect(window({ by: 'position', from: 0 })).toThrow(/needs from and count/u);
+    expect(window({ by: 'value', from: 1, to: 2 })).toThrow(/needs the column it bounds/u);
+    expect(window({ by: 'value', column: 'T', from: 1 })).toThrow(
+      /window.to must be a value the column could hold/u,
+    );
+    expect(window({ by: 'value', column: 'T', from: null, to: 2 })).toThrow(
+      /window.from must be a value/u,
+    );
+  });
+
+  it('says what is wrong with a resampling', () => {
+    expect(() =>
+      readChartSpec({ ...base, frames: [{ name: 'l', kind: 'resample', values: ['V'] }] }),
+    ).toThrow(/x is required for a resample data set/u);
+    expect(() =>
+      readChartSpec({
+        ...base,
+        frames: [{ name: 'l', kind: 'resample', x: 'T', values: ['V'], method: 'guess' }],
+      }),
+    ).toThrow(/method must be one of extremes, mean, lttb/u);
+    expect(() =>
+      readChartSpec({ ...base, frames: [{ name: 'l', kind: 'resample', x: 'T', values: [] }] }),
+    ).toThrow(/at least one column to measure/u);
+  });
+
+  it('refuses two data sets under one name, and the name the reduction has', () => {
+    // A name is how an option reaches a data set. Two answering to one name is a
+    // picture drawn from whichever won, and it cannot say which that was.
+    expect(() =>
+      readChartSpec({
+        ...base,
+        frames: [
+          { name: 'a', kind: 'rows', columns: ['X'] },
+          { name: 'a', kind: 'rows', columns: ['Y'] },
+        ],
+      }),
+    ).toThrow(/two data sets are called "a"/u);
+    expect(() =>
+      readChartSpec({ ...base, frames: [{ name: 'primary', kind: 'rows', columns: ['X'] }] }),
+    ).toThrow(/"primary" is the name of the chart's own reduction/u);
+    expect(() =>
+      readChartSpec({ ...base, frames: [{ name: '  ', kind: 'rows', columns: ['X'] }] }),
+    ).toThrow(/needs a name to be read by/u);
+  });
+
+  it('counts rows without a column to measure, as the chart itself does', () => {
+    const spec = readChartSpec({
+      ...base,
+      frames: [{ name: 'volume', kind: 'group', category: 'BAND', aggregate: 'count' }],
+    });
+    expect(spec.frames?.[0]).toEqual({
+      name: 'volume',
+      kind: 'group',
+      category: 'BAND',
+      values: [],
+      aggregate: 'count',
+    });
+  });
 
   it('keeps the optional settings it understands', () => {
     const spec = readChartSpec({

@@ -12,7 +12,10 @@ import {
   derivedTreeOf,
   emptyWorld,
   identifierRanges,
+  isPlaceholderName,
+  placeholderRanges,
   replaceDerivedTable,
+  replacePlaceholders,
   splitWithClause,
 } from '@panorama/core';
 import { TEST_CONNECTION, makeTable, testIds } from './fixtures.js';
@@ -44,6 +47,65 @@ const worldOf = (...entities: readonly TableEntity[]): WorldState => {
   }
   return world;
 };
+
+describe('a predicate a statement leaves to somebody else', () => {
+  it('finds every {{name}}, and what it is called', () => {
+    expect(placeholderRanges('SELECT * FROM t WHERE {{picked}} AND x > 1')).toEqual([
+      { from: 22, to: 32, name: 'picked' },
+    ]);
+    // Spaces inside the braces are somebody typing, not a different name.
+    expect(placeholderRanges('WHERE {{ a_1 }}').map((range) => range.name)).toEqual(['a_1']);
+    expect(placeholderRanges('WHERE {{one}} OR {{two}}').map((range) => range.name)).toEqual([
+      'one',
+      'two',
+    ]);
+  });
+
+  it('leaves one alone inside a literal, a quoted name or a comment', () => {
+    // It matters more here than for a table name: what goes in is a *predicate*,
+    // and a predicate spliced into a literal changes what the literal says.
+    expect(placeholderRanges("SELECT '{{picked}}' FROM t")).toEqual([]);
+    expect(placeholderRanges('SELECT "{{picked}}" FROM t')).toEqual([]);
+    expect(placeholderRanges('-- {{picked}}\nSELECT 1')).toEqual([]);
+    expect(placeholderRanges('/* {{picked}} */ SELECT 1')).toEqual([]);
+  });
+
+  it('is not a placeholder unless it is spelled like one', () => {
+    expect(placeholderRanges('WHERE {{1bad}}')).toEqual([]);
+    expect(placeholderRanges('WHERE {{}}')).toEqual([]);
+    expect(placeholderRanges('WHERE {single}')).toEqual([]);
+    expect(placeholderRanges('WHERE {{unclosed')).toEqual([]);
+  });
+
+  it('reads to the end of an unterminated literal or comment rather than past it', () => {
+    // What the database would do with it too: the run swallows the rest, so a
+    // placeholder after one is text.
+    expect(placeholderRanges("SELECT '{{a}}")).toEqual([]);
+    expect(placeholderRanges('/* {{a}}')).toEqual([]);
+    expect(placeholderRanges('-- {{a}}')).toEqual([]);
+    // And a single brace is a brace.
+    expect(placeholderRanges('WHERE { {a}}')).toEqual([]);
+  });
+
+  it('fills in what it can and leaves the rest exactly as it was', () => {
+    // A name nothing answers to stays a placeholder, so the database refuses the
+    // statement and the box says why — rather than a silent `1 = 1` that returns
+    // every row and looks like an answer.
+    const sql = 'SELECT * FROM t WHERE {{a}} AND {{b}}';
+    expect(replacePlaceholders(sql, (name) => (name === 'a' ? "C = 'x'" : null))).toBe(
+      "SELECT * FROM t WHERE C = 'x' AND {{b}}",
+    );
+    expect(replacePlaceholders(sql, () => null)).toBe(sql);
+  });
+
+  it('says which names a binding may promise', () => {
+    expect(isPlaceholderName('picked')).toBe(true);
+    expect(isPlaceholderName('_1')).toBe(true);
+    expect(isPlaceholderName('1bad')).toBe(false);
+    expect(isPlaceholderName('has space')).toBe(false);
+    expect(isPlaceholderName('')).toBe(false);
+  });
+});
 
 describe('finding where a statement names its input', () => {
   it('finds it as a table reference', () => {

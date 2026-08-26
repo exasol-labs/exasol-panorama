@@ -38,6 +38,55 @@ const run = (
 ): ReturnType<typeof aggregateChart> =>
   aggregateChart({ spec: spec(overrides), columns, chunks: [chunkOf(rows)], totalRows });
 
+describe('figures a chart can be quoted from', () => {
+  it('does not carry the noise binary addition leaves behind', () => {
+    // The artefact this removes: a sum of a few hundred two-decimal amounts came
+    // out as 3483.7700000000004 and reached an axis label, where there is no way
+    // to round it — a formatter can only be a string in a written option.
+    const data = run([
+      ['DE', 1_020.19],
+      ['DE', 2_463.58],
+      ['DE', 0.01],
+      ['DE', 0.01],
+      ['DE', 0.01],
+    ]);
+    expect(data.series[0]?.values[0]).toBe(3_483.8);
+  });
+
+  it('reads a figure to the places it was asked for', () => {
+    const data = run(
+      [
+        ['DE', 1 / 3],
+        ['DE', 1 / 3],
+      ],
+      { precision: 2 },
+    );
+    expect(data.series[0]?.values[0]).toBe(0.67);
+  });
+
+  it('clamps a precision nobody could mean, and leaves a figure that is not one', () => {
+    // Negative places is whole numbers; more than twelve is more digits than a
+    // double has. And an infinity is not a figure to be rounded.
+    expect(run([['DE', 1.55]], { precision: -3 }).series[0]?.values[0]).toBe(2);
+    expect(run([['DE', 1 / 3]], { precision: 30 }).series[0]?.values[0]).toBeCloseTo(1 / 3, 12);
+    const infinite = run(
+      [
+        ['DE', Number.MAX_VALUE],
+        ['DE', Number.MAX_VALUE],
+      ],
+      {},
+    );
+    expect(infinite.series[0]?.values[0]).toBe(Number.POSITIVE_INFINITY);
+  });
+
+  it('leaves a figure that needs its digits alone', () => {
+    // Twelve significant digits keeps everything any of this could honestly have
+    // measured: a large integer is not rounded away.
+    const data = run([['DE', 123_456_789_012]]);
+    expect(data.series[0]?.values[0]).toBe(123_456_789_012);
+  });
+});
+
 describe('reducing rows to what a chart draws', () => {
   it('sums a measure for each category', () => {
     const data = run([

@@ -29,7 +29,15 @@ import type {
   Rect,
   Size2,
 } from '@panorama/core';
-import { findFreePlacement, rightEdgeAnchor, selectedMarksOf } from '@panorama/core';
+import {
+  PRIMARY_FRAME,
+  dataSourcesOf,
+  filterSourcesOf,
+  findFreePlacement,
+  replacePlaceholders,
+  rightEdgeAnchor,
+  selectedMarksOf,
+} from '@panorama/core';
 import type { CellValue, RowFilter, SchemaInfo, TableInfo, TableSchema } from '@panorama/table';
 import { DEFAULT_BLOCK_SIZE, formatCell } from '@panorama/table';
 import type {
@@ -40,8 +48,8 @@ import type {
 } from '@panorama/renderer';
 import type { ForeignKeyFollow, InteractionHost, TableViewState } from '@panorama/renderer';
 import type { ExasolCredentials } from '@panorama/exasol';
-import { qualifiedName } from '@panorama/exasol';
-import type { ChartSurface, ChartTheme } from '@panorama/chart';
+import { filterPredicate, qualifiedName } from '@panorama/exasol';
+import type { ChartMark, ChartSurface, ChartTheme } from '@panorama/chart';
 import type { ChartExportFormat, ChartFigure, FileFormatDescriptor } from '@panorama/export';
 import {
   CHART_EXPORT_FORMATS,
@@ -54,7 +62,7 @@ import { DEFAULT_CHART_THEME } from '@panorama/chart';
 import { isNumericType } from '@panorama/table';
 import type { ByteSink, ExportFormat } from '@panorama/export';
 import { describeFormat, exportFileName } from '@panorama/export';
-import type { ChartGeometry, ChartState, ChartView } from './chart-pictures.js';
+import type { ChartGeometry, ChartReport, ChartView } from './chart-pictures.js';
 import { ChartPictures } from './chart-pictures.js';
 import type { ColumnSummaryState } from './column-summaries.js';
 import { ColumnSummaries } from './column-summaries.js';
@@ -398,6 +406,8 @@ export class Workspace implements TableViewProvider, InteractionHost {
   /** The same geometry with the pointer and the selection applied to it. */
   /** The predicate each drill-down table is currently showing. */
   readonly #rowFilters = new Map<EntityId, string>();
+  /** The filled-in statement each scoped query box last ran, to notice a change. */
+  readonly #scopedBy = new Map<EntityId, string>();
   readonly #options: WorkspaceOptions;
   readonly #clock: () => number;
   #connectionId: ConnectionId;
@@ -420,7 +430,8 @@ export class Workspace implements TableViewProvider, InteractionHost {
     this.#connectionId = options.connectionId ?? PENDING_CONNECTION;
     this.#exports = new ExportJobs(options.client);
     this.#pictures = new ChartPictures({
-      reduce: (tableId, spec) => options.client.chartData(tableId, spec),
+      reduce: (tableId, spec, sources) =>
+        options.client.chartData(tableId, spec, Object.fromEntries(sources)),
       ...(options.chartSurface === undefined ? {} : { surface: options.chartSurface }),
       theme: () => this.chartTheme,
       session: () => this.core.session,
@@ -728,6 +739,7 @@ export class Workspace implements TableViewProvider, InteractionHost {
     this.#releaseMarks(tableId);
     this.#pictures.forget(tableId);
     this.#chartDrafts.delete(tableId);
+    this.#scopedBy.delete(tableId);
   }
 
   /**
@@ -1077,7 +1089,12 @@ export class Workspace implements TableViewProvider, InteractionHost {
     this.core.dispatchSession({ type: 'SetSelection', ids: [entity.id] });
     // Started straight away, so the controls have something to be the controls
     // of — but not waited for: opening a box must not block on a database.
-    void this.#pictures.load(entity.id, baseTableId, spec);
+    void this.#pictures.load(
+      entity.id,
+      baseTableId,
+      spec,
+      dataSourcesOf(this.core.world, entity.id),
+    );
     return { tableId: entity.id, bindingId: binding.id };
   }
 
@@ -1158,34 +1175,41 @@ export class Workspace implements TableViewProvider, InteractionHost {
    */
   #selectionFilter(chartId: EntityId): RowFilter {
     const chart = this.core.world.entities.get(chartId);
-    const state = this.#pictures.stateOf(chartId);
-    // No chart, no category column, and therefore nothing to filter by. A
-    // predicate naming no column would be nonsense; an empty one is the truth.
+    // No chart, and therefore nothing to filter by. A predicate naming no column
+    // would be nonsense; an empty one is the truth.
     if (chart === undefined || !isTableEntity(chart) || !isChartTable(chart)) {
       return { column: '', values: [] };
     }
+    // Asked of the picture rather than worked out from the specification, so that
+    // a cell of a written heatmap answers the same way a bar of an assembled chart
+    // does: each mark says which data set it came from, and each data set says
+    // which column its rows are found by.
+    let column = '';
     const values: CellValue[] = [];
-    if (state?.status === 'ready') {
-      for (const mark of selectedMarksOf(this.core.session, chartId)) {
-        const value = state.data.values[mark.data];
-        // A category is one value however many of its marks were picked: the
-        // rows behind "Sweden" are the same rows whichever measure was clicked.
-        if (value === undefined || values.includes(value)) continue;
-        values.push(value);
-      }
+    for (const mark of selectedMarksOf(this.core.session, chartId)) {
+      const key = this.#pictures.keyFor(chartId, mark);
+      if (key === null) continue;
+      // The first key column wins, and marks from a data set keyed by another
+      // column are left out: `x AND y` is two predicates and a row filter is one.
+      if (column === '') column = key.column;
+      if (key.column !== column) continue;
+      // A category is one value however many of its marks were picked: the rows
+      // behind "Sweden" are the same rows whichever measure was clicked.
+      if (values.includes(key.value)) continue;
+      values.push(key.value);
     }
-    const type = this.#categoryType(chartId);
-    return { column: chart.source.spec.category, values, ...(type === undefined ? {} : { type }) };
+    if (column === '') return { column: '', values: [] };
+    const type = this.#columnType(chartId, column);
+    return { column, values, ...(type === undefined ? {} : { type }) };
   }
 
-  /** The declared type of the charted column, so the literal is formed right. */
-  #categoryType(chartId: EntityId): ColumnDataType | undefined {
+  /** The declared type of a charted column, so the literal is formed right. */
+  #columnType(chartId: EntityId, name: string): ColumnDataType | undefined {
     const chart = this.core.world.entities.get(chartId);
     if (chart === undefined || !isTableEntity(chart) || !isChartTable(chart)) return undefined;
     const base = this.core.world.entities.get(chart.source.derivedFrom);
     if (base === undefined || !isTableEntity(base)) return undefined;
-    return base.columns.find((column) => column.sourceColumn.name === chart.source.spec.category)
-      ?.sourceColumn.type;
+    return base.columns.find((column) => column.sourceColumn.name === name)?.sourceColumn.type;
   }
 
   /**
@@ -1274,7 +1298,12 @@ export class Workspace implements TableViewProvider, InteractionHost {
     // and keeping the position would silently move the choice to another
     // category.
     this.#releaseMarks(tableId);
-    void this.#pictures.load(tableId, entity.source.derivedFrom, spec);
+    void this.#pictures.load(
+      tableId,
+      entity.source.derivedFrom,
+      spec,
+      dataSourcesOf(this.core.world, tableId),
+    );
   }
 
   /** Lets go of the marks picked out in one chart, and of the pointer's. */
@@ -1308,9 +1337,61 @@ export class Workspace implements TableViewProvider, InteractionHost {
     return this.#options.chartTheme ?? DEFAULT_CHART_THEME;
   }
 
-  /** What a chart is drawing, or how far it has got towards it. */
-  chartState(tableId: EntityId): ChartState | undefined {
-    return this.#pictures.stateOf(tableId);
+  /**
+   * What a picked mark stands for, in the terms the rows behind it are found by.
+   *
+   * The agent-facing half of identity: a mark is a series and a data index, and
+   * what anybody wants from one is "the rows behind Sweden".
+   */
+  markMeaning(
+    tableId: EntityId,
+    mark: { readonly series: number; readonly data: number },
+  ): {
+    readonly frame: string;
+    readonly row: number;
+    readonly column: string;
+    readonly value: CellValue;
+  } | null {
+    const key = this.#pictures.keyFor(tableId, mark);
+    if (key === null) return null;
+    const stamped = mark as ChartMark;
+    return {
+      frame: stamped.frame ?? PRIMARY_FRAME,
+      row: stamped.row ?? mark.data,
+      column: key.column,
+      value: key.value,
+    };
+  }
+
+  /**
+   * What a chart is drawing, or how far it has got towards it.
+   *
+   * With each data set it holds and the box that supplied it, because a data set
+   * that arrived empty and a data set nobody asked for look the same in a picture
+   * and read very differently in an answer.
+   */
+  chartState(tableId: EntityId): ChartReport | undefined {
+    const state = this.#pictures.stateOf(tableId);
+    if (state?.status !== 'ready') return state;
+    const sources = dataSourcesOf(this.core.world, tableId);
+    return {
+      ...state,
+      frames: state.frames.map((frame) => {
+        const from = sources.get(frame.name);
+        return {
+          name: frame.name,
+          ...(from === undefined ? {} : { from }),
+          dimensions: frame.dimensions,
+          ...(frame.key === undefined ? {} : { key: frame.key }),
+          ...(frame.missing === undefined ? {} : { missing: frame.missing }),
+          ...(frame.window === undefined ? {} : { window: frame.window }),
+          ...(frame.scanned === undefined ? {} : { scanned: frame.scanned }),
+          rows: frame.rows.length,
+          read: frame.read,
+          basis: frame.basis,
+        };
+      }),
+    };
   }
 
   /**
@@ -1553,11 +1634,60 @@ export class Workspace implements TableViewProvider, InteractionHost {
   composedQuery(tableId: EntityId): string {
     // A name, not a statement: the reference is swapped for an identifier so it
     // stays valid wherever the user put it.
-    const composed = composeQuery(this.core.world, tableId, (source) =>
-      qualifiedName(source.schema, source.table),
+    const composed = composeQuery(
+      this.core.world,
+      tableId,
+      (source) => qualifiedName(source.schema, source.table),
+      // Each step's own placeholders filled in from its own arrows, before the
+      // steps are joined: the box that left a `{{name}}` is the box whose arrows
+      // say what fills it.
+      (step) => this.#filled(step.id, step.source.sql),
     );
     if (!composed.ok) throw new Error(composed.error.message);
     return composed.value;
+  }
+
+  /**
+   * A statement with its `{{name}}`s filled in from what is picked out.
+   *
+   * The predicate is built the same way the drill-down table's is — the chart says
+   * which column its marks stand for and what they are worth — so a cell picked
+   * out means the same thing whether it opens a table of its own or narrows one
+   * somewhere else on the canvas.
+   *
+   * Nothing picked is `1 = 1` rather than `1 = 0`: a knob at rest shows the data,
+   * and a statement that hid everything until somebody clicked would look broken.
+   * A name no arrow answers to is left as it was, so the database refuses it and
+   * the box says why.
+   */
+  #filled(tableId: EntityId, sql: string): string {
+    const sources = filterSourcesOf(this.core.world, tableId);
+    if (sources.size === 0) return sql;
+    return replacePlaceholders(sql, (name) => {
+      const from = sources.get(name);
+      if (from === undefined) return null;
+      const filter = this.#selectionFilter(from);
+      return filter.column === '' || filter.values.length === 0 ? '1 = 1' : filterPredicate(filter);
+    });
+  }
+
+  /** What each of a box's `{{name}}`s is filled in with, and by which box. */
+  filtersOf(tableId: EntityId): readonly {
+    readonly name: string;
+    readonly from: EntityId;
+    readonly picked: number;
+    readonly predicate: string;
+  }[] {
+    return [...filterSourcesOf(this.core.world, tableId)].map(([name, from]) => {
+      const filter = this.#selectionFilter(from);
+      return {
+        name,
+        from,
+        picked: filter.values.length,
+        predicate:
+          filter.column === '' || filter.values.length === 0 ? '1 = 1' : filterPredicate(filter),
+      };
+    });
   }
 
   /**
@@ -1614,7 +1744,12 @@ export class Workspace implements TableViewProvider, InteractionHost {
       // A chart is refreshed by re-reading its rows; a query box by running its
       // statement again. Both are things built on the table that changed.
       const refresh = isChartTable(derived)
-        ? this.#pictures.load(derived.id, derived.source.derivedFrom, derived.source.spec)
+        ? this.#pictures.load(
+            derived.id,
+            derived.source.derivedFrom,
+            derived.source.spec,
+            dataSourcesOf(this.core.world, derived.id),
+          )
         : isQueryTable(derived) && this.#views.has(derived.id)
           ? this.#executeQuery(derived)
           : null;
@@ -1702,6 +1837,52 @@ export class Workspace implements TableViewProvider, InteractionHost {
     // decides what should be loaded, and it cannot be bypassed by a new gesture.
     this.syncColumnSummaries();
     this.syncChartRows();
+    this.syncChartSources();
+    this.syncFilteredQueries();
+  }
+
+  /**
+   * Re-runs a query box when what scopes it has changed.
+   *
+   * The same shape as everything else in this tick: the arrows and the selection
+   * are state anything can change, so the decision to re-run is made in one place
+   * from what is true now. What is compared is the *filled-in* statement, so
+   * picking a second mark in the same category re-runs nothing.
+   */
+  syncFilteredQueries(): void {
+    for (const entity of this.core.world.entities.values()) {
+      if (!isTableEntity(entity) || !isQueryTable(entity)) continue;
+      if (filterSourcesOf(this.core.world, entity.id).size === 0) continue;
+      // Only a box that has already run: filling in a placeholder is not a reason
+      // to run a statement nobody has run yet.
+      if (!this.#views.has(entity.id)) continue;
+      const statement = this.composedQuery(entity.id);
+      if (this.#scopedBy.get(entity.id) === statement) continue;
+      this.#scopedBy.set(entity.id, statement);
+      void this.#refreshDerived(entity.id).catch(() => undefined);
+      void this.#executeQuery(entity).catch(() => undefined);
+    }
+  }
+
+  /**
+   * Keeps every chart reading the boxes its arrows say it reads.
+   *
+   * A data binding is document state, so it can be drawn or cut by a pointer, by
+   * an agent, or by an undo — and each of those should change what the picture is
+   * made of. Derived here rather than fired from whichever of them it was, for the
+   * same reason the drill-down tables are: one place decides what should be
+   * loaded.
+   */
+  syncChartSources(): void {
+    for (const entity of this.core.world.entities.values()) {
+      if (!isTableEntity(entity) || !isChartTable(entity)) continue;
+      const sources = dataSourcesOf(this.core.world, entity.id);
+      if (this.#pictures.readsFrom(entity.id, sources)) continue;
+      // The draft where the controls are holding one, and the committed
+      // specification otherwise: the same pair `setChartDraft` works on.
+      const spec = this.chartDraft(entity.id) ?? entity.source.spec;
+      void this.#pictures.load(entity.id, entity.source.derivedFrom, spec, sources);
+    }
   }
 
   // --- TableViewProvider -------------------------------------------------

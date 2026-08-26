@@ -1,12 +1,7 @@
 import type { ChartLegend, ChartSpec } from '@panorama/core';
-import {
-  chartSupports,
-  isBrokenDown,
-  isCartesianChart,
-  isCustomChart,
-  parseChartExtra,
-} from '@panorama/core';
-import type { ChartData, ChartTheme, ChartTypography } from '@panorama/chart';
+import { chartSupports, isCartesianChart, isCustomChart, parseChartExtra } from '@panorama/core';
+import type { ChartData, ChartFrame, ChartTheme, ChartTypography } from '@panorama/chart';
+import { frameScalar } from '@panorama/chart';
 import { toCssColour } from './colour.js';
 
 /**
@@ -149,46 +144,67 @@ const seriesFor = (spec: ChartSpec, data: ChartData, theme: ChartTheme): readonl
   }));
 };
 
+/** The name the reduced rows are offered under. */
+export const PRIMARY_DATASET = 'primary';
+
 /**
- * The reduced rows, as an ECharts dataset.
+ * The data sets, as ECharts takes them.
  *
- * A header row and then a row per category, which is the shape ECharts' own
- * `dataset.source` takes — so a written option can reach the table's data
- * through `encode` and `dimensions` like any other ECharts chart, and needs no
- * Panorama-specific placeholder to do it. The reduction is the same one every
- * other chart type gets: a written option is still a picture of a few dozen
- * numbers rather than of a billion rows.
+ * Dimensions declared rather than written as a header row: a data set that says
+ * what its columns are called is one an `encode` can be checked against, and the
+ * resolution report reads the same declaration to say what a series resolved to.
  */
-export const datasetSource = (spec: ChartSpec, data: ChartData): readonly unknown[][] => {
-  const category = spec.category === '' ? 'category' : spec.category;
-  if (isBrokenDown(spec)) {
-    // Long, because a cross-tabulation drawn as a matrix needs triples: a heatmap
-    // reads `[x, y, value]` and there is no arrangement of columns that is one.
-    const measure = spec.aggregate === 'count' ? 'rows' : (spec.values[0] ?? 'value');
-    return [
-      [category, spec.breakdown as string, measure],
-      ...data.series.flatMap((series) =>
-        data.categories.map((name, index) => [name, series.name, series.values[index] ?? null]),
-      ),
-    ];
+export const datasetsFor = (frames: readonly ChartFrame[]): readonly Option[] =>
+  frames.map((frame) => ({
+    id: frame.name,
+    dimensions: [...frame.dimensions],
+    source: frame.rows.map((row) => [...row]),
+  }));
+
+/** How a written option asks for a number a data set worked out. */
+const PARAM_KEY = '$param';
+
+/**
+ * Puts the scalars where a written option asked for them.
+ *
+ * `{"$param": "baserate"}` anywhere in an option becomes the number that data set
+ * reduced to. The one piece of grammar Panorama adds, and it exists because
+ * ECharts has no equivalent: a reference line's value is a literal in the option,
+ * so a base rate typed into one goes quietly out of date the moment the query
+ * behind it changes.
+ *
+ * A name nothing answers to is left exactly as it was rather than guessed at — a
+ * marker left in the option is reported by the resolution report, and a nought
+ * substituted for it would be a line somebody believes.
+ */
+export const resolveParams = (value: unknown, frames: readonly ChartFrame[]): unknown => {
+  if (Array.isArray(value)) return value.map((entry) => resolveParams(entry, frames));
+  if (typeof value !== 'object' || value === null) return value;
+  const record = value as Option;
+  const asked = record[PARAM_KEY];
+  if (typeof asked === 'string' && Object.keys(record).length === 1) {
+    const frame = frames.find((entry) => entry.name === asked);
+    if (frame === undefined) return record;
+    const scalar = frameScalar(frame);
+    return scalar === null ? record : scalar;
   }
-  return [
-    [category, ...data.series.map((series) => series.name)],
-    ...data.categories.map((name, index) => [
-      name,
-      ...data.series.map((series) => series.values[index] ?? null),
-    ]),
-  ];
+  return Object.fromEntries(
+    Object.entries(record).map(([key, entry]) => [key, resolveParams(entry, frames)]),
+  );
 };
 
 export const chartOption = (
   spec: ChartSpec,
   data: ChartData,
+  frames: readonly ChartFrame[],
   theme: ChartTheme,
   typography: ChartTypography,
 ): Option => {
   const text = toCssColour(theme.text);
   const legend = legendVisible(spec.legend, data.series.length);
+  // Offered to every chart, assembled or written: a `markLine` merged over a bar
+  // chart is as entitled to a base rate as a written option is.
+  const datasets = datasetsFor(frames.length === 0 ? [] : frames);
   const canvas: Option = {
     backgroundColor: 'transparent',
     color: theme.series.map(toCssColour),
@@ -218,7 +234,15 @@ export const chartOption = (
     // replaces ours rather than merging row by row with it — declining an offer
     // should not leave half of it behind.
     return seamed(
-      { ...canvas, dataset: { source: datasetSource(spec, data) }, ...authored },
+      {
+        ...canvas,
+        // Every data set, by name: the reduction under `primary` and whatever
+        // else the specification asked for. A written `dataset` replaces the lot
+        // rather than merging with it — declining an offer should not leave half
+        // of it behind.
+        dataset: datasets,
+        ...(resolveParams(authored, frames) as Option),
+      },
       typography,
     );
   }
@@ -260,5 +284,13 @@ export const chartOption = (
   // The escape hatch last, so it wins. A failure to parse is the form's business
   // to report; here it simply means the chart draws as the controls asked.
   const extra = parseChartExtra(spec.extra).option;
-  return seamed(extra === undefined ? built : (mergeOption(built, extra) as Option), typography);
+  // The data sets sit beside an assembled chart rather than in it: every series
+  // it builds carries its own values, so nothing here reads them — but the escape
+  // hatch may, and a `$param` in it resolves the same way it does in a written
+  // option.
+  const offered: Option = datasets.length === 0 ? built : { ...built, dataset: datasets };
+  return seamed(
+    extra === undefined ? offered : (mergeOption(offered, resolveParams(extra, frames)) as Option),
+    typography,
+  );
 };

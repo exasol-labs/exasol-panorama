@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { EntityId } from '@panorama/core';
 import type { RowsAvailable } from '@panorama/worker';
 import { serializeError } from '@panorama/worker';
 import type { TableDataSession } from '@panorama/table';
@@ -422,11 +423,260 @@ describe('DataWorker chart data', () => {
     await harness.client.openTable({ tableId: TABLE_ID, schema: 'PANORAMA_TEST', table: 'SALES' });
     const data = await harness.drive(harness.client.chartData(TABLE_ID, spec));
 
-    expect(data?.categories.length).toBeGreaterThan(0);
-    expect(data?.series[0]?.name).toBe('REVENUE');
+    expect(data?.data.categories.length).toBeGreaterThan(0);
+    expect(data?.data.series[0]?.name).toBe('REVENUE');
     // Ten thousand rows in the relation, and the default limit is above that.
-    expect(data?.rows).toBe(10_000);
-    expect(data?.basis).toBe('exact');
+    expect(data?.data.rows).toBe(10_000);
+    expect(data?.data.basis).toBe('exact');
+  });
+
+  it('builds each named data set from the box that supplies it', async () => {
+    const harness = createWorkerHarness();
+    const other = 'table:other' as EntityId;
+    await harness.client.openTable({ tableId: TABLE_ID, schema: 'PANORAMA_TEST', table: 'SALES' });
+    await harness.client.openTable({ tableId: other, schema: 'PANORAMA_TEST', table: 'OTHER' });
+    const answer = await harness.drive(
+      harness.client.chartData(
+        TABLE_ID,
+        {
+          ...spec,
+          frames: [
+            { name: 'mine', kind: 'rows', columns: ['COUNTRY'], rowLimit: 3 },
+            { name: 'theirs', kind: 'rows', columns: ['COUNTRY'], rowLimit: 4 },
+          ],
+        },
+        { theirs: other },
+      ),
+    );
+    // Named in the order the specification named them, whichever box each read
+    // and whichever order the reads finished in.
+    expect(answer?.frames.map((frame) => frame.name)).toEqual(['primary', 'mine', 'theirs']);
+    expect(answer?.frames[1]?.rows).toHaveLength(3);
+    expect(answer?.frames[2]?.rows).toHaveLength(4);
+  });
+
+  it('reads one box once, however many data sets it supplies', async () => {
+    const harness = createWorkerHarness();
+    await harness.client.openTable({ tableId: TABLE_ID, schema: 'PANORAMA_TEST', table: 'SALES' });
+    const before = harness.sources.get('PANORAMA_TEST.SALES')?.stats().fetches ?? 0;
+    await harness.drive(
+      harness.client.chartData(TABLE_ID, {
+        ...spec,
+        frames: [
+          { name: 'a', kind: 'rows', columns: ['COUNTRY'] },
+          { name: 'b', kind: 'rows', columns: ['REVENUE'] },
+          { name: 'c', kind: 'scalar', column: 'REVENUE', aggregate: 'sum' },
+        ],
+      }),
+    );
+    const once = (harness.sources.get('PANORAMA_TEST.SALES')?.stats().fetches ?? 0) - before;
+    // Three data sets are three questions about one result set, not three fetches
+    // of it. The relation is ten thousand rows and the block size is four
+    // thousand, so one read is three fetches; three reads would be nine.
+    expect(once).toBeLessThanOrEqual(3);
+  });
+
+  it('gives a data set from a box that is not open no rows, and still draws the rest', async () => {
+    const harness = createWorkerHarness();
+    await harness.client.openTable({ tableId: TABLE_ID, schema: 'PANORAMA_TEST', table: 'SALES' });
+    const answer = await harness.drive(
+      harness.client.chartData(
+        TABLE_ID,
+        { ...spec, frames: [{ name: 'gone', kind: 'rows', columns: ['COUNTRY'] }] },
+        { gone: 'table:closed' as EntityId },
+      ),
+    );
+    // Reported as empty rather than as a failure: the other data sets are still
+    // worth drawing, and the answer says which one had nothing.
+    expect(answer?.frames.map((frame) => frame.name)).toEqual(['primary', 'gone']);
+    expect(answer?.frames[1]?.rows).toEqual([]);
+    expect(answer?.data.categories.length).toBeGreaterThan(0);
+  });
+
+  it('reads the window a data set asked for by position, not the beginning', async () => {
+    const harness = createWorkerHarness();
+    await harness.client.openTable({ tableId: TABLE_ID, schema: 'PANORAMA_TEST', table: 'SALES' });
+    const answer = await harness.drive(
+      harness.client.chartData(TABLE_ID, {
+        ...spec,
+        frames: [
+          {
+            name: 'page',
+            kind: 'rows',
+            columns: ['COUNTRY'],
+            window: { by: 'position', from: 4_000, count: 25 },
+          },
+        ],
+      }),
+    );
+    const page = answer?.frames.find((frame) => frame.name === 'page');
+    expect(page?.rows).toHaveLength(25);
+    // And it says which part of the relation that was: a picture cannot.
+    expect(page?.window).toEqual({ by: 'position', from: 4_000, count: 25 });
+  });
+
+  it('keeps only the rows inside a range along a column', async () => {
+    const harness = createWorkerHarness();
+    await harness.client.openTable({ tableId: TABLE_ID, schema: 'PANORAMA_TEST', table: 'SALES' });
+    const answer = await harness.drive(
+      harness.client.chartData(TABLE_ID, {
+        ...spec,
+        frames: [
+          {
+            name: 'range',
+            kind: 'rows',
+            columns: ['ORDER_ID', 'COUNTRY'],
+            key: 'ORDER_ID',
+            window: { by: 'value', column: 'ORDER_ID', from: 10, to: 60 },
+          },
+        ],
+      }),
+    );
+    const range = answer?.frames.find((frame) => frame.name === 'range');
+    expect(range?.rows.length).toBeGreaterThan(0);
+    for (const row of range?.rows ?? []) {
+      expect(Number(row[0])).toBeGreaterThanOrEqual(10);
+      expect(Number(row[0])).toBeLessThanOrEqual(60);
+    }
+    // It says how far it had to walk to find them, which for a relation in
+    // another order is more rows than it kept.
+    expect(range?.scanned ?? 0).toBeGreaterThanOrEqual(range?.rows.length ?? 0);
+  });
+
+  it('stops reading a range as soon as the column has passed it', async () => {
+    // Which is what makes this a range read rather than a scan: a relation in the
+    // order the axis is in — a statement with an `ORDER BY`, which is what a series
+    // is drawn from — is not walked past the end of the range.
+    const ordered = {
+      ...factRelation(200_000),
+      valueFor: (_type: unknown, column: number, row: number): unknown =>
+        column === 0 ? row : row % 97,
+    };
+    const harness = createWorkerHarness({ source: { relation: ordered as never } });
+    await harness.client.openTable({ tableId: TABLE_ID, schema: 'PANORAMA_TEST', table: 'SALES' });
+    const answer = await harness.drive(
+      harness.client.chartData(TABLE_ID, {
+        ...spec,
+        frames: [
+          {
+            name: 'range',
+            kind: 'rows',
+            columns: ['ORDER_ID'],
+            window: { by: 'value', column: 'ORDER_ID', from: 100, to: 300 },
+          },
+        ],
+      }),
+    );
+    const range = answer?.frames.find((frame) => frame.name === 'range');
+    expect(range?.rows).toHaveLength(201);
+    // Two hundred thousand rows in the relation; a few thousand walked.
+    expect(range?.scanned ?? Infinity).toBeLessThan(10_000);
+  });
+
+  it('bounds a range on a text column the way the column would order it', async () => {
+    const harness = createWorkerHarness();
+    await harness.client.openTable({ tableId: TABLE_ID, schema: 'PANORAMA_TEST', table: 'SALES' });
+    const answer = await harness.drive(
+      harness.client.chartData(TABLE_ID, {
+        ...spec,
+        frames: [
+          {
+            name: 'range',
+            kind: 'rows',
+            columns: ['COUNTRY'],
+            window: { by: 'value', column: 'COUNTRY', from: 'F', to: 'Gz' },
+          },
+        ],
+      }),
+    );
+    const range = answer?.frames.find((frame) => frame.name === 'range');
+    expect(range?.rows.length).toBeGreaterThan(0);
+    for (const row of range?.rows ?? []) {
+      expect(String(row[0]) >= 'F' && String(row[0]) <= 'Gz').toBe(true);
+    }
+  });
+
+  it('gives a range on a column it has not got nothing at all', async () => {
+    const harness = createWorkerHarness();
+    await harness.client.openTable({ tableId: TABLE_ID, schema: 'PANORAMA_TEST', table: 'SALES' });
+    const answer = await harness.drive(
+      harness.client.chartData(TABLE_ID, {
+        ...spec,
+        frames: [
+          {
+            name: 'range',
+            kind: 'rows',
+            columns: ['COUNTRY'],
+            window: { by: 'value', column: 'NOWHERE', from: 1, to: 2 },
+          },
+        ],
+      }),
+    );
+    // Nothing can be said to be in range, and treating every row as inside it
+    // would be a lie. The reduction beside it is still drawn.
+    expect(answer?.frames.find((frame) => frame.name === 'range')?.rows).toEqual([]);
+    expect(answer?.data.categories.length).toBeGreaterThan(0);
+  });
+
+  it('gives a range that matches no rows an empty data set rather than everything', async () => {
+    const harness = createWorkerHarness();
+    await harness.client.openTable({ tableId: TABLE_ID, schema: 'PANORAMA_TEST', table: 'SALES' });
+    const answer = await harness.drive(
+      harness.client.chartData(TABLE_ID, {
+        ...spec,
+        frames: [
+          {
+            name: 'range',
+            kind: 'rows',
+            columns: ['COUNTRY'],
+            window: { by: 'value', column: 'COUNTRY', from: 'zzzz', to: 'zzzzz' },
+          },
+        ],
+      }),
+    );
+    expect(answer?.frames.find((frame) => frame.name === 'range')?.rows).toEqual([]);
+  });
+
+  it('reads a window from a source that cannot say how many rows it has', async () => {
+    const harness = createWorkerHarness({ source: { reportRowCount: false } });
+    await harness.client.openTable({ tableId: TABLE_ID, schema: 'PANORAMA_TEST', table: 'SALES' });
+    const answer = await harness.drive(
+      harness.client.chartData(TABLE_ID, {
+        ...spec,
+        frames: [
+          {
+            name: 'page',
+            kind: 'rows',
+            columns: ['COUNTRY'],
+            window: { by: 'position', from: 100, count: 30 },
+          },
+        ],
+      }),
+    );
+    // A count it cannot check against is not a reason to read nothing: it asks
+    // for the window and reports what came back.
+    const page = answer?.frames.find((frame) => frame.name === 'page');
+    expect(page?.rows).toHaveLength(30);
+    expect(page?.of).toBeNull();
+  });
+
+  it('resamples a long series where the rows are', async () => {
+    const harness = createWorkerHarness({ source: { relation: factRelation(50_000) } });
+    await harness.client.openTable({ tableId: TABLE_ID, schema: 'PANORAMA_TEST', table: 'SALES' });
+    const answer = await harness.drive(
+      harness.client.chartData(TABLE_ID, {
+        ...spec,
+        rowLimit: 20_000,
+        frames: [
+          { name: 'line', kind: 'resample', x: 'ORDER_ID', values: ['REVENUE'], points: 300 },
+        ],
+      }),
+    );
+    const line = answer?.frames.find((frame) => frame.name === 'line');
+    // Twenty thousand rows read beside the rows; three hundred points crossed.
+    expect(line?.read).toBe(20_000);
+    expect(line?.rows.length).toBeLessThanOrEqual(300);
+    expect(line?.basis).toBe('sampled');
   });
 
   it('stops at the limit and says the picture is of a beginning', async () => {
@@ -436,15 +686,15 @@ describe('DataWorker chart data', () => {
       harness.client.chartData(TABLE_ID, { ...spec, rowLimit: 500 }),
     );
 
-    expect(data?.rows).toBe(500);
-    expect(data?.basis).toBe('sampled');
+    expect(data?.data.rows).toBe(500);
+    expect(data?.data.basis).toBe('sampled');
   });
 
   it('never asks for fewer than one row, however small the limit', async () => {
     const harness = createWorkerHarness();
     await harness.client.openTable({ tableId: TABLE_ID, schema: 'PANORAMA_TEST', table: 'SALES' });
     const data = await harness.drive(harness.client.chartData(TABLE_ID, { ...spec, rowLimit: 0 }));
-    expect(data?.rows).toBe(1);
+    expect(data?.data.rows).toBe(1);
   });
 
   it('has nothing to draw from a table with no rows', async () => {
@@ -467,7 +717,7 @@ describe('DataWorker chart data', () => {
       harness.client.chartData(TABLE_ID, { ...spec, rowLimit: 300 }),
     );
     // It cannot claim to have read everything, so it does not.
-    expect(data?.rows).toBe(300);
-    expect(data?.basis).toBe('sampled');
+    expect(data?.data.rows).toBe(300);
+    expect(data?.data.basis).toBe('sampled');
   });
 });

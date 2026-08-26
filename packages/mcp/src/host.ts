@@ -111,8 +111,13 @@ export interface AgentHost {
   setTableLabel(tableId: EntityId, label: string): void;
 
   /**
-   * What the canvas drew of a chart: the rectangle, the counts, and any label
-   * that fell outside it. The only feedback there is on a written option.
+   * What the canvas drew of a chart, and what it drew it from.
+   *
+   * Two halves, and they answer different questions. The rectangle, the counts
+   * and the clipped labels say whether the picture came out the right *shape*;
+   * the data sets, the series and `unresolved` say whether it came out of the
+   * right *numbers*. A written option can be wrong in either way and look fine
+   * from here, which is the whole reason both are reported.
    */
   chartGeometry(tableId: EntityId): {
     readonly width: number;
@@ -121,14 +126,103 @@ export interface AgentHost {
     readonly texts: number;
     readonly bounds: { x: number; y: number; width: number; height: number } | null;
     readonly clipped: readonly string[];
+    readonly datasets: readonly {
+      readonly name?: string;
+      readonly dimensions: readonly string[];
+      readonly rows: number;
+    }[];
+    readonly series: readonly {
+      readonly index: number;
+      readonly type: string;
+      readonly dataset?: string;
+      readonly encode?: Readonly<Record<string, string>>;
+      readonly marks: number;
+    }[];
+    readonly unresolved: readonly string[];
+    /** Whether anything drawn can be pointed at. */
+    readonly pickable: boolean;
+  } | null;
+
+  /**
+   * What fills in each `{{name}}` a box's statement leaves open, and from where.
+   *
+   * The predicate as it stands, so a statement that came back with everything in
+   * it can be told apart from one nobody has picked anything for yet.
+   */
+  filtersOf(tableId: EntityId): readonly {
+    readonly name: string;
+    readonly from: EntityId;
+    readonly picked: number;
+    readonly predicate: string;
+  }[];
+
+  /**
+   * What a picked mark stands for: the data set, the row, and the value the rows
+   * behind it are found by.
+   *
+   * Asked of the picture rather than worked out from the specification, because a
+   * mark knows which data set it came from and only the picture knows that. `null`
+   * where the data set has no key — a cell that can be picked out and not drilled
+   * into — which is a fact worth reporting rather than an empty answer.
+   */
+  markMeaning(
+    tableId: EntityId,
+    mark: { readonly series: number; readonly data: number },
+  ): {
+    readonly frame: string;
+    readonly row: number;
+    readonly column: string;
+    readonly value: AgentCell;
   } | null;
 
   /** Which columns a chart could group by or measure, and how they look. */
   chartColumns(
     tableId: EntityId,
   ): readonly { readonly name: string; readonly numeric: boolean; readonly type: string }[];
-  /** What the chart has to draw, or how far it has got towards having it. */
-  chartState(tableId: EntityId): { readonly status: string; readonly error?: string } | undefined;
+  /**
+   * What the chart has to draw, or how far it has got towards having it.
+   *
+   * The reduction is declared here structurally rather than imported, because
+   * what an agent is told about it depends on whether the chart used it: a
+   * written option is handed the same numbers and may ignore every one of them.
+   */
+  chartState(tableId: EntityId):
+    | {
+        readonly status: string;
+        readonly error?: string;
+        readonly data?: {
+          readonly categories: readonly string[];
+          readonly series: readonly { readonly name: string }[];
+          readonly rows: number;
+          readonly basis: string;
+          readonly gathered?: number;
+        };
+        /**
+         * Each data set the chart holds, and which box it came from.
+         *
+         * The other half of the resolution report: `drawn` says what the option
+         * asked for, and this says what arrived and where from. A data set with no
+         * rows and a box named beside it is a different problem from one whose
+         * column was misspelt, and neither is visible in a picture.
+         */
+        readonly frames?: readonly {
+          readonly name: string;
+          readonly from?: string;
+          readonly dimensions: readonly string[];
+          /** The column a mark drawn from this data set can be traced back by. */
+          readonly key?: string;
+          /** Columns it was asked to read that the relation has not got. */
+          readonly missing?: readonly string[];
+          /** Which part of the relation it read, where it read a part. */
+          readonly window?: unknown;
+          /** Rows walked to find the ones it kept, where it had to look. */
+          readonly scanned?: number;
+          readonly rows: number;
+          readonly read: number;
+          readonly basis: string;
+        }[];
+      }
+    | undefined;
   editingCharts(): readonly EntityId[];
 
   exportJobs(): readonly AgentExportJob[];

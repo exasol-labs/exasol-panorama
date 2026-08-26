@@ -1,13 +1,23 @@
 import type {
   Binding,
   BindingAnchor,
+  CellLike,
+  ChartAggregate,
+  ChartFrameSpec,
+  ChartResampleMethod,
+  ChartSort,
   ChartSpec,
+  ChartWindowSpec,
   ChartType,
   Command,
   SessionCommand,
 } from '@panorama/core';
 import {
   AUTO_ANCHOR,
+  BINDING_KINDS,
+  CHART_FRAME_KINDS,
+  CHART_RESAMPLE_METHODS,
+  chartFramesProblem,
   isCustomChart,
   parseChartExtra,
   CHART_AGGREGATES,
@@ -18,7 +28,12 @@ import {
   CHART_SORTS,
   CHART_TYPES,
 } from '@panorama/core';
-import { COMMAND_FIELDS, COMMAND_INSTEAD, describeCommands } from './catalogue.js';
+import {
+  CHART_SPEC_SCHEMA,
+  COMMAND_FIELDS,
+  COMMAND_INSTEAD,
+  describeCommands,
+} from './catalogue.js';
 import type { ArgsSpec } from './schema.js';
 import { AgentError, isRecord, readArgs } from './schema.js';
 
@@ -76,6 +91,180 @@ const boolOr = (value: unknown, field: string): boolean | undefined => {
 };
 
 /**
+ * Checks which part of a relation a data set says it reads.
+ *
+ * Bounds are taken as given rather than parsed into dates or numbers: what a
+ * column holds is the column's business, and turning `'2026-03-01'` into something
+ * else here would be this file having an opinion about a type it cannot see.
+ */
+const readChartWindow = (value: unknown, where: string): ChartWindowSpec | undefined => {
+  if (value === undefined || value === null) return undefined;
+  if (!isRecord(value)) throw new AgentError(`${where}.window must be an object`);
+  const by = value['by'];
+  if (by === 'position') {
+    const from = value['from'];
+    const count = value['count'];
+    if (typeof from !== 'number' || typeof count !== 'number') {
+      throw new AgentError(`${where}.window by position needs from and count, both whole numbers`);
+    }
+    return { by, from: Math.trunc(from), count: Math.trunc(count) };
+  }
+  if (by !== 'value') {
+    throw new AgentError(`${where}.window.by must be "position" or "value"`);
+  }
+  const column = value['column'];
+  if (typeof column !== 'string' || column === '') {
+    throw new AgentError(`${where}.window by value needs the column it bounds`);
+  }
+  const bound = (name: string): CellLike => {
+    const found = value[name];
+    if (typeof found !== 'string' && typeof found !== 'number' && typeof found !== 'boolean') {
+      throw new AgentError(`${where}.window.${name} must be a value the column could hold`);
+    }
+    return found;
+  };
+  return { by, column, from: bound('from'), to: bound('to') };
+};
+
+/**
+ * Checks the data sets a specification names.
+ *
+ * Field by field and kind by kind, because this is the one part of a chart an
+ * agent writes with nothing to read back first: a `rows` data set naming no
+ * columns, or a `group` one with no category, draws nothing, and the picture will
+ * not say which it was.
+ */
+/** Every field a data set may carry, from the schema an agent is given. */
+const CHART_FRAME_FIELDS: readonly string[] = Object.keys(
+  ((
+    (CHART_SPEC_SCHEMA['properties'] as Record<string, Record<string, unknown>> | undefined)?.[
+      'frames'
+    ]?.['items'] as Record<string, unknown> | undefined
+  )?.['properties'] as Record<string, unknown> | undefined) ?? {},
+);
+
+/**
+ * Which box each named data set was asked to read.
+ *
+ * Read apart from the shape, because they are different kinds of fact: the shape
+ * is the question the chart asks and belongs to its specification, and the box is
+ * an arrow on the canvas. The tool draws the arrow; the specification never
+ * carries it.
+ */
+export const readChartSources = (value: Readonly<Record<string, unknown>>): Map<string, string> => {
+  const frames = value['frames'];
+  const sources = new Map<string, string>();
+  if (!Array.isArray(frames)) return sources;
+  for (const entry of frames) {
+    if (!isRecord(entry)) continue;
+    const name = entry['name'];
+    const from = entry['from'];
+    if (typeof name !== 'string' || typeof from !== 'string' || from === '') continue;
+    sources.set(name, from);
+  }
+  return sources;
+};
+
+const readChartFrames = (value: unknown): readonly ChartFrameSpec[] | undefined => {
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value)) {
+    throw new AgentError('spec.frames must be a list of data sets, each with a name and a kind');
+  }
+  const frames = value.map((entry, index): ChartFrameSpec => {
+    const where = `spec.frames[${index}]`;
+    if (!isRecord(entry)) throw new AgentError(`${where} must be an object`);
+    // Refused rather than dropped, as everywhere else at this boundary: a
+    // misspelt field that is quietly ignored looks exactly like one honoured.
+    const unknown = Object.keys(entry).find((field) => !CHART_FRAME_FIELDS.includes(field));
+    if (unknown !== undefined) {
+      throw new AgentError(
+        `${where}.${unknown} is not part of a data set. The fields are: ${CHART_FRAME_FIELDS.join(', ')}.`,
+      );
+    }
+    const name = entry['name'];
+    if (typeof name !== 'string') throw new AgentError(`${where}.name must be a string`);
+    const kind = entry['kind'];
+    if (!CHART_FRAME_KINDS.includes(kind as never)) {
+      throw new AgentError(`${where}.kind must be one of ${CHART_FRAME_KINDS.join(', ')}`);
+    }
+    const strings = (field: string): readonly string[] => {
+      const list = entry[field];
+      if (list === undefined || list === null) return [];
+      if (!Array.isArray(list) || list.some((item) => typeof item !== 'string')) {
+        throw new AgentError(`${where}.${field} must be a list of column names`);
+      }
+      return list as readonly string[];
+    };
+    const text = (field: string): string => {
+      const found = entry[field];
+      if (typeof found !== 'string') {
+        throw new AgentError(`${where}.${field} is required for a ${kind} data set`);
+      }
+      return found;
+    };
+    // A number with no aggregate named is a sum, which is what a total is.
+    const aggregate = (enumOr(CHART_AGGREGATES, entry['aggregate'], `frames[${index}].aggregate`) ??
+      'sum') as ChartAggregate;
+    const key = entry['key'];
+    if (key !== undefined && key !== null && typeof key !== 'string') {
+      throw new AgentError(`${where}.key must name one of the columns it reads`);
+    }
+    const window = readChartWindow(entry['window'], where);
+    if (kind === 'rows') {
+      const rowLimit = numberOr(entry['rowLimit'], `frames[${index}].rowLimit`);
+      return {
+        name,
+        kind,
+        columns: strings('columns'),
+        ...(typeof key === 'string' && key !== '' ? { key } : {}),
+        ...(rowLimit === undefined ? {} : { rowLimit }),
+        ...(window === undefined ? {} : { window }),
+      };
+    }
+    if (kind === 'resample') {
+      const points = numberOr(entry['points'], `frames[${index}].points`);
+      const method = enumOr(CHART_RESAMPLE_METHODS, entry['method'], `frames[${index}].method`);
+      return {
+        name,
+        kind,
+        x: text('x'),
+        values: strings('values'),
+        ...(method === undefined ? {} : { method: method as ChartResampleMethod }),
+        ...(points === undefined ? {} : { points }),
+        ...(typeof key === 'string' && key !== '' ? { key } : {}),
+        ...(window === undefined ? {} : { window }),
+      };
+    }
+    if (kind === 'scalar') return { name, kind, column: text('column'), aggregate };
+    const sort = enumOr(CHART_SORTS, entry['sort'], `frames[${index}].sort`) as
+      ChartSort | undefined;
+    const categoryLimit = numberOr(entry['categoryLimit'], `frames[${index}].categoryLimit`);
+    const precision = numberOr(entry['precision'], `frames[${index}].precision`);
+    const breakdown = entry['breakdown'];
+    if (breakdown !== undefined && breakdown !== null && typeof breakdown !== 'string') {
+      throw new AgentError(`${where}.breakdown must name a second column to group by`);
+    }
+    return {
+      name,
+      kind: 'group',
+      category: text('category'),
+      values: strings('values'),
+      aggregate,
+      ...(typeof breakdown === 'string' && breakdown !== '' ? { breakdown } : {}),
+      ...(sort === undefined ? {} : { sort }),
+      ...(categoryLimit === undefined ? {} : { categoryLimit }),
+      ...(precision === undefined ? {} : { precision }),
+    };
+  });
+  // One check, shared with the reduction that builds them: a name nothing can
+  // refer to, or two data sets answering to one name, is a picture drawn from the
+  // wrong numbers that cannot say which.
+  const problem = chartFramesProblem(frames);
+  if (problem !== null) throw new AgentError(`spec.frames: ${problem}`);
+  return frames;
+};
+
+/**
  * Checks a chart specification.
  *
  * Checked field by field rather than waved through as an object: a chart is the
@@ -87,7 +276,22 @@ const boolOr = (value: unknown, field: string): boolean | undefined => {
  * and the columns become optional — a written option may read the dataset beside
  * it or carry its own numbers.
  */
+/** Every field a specification may carry, taken from the schema an agent reads. */
+const CHART_SPEC_FIELDS: readonly string[] = Object.keys(
+  (CHART_SPEC_SCHEMA['properties'] as Record<string, unknown> | undefined) ?? {},
+);
+
 export const readChartSpec = (value: Readonly<Record<string, unknown>>): ChartSpec => {
+  // Refused rather than dropped. A misspelt field that is quietly ignored looks
+  // exactly like one that was honoured, and an agent that sent `pivot` and got a
+  // chart back will believe a pivot was applied — which is a wrong picture
+  // presented as a right one.
+  const unknown = Object.keys(value).find((name) => !CHART_SPEC_FIELDS.includes(name));
+  if (unknown !== undefined) {
+    throw new AgentError(
+      `spec.${unknown} is not a chart setting. The settings are: ${CHART_SPEC_FIELDS.join(', ')}. For anything beyond them, use type "custom" and write the option in spec.extra.`,
+    );
+  }
   const type = enumOr(CHART_TYPES, value['type'], 'type');
   if (type === undefined)
     throw new AgentError(`spec.type must be one of ${CHART_TYPES.join(', ')}`);
@@ -126,6 +330,7 @@ export const readChartSpec = (value: Readonly<Record<string, unknown>>): ChartSp
     legend: enumOr(CHART_LEGENDS, value['legend'], 'legend'),
     rowLimit: numberOr(value['rowLimit'], 'rowLimit'),
     categoryLimit: numberOr(value['categoryLimit'], 'categoryLimit'),
+    precision: numberOr(value['precision'], 'precision'),
     hole: numberOr(value['hole'], 'hole'),
     stacked: boolOr(value['stacked'], 'stacked'),
     showPoints: boolOr(value['showPoints'], 'showPoints'),
@@ -136,6 +341,7 @@ export const readChartSpec = (value: Readonly<Record<string, unknown>>): ChartSp
   if (extra !== undefined && extra !== null && typeof extra !== 'string') {
     throw new AgentError('spec.extra must be a string of ECharts options as JSON');
   }
+  const frames = readChartFrames(value['frames']);
   if (written) {
     // Refused here rather than drawn as nothing: for a custom chart this *is*
     // the chart, so an agent that sent broken JSON should be told which
@@ -157,6 +363,7 @@ export const readChartSpec = (value: Readonly<Record<string, unknown>>): ChartSp
     ...(typeof breakdown === 'string' && breakdown !== '' ? { breakdown } : {}),
     ...Object.fromEntries(Object.entries(optionals).filter(([, entry]) => entry !== undefined)),
     ...(typeof extra === 'string' ? { extra } : {}),
+    ...(frames === undefined || frames.length === 0 ? {} : { frames }),
   } as ChartSpec;
 };
 
@@ -203,8 +410,8 @@ const readBinding = (value: Readonly<Record<string, unknown>>): Binding => {
     return found;
   };
   const kind = value['kind'];
-  if (kind !== undefined && kind !== null && kind !== 'connector') {
-    throw new AgentError('binding.kind must be "connector", which is the only kind there is');
+  if (kind !== undefined && kind !== null && !BINDING_KINDS.includes(kind as never)) {
+    throw new AgentError(`binding.kind must be one of ${BINDING_KINDS.join(', ')}`);
   }
   const directed = value['directed'];
   if (directed !== undefined && directed !== null && typeof directed !== 'boolean') {
@@ -222,7 +429,10 @@ const readBinding = (value: Readonly<Record<string, unknown>>): Binding => {
   }
   return {
     id: text('id'),
-    kind: 'connector',
+    // A line unless it is said to be more than one: `data` means the box it points
+    // at reads the box it comes from under the name in the label, and `filter`
+    // means what is picked out there fills in the `{{name}}` the label names.
+    kind: kind === 'data' || kind === 'filter' ? kind : 'connector',
     fromId: text('fromId'),
     toId: text('toId'),
     from: readAnchor(value['from'], 'from'),
