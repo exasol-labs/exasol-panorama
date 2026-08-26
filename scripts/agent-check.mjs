@@ -86,6 +86,7 @@ report.handshake = {
   // What an agent is told before it picks a tool: which server to use for what,
   // how to establish that a native one is the same database, and to read the
   // semantic layer first.
+  saysUseTheLocalCliFirst: /local `exasol` command-line tool/u.test(instructions),
   saysUseTheNativeServer: /natively/u.test(instructions),
   saysCheckItIsTheSameDatabase: /same database/u.test(instructions),
   saysReadTheSemanticLayer: /semantic model/u.test(instructions),

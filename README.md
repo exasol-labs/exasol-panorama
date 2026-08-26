@@ -157,10 +157,12 @@ Every answer comes from the session in the page — there is no second copy of t
 document — so an agent and a person are looking at the same thing, and an agent's
 edits appear on screen as they are made and undo like anyone else's.
 
-This server is for the canvas, not for the database: where a native Exasol MCP
-server is available, the handshake tells an agent to compute with that one and to
-check first that it is the same database. Why the interface is shaped this way is
-in [ARCHITECTURE.md §9.9](docs/ARCHITECTURE.md#99-the-agent-interface).
+This server is for the canvas, not for the database. The handshake ranks the routes
+to the engine by how far the rows have to travel: a local `exasol` CLI first where
+the database is on this machine, a native Exasol MCP server next, this server for
+the canvas — and check first that the other route is the same database. Why the
+interface is shaped this way is in
+[ARCHITECTURE.md §9.9](docs/ARCHITECTURE.md#99-the-agent-interface).
 
 ### Viewing it in a headset
 

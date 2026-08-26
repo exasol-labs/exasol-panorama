@@ -713,11 +713,18 @@ was laid out for, what it drew, what that covers and — by name — any label t
 fell outside the box, read from the layout the renderer last asked for. It is the
 only feedback there is on a layout nobody at the other end of a pipe can see.
 
-**This is not the only way into the database, and the handshake says so.** Where a
-native Exasol MCP server is available it is the one to compute with; this route
-reaches a browser tab. The instructions also say to establish that it is the _same_
-database — `overview` reports the URL, name, version and session id — and to read
-whatever semantic layer exists before writing SQL.
+**This is not the only way into the database, and the handshake says so — in
+order.** The routes to the engine are not equal, and the difference is how far the
+rows travel: a local `exasol` CLI runs beside the engine, a native Exasol MCP
+server is a process away, and this route is a browser tab and a block cache away.
+So the instructions rank them. Where `overview` reports a URL on this machine —
+localhost or 127.0.0.1, which is what an Exasol Personal instance looks like — the
+CLI is named as the first choice for anything heavy, because it will always be the
+fastest thing available; a native server comes next; this server is for the canvas
+and for what the other two cannot answer. The instructions also say to establish
+that the other route is the _same_ database — `overview` reports the URL, name,
+version and session id — and to read whatever semantic layer exists before writing
+SQL.
 
 ---
 

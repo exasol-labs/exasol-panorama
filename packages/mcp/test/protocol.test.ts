@@ -188,14 +188,29 @@ describe('what an agent is told before it chooses a tool', () => {
     // sized for drawing: right for a hundred thousand rows on screen, wrong for
     // scanning a billion.
     expect(INSTRUCTIONS).toContain('canvas');
-    expect(INSTRUCTIONS).toMatch(/prefer it for anything that is really a query/u);
+    expect(INSTRUCTIONS).toMatch(/Anything heavy/u);
     expect(INSTRUCTIONS).toMatch(/meant to compose/u);
   });
 
-  it('says to establish that a native server is the same database', () => {
-    // A machine may be running several, each with its own server, and an answer
-    // from the wrong one is worse than no answer.
+  it('puts the local command-line tool first where the engine is on this machine', () => {
+    // The order is about how far the rows have to travel: the CLI runs beside the
+    // engine, a native protocol server is a process away, and this server is a
+    // browser tab away. Said in the handshake because it decides which tool an
+    // agent reaches for before it has called anything.
+    expect(INSTRUCTIONS).toMatch(/local `exasol` command-line tool/u);
+    expect(INSTRUCTIONS).toMatch(/localhost or 127\.0\.0\.1/u);
+    expect(INSTRUCTIONS).toMatch(/Exasol Personal instance/u);
+    expect(INSTRUCTIONS).toMatch(/always be the most performant option/u);
+    // And in an order, rather than as two claims that each say "use me".
+    expect(INSTRUCTIONS.indexOf('First:')).toBeLessThan(INSTRUCTIONS.indexOf('Second:'));
+    expect(INSTRUCTIONS.indexOf('Second:')).toBeLessThan(INSTRUCTIONS.indexOf('Third,'));
+  });
+
+  it('says to establish that another route is the same database', () => {
+    // A machine may be running several, each with its own server and its own CLI
+    // configuration, and an answer from the wrong one is worse than no answer.
     expect(INSTRUCTIONS).toMatch(/running several/u);
+    expect(INSTRUCTIONS).toMatch(/the CLI or the native server says about itself/u);
     expect(INSTRUCTIONS).toContain('"overview" reports the database this session actually reached');
     expect(INSTRUCTIONS).toMatch(/say which one you used/u);
   });
