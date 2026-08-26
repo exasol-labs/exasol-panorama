@@ -37,6 +37,21 @@ export const HEARTBEAT_MS = 20_000;
 
 export interface AgentEndpointOptions {
   readonly router?: CallRouter;
+  /**
+   * The skill, asked for rather than handed over.
+   *
+   * A function because the document is a *file*: a development server does not
+   * restart when documentation changes, and a skill read once at startup would go
+   * stale the moment somebody edited it — which would make "editing the docs is
+   * editing what agents are told" false. It is asked on the handshake and on a
+   * read, which happen once or twice a session, so reading seven kilobytes then
+   * costs nothing.
+   *
+   * Left out, the handshake does not offer prompts or resources: a build of this
+   * package with no document beside it has no skill and should say so by not
+   * claiming one.
+   */
+  readonly skill?: (() => string | undefined) | undefined;
   /** Progress for whoever is watching the dev server's output. */
   readonly onLog?: (message: string) => void;
   /**
@@ -185,6 +200,7 @@ export const createAgentEndpoint = (options: AgentEndpointOptions = {}): AgentEn
     const answer = await handleMcpRequest(
       parsed as Parameters<typeof handleMcpRequest>[0],
       (name, args) => router.call(name, args),
+      options.skill?.(),
     );
     if (answer === null) {
       response.writeHead(202);

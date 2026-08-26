@@ -1,6 +1,7 @@
 import type { JsonRpcRequest, JsonRpcResponse } from './jsonrpc.js';
-import { METHOD_NOT_FOUND, failure, result } from './jsonrpc.js';
+import { INVALID_PARAMS, METHOD_NOT_FOUND, failure, result } from './jsonrpc.js';
 import { toolDefinitions } from './catalogue.js';
+import { SKILL_NAME, SKILL_PATH, SKILL_SUMMARY, SKILL_TITLE, SKILL_URI } from './skill.js';
 import { isRecord } from './schema.js';
 
 /**
@@ -48,6 +49,8 @@ export const LATEST_PROTOCOL = PROTOCOL_VERSIONS[0] as string;
  * nobody wrote down.
  */
 export const INSTRUCTIONS = [
+  `There is a skill for this server: one page covering the whole interface — the boxes, the command and history model, charts and their named data sets, what a picked mark means, cross-filtering, and the feedback that says whether a picture is right. Read it before the third call. It is offered as the prompt "${SKILL_NAME}" and as the resource "${SKILL_URI}", it is the same text either way, and it is a document in this repository at ${SKILL_PATH} if you would rather read it there.`,
+
   'Panorama is a spatial canvas of database tables, queries and charts, and this server is the way in to a live one. "overview" says what is open and which database is behind it; "entities" and "entity" describe the boxes; "rows" reads cells; "history" is the commit graph, which branches rather than being a stack; "dispatch" applies a document command, which is the same way a pointer changes anything. Answers are terse by default — pass verbose where you need ids, widths and composed statements.',
 
   'Use the shortest route to the database for the database work, and use this server for the canvas. Anything heavy — scanning, aggregating over a whole relation, counting, profiling, describing a schema, loading or unloading data, DDL — belongs on a route that reaches the engine, in this order of preference. First: if the database is on this machine, use the local `exasol` command-line tool. "overview" reports the URL this session connected to; where that names localhost or 127.0.0.1 it is an Exasol Personal instance running beside you, and an `exasol` CLI on your PATH talks to it with no browser, no socket to a page and no cache in the way. Where it is available it will always be the most performant option, so try it first. Second: a Model Context Protocol server that speaks to Exasol natively — a process away rather than a machine away, and where a semantic layer would be. Third, and only for what the first two cannot answer: this server, which reaches the engine through a browser tab, a worker and a block cache sized for drawing rather than for computing.',
@@ -58,6 +61,38 @@ export const INSTRUCTIONS = [
 
   'Use the semantic layer if there is one. Where the database or its native server exposes a semantic model — described metrics, dimensions, synonyms, curated views, column comments — read it before writing SQL, and use its names and definitions rather than inventing your own from column names. A column called AMT is not a metric, and a metric called "net revenue" usually has a definition somebody has already argued about. Panorama\'s own "catalogue" carries what the Exasol catalogue holds, including comments, and a table\'s columns come back with their types; that is the least of it, and a semantic layer is the rest.',
 ].join('\n\n');
+
+/** What is said when the document could not be read; see `SKILL_PATH`. */
+const NO_SKILL = 'This server has no skill to offer: its document could not be read.';
+
+/** The skill as a prompt: something a client can offer to invoke. */
+const skillPrompt = (): Record<string, unknown> => ({
+  name: SKILL_NAME,
+  title: SKILL_TITLE,
+  description: SKILL_SUMMARY,
+  // No arguments: it is one text about the whole interface, and a skill that
+  // needed filling in first would be a form.
+  arguments: [],
+});
+
+/** The same, as a resource: something a client can offer to read. */
+const skillResource = (): Record<string, unknown> => ({
+  uri: SKILL_URI,
+  name: SKILL_NAME,
+  title: SKILL_TITLE,
+  description: SKILL_SUMMARY,
+  mimeType: 'text/markdown',
+});
+
+const promptName = (params: unknown): string => {
+  const asked = isRecord(params) ? params['name'] : undefined;
+  return typeof asked === 'string' ? asked : '';
+};
+
+const resourceUri = (params: unknown): string => {
+  const asked = isRecord(params) ? params['uri'] : undefined;
+  return typeof asked === 'string' ? asked : '';
+};
 
 /** What a tool call has to do: reach the application and come back with JSON. */
 export type CallTool = (name: string, args: unknown) => Promise<unknown>;
@@ -95,6 +130,15 @@ export const toolFailure = (message: string): Record<string, unknown> => ({
 export const handleMcpRequest = async (
   request: JsonRpcRequest,
   call: CallTool,
+  /**
+   * The skill, as read from its document.
+   *
+   * Passed in rather than reached for: the text is a file on somebody's computer
+   * and this module is bundled for a browser as well. Absent means there is none
+   * to offer, and then the handshake does not claim prompts or resources —
+   * declaring a capability with nothing under it is worse than not declaring it.
+   */
+  skill?: string,
 ): Promise<JsonRpcResponse | null> => {
   const id = request.id;
   if (id === undefined) {
@@ -106,7 +150,24 @@ export const handleMcpRequest = async (
     case 'initialize':
       return result(id, {
         protocolVersion: requestedVersion(request.params),
-        capabilities: { tools: { listChanged: false } },
+        /**
+         * What this server offers, and how the skill is offered.
+         *
+         * The protocol versions here have prompts and resources and no method
+         * called "skills", so the skill is served as both: a client that lists
+         * prompts finds something to invoke, and one that browses resources finds
+         * something to read. Same text either way — a skill that could drift from
+         * the tools it describes would be worse than none.
+         */
+        capabilities: {
+          tools: { listChanged: false },
+          ...(skill === undefined
+            ? {}
+            : {
+                prompts: { listChanged: false },
+                resources: { listChanged: false, subscribe: false },
+              }),
+        },
         serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
         instructions: INSTRUCTIONS,
       });
@@ -114,6 +175,33 @@ export const handleMcpRequest = async (
       return result(id, {});
     case 'tools/list':
       return result(id, { tools: toolDefinitions() });
+    // The skill, by whichever door a client knocks on. Listed so it is found
+    // without being told where to look, and answered from one text.
+    case 'prompts/list':
+      return result(id, { prompts: skill === undefined ? [] : [skillPrompt()] });
+    case 'prompts/get': {
+      if (skill === undefined) return failure(id, INVALID_PARAMS, NO_SKILL);
+      const asked = promptName(request.params);
+      return asked === SKILL_NAME
+        ? result(id, {
+            description: SKILL_SUMMARY,
+            messages: [{ role: 'user', content: { type: 'text', text: skill } }],
+          })
+        : failure(
+            id,
+            INVALID_PARAMS,
+            `There is no prompt called ${asked}; there is ${SKILL_NAME}.`,
+          );
+    }
+    case 'resources/list':
+      return result(id, { resources: skill === undefined ? [] : [skillResource()] });
+    case 'resources/read': {
+      if (skill === undefined) return failure(id, INVALID_PARAMS, NO_SKILL);
+      const uri = resourceUri(request.params);
+      return uri === SKILL_URI
+        ? result(id, { contents: [{ uri: SKILL_URI, mimeType: 'text/markdown', text: skill }] })
+        : failure(id, INVALID_PARAMS, `There is no resource at ${uri}; there is ${SKILL_URI}.`);
+    }
     case 'tools/call': {
       const params = isRecord(request.params) ? request.params : {};
       const name = params['name'];

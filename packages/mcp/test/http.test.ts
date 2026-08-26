@@ -389,6 +389,18 @@ const abandonedRequest = (path: string): never =>
     }),
   }) as never;
 
+/** A POST of one JSON body, as the middleware sees it. */
+const jsonRequest = (path: string, body: unknown): never =>
+  ({
+    url: path,
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    on: (): void => {},
+    [Symbol.asyncIterator]: async function* (): AsyncIterator<Buffer> {
+      yield Buffer.from(JSON.stringify(body));
+    },
+  }) as never;
+
 const recordingResponse = (): { written: unknown[]; response: never } => {
   const written: unknown[] = [];
   return {
@@ -420,6 +432,53 @@ describe('the dev-server plugin', () => {
       throw new Error('should have been handled');
     });
     expect(written[0]).toBe(200);
+  });
+
+  it('points a paired client at the port that was actually bound', async () => {
+    // `configureServer` runs before the server listens, and `--port` on the
+    // command line beats anything the configuration said.
+    type Middleware = (request: never, response: never, next: () => void) => void;
+    const answers: Middleware[] = [];
+    let bound: { port: number } | string | null = null;
+    panoramaAgent({ port: 4_000 }).configureServer({
+      middlewares: { use: (handler: Middleware): void => void answers.push(handler) },
+      httpServer: { address: (): { port: number } | string | null => bound },
+    });
+    const paired = async (): Promise<string> => {
+      const { written, response } = recordingResponse();
+      answers[0]?.({ url: CLAUDE_PATH, method: 'GET' } as never, response, () => {});
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return JSON.stringify(written);
+    };
+    // Nothing bound yet: the configured port.
+    expect(await paired()).toContain('4000');
+    bound = { port: 5_199 };
+    expect(await paired()).toContain('5199');
+    // A socket path rather than a port falls back to what was configured.
+    bound = '/tmp/somewhere.sock';
+    expect(await paired()).toContain('4000');
+  });
+
+  it('serves the skill it found beside it', async () => {
+    // The document is part of the repository, so the plugin reads it at startup
+    // and hands it to the endpoint; there is no copy of it in the code.
+    const used: ((request: never, response: never, next: () => void) => void)[] = [];
+    panoramaAgent().configureServer({
+      middlewares: {
+        use: (handler: (request: never, response: never, next: () => void) => void): void =>
+          void used.push(handler),
+      },
+    });
+    const { written, response } = recordingResponse();
+    const request = jsonRequest(MCP_PATH, {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'resources/read',
+      params: { uri: 'panorama://skill' },
+    });
+    used[0]?.(request as never, response, () => {});
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(JSON.stringify(written)).toContain('Driving Panorama');
   });
 
   it('answers with a failure when the request itself falls apart', async () => {

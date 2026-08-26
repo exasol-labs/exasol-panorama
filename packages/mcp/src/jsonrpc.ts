@@ -35,6 +35,7 @@ export interface JsonRpcResponse {
 export const PARSE_ERROR = -32_700;
 export const INVALID_REQUEST = -32_600;
 export const METHOD_NOT_FOUND = -32_601;
+export const INVALID_PARAMS = -32_602;
 export const INTERNAL_ERROR = -32_603;
 
 export const result = (id: JsonRpcId, value: unknown): JsonRpcResponse => ({

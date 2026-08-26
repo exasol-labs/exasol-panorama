@@ -789,6 +789,24 @@ was laid out for, what it drew, what that covers and — by name — any label t
 fell outside the box, read from the layout the renderer last asked for. It is the
 only feedback there is on a layout nobody at the other end of a pipe can see.
 
+**The skill is a document, and the server serves the document.** The tool list says
+what may be called and the handshake says what the server is for; neither says how
+the pieces go together, and an agent that has to work that out by trying things
+spends its first several calls learning what a page could have told it. So there is
+a page — [AGENT-SKILL.md](AGENT-SKILL.md), reviewed and formatted like everything
+else in `docs/` — and the development server reads that file and offers it as a
+prompt and as a resource, which are the two discovery mechanisms the protocol
+versions here have.
+
+Three consequences worth stating. Nothing in the code holds a copy, so editing the
+documentation _is_ editing what agents are told. The reading happens in the one
+file that knows it is running on somebody's computer — the dev-server plugin —
+because the package is bundled for a browser too, and the text reaches the protocol
+layer as data. And a server that cannot find the document offers no prompts and no
+resources rather than an empty one, because claiming a capability with nothing
+under it is worse than not claiming it. A seam test reads the document and insists
+every tool appears in it.
+
 **This is not the only way into the database, and the handshake says so — in
 order.** The routes to the engine are not equal, and the difference is how far the
 rows travel: a local `exasol` CLI runs beside the engine, a native Exasol MCP

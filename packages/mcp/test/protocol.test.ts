@@ -1,6 +1,15 @@
+import { readFileSync } from 'node:fs';
+// The plugin is not re-exported from the package: it is the one file that knows it
+// is running in a development server, and the page imports the package.
+import { readSkill } from '../src/vite-plugin.js';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  AGENT_TOOLS,
   INSTRUCTIONS,
+  SKILL_NAME,
+  SKILL_PATH,
+  SKILL_URI,
+  skillText,
   INVALID_REQUEST,
   LATEST_PROTOCOL,
   LineReader,
@@ -140,9 +149,113 @@ describe('the MCP methods', () => {
 
   it('answers a ping, and refuses what it does not do', async () => {
     expect((await handleMcpRequest(request('ping'), call))?.result).toEqual({});
-    const answer = await handleMcpRequest(request('resources/list'), call);
+    const answer = await handleMcpRequest(request('sampling/createMessage'), call);
     expect(answer?.error?.code).toBe(METHOD_NOT_FOUND);
-    expect(answer?.error?.message).toContain('resources/list');
+    expect(answer?.error?.message).toContain('sampling/createMessage');
+  });
+});
+
+describe('the skill, by whichever door a client knocks on', () => {
+  const call = vi.fn(async (name: string) => ({ ran: name }));
+  /**
+   * The document itself, read the way the server reads it.
+   *
+   * The point of the exercise: there is no copy of this text in the code, so a
+   * test that used one would be testing the copy.
+   */
+  const document = skillText(
+    readFileSync(new URL(`../../../${SKILL_PATH}`, import.meta.url), 'utf8'),
+  );
+  const skill = async (method: string, params?: unknown): Promise<JsonRpcResponse | null> =>
+    handleMcpRequest(request(method, params), call, document);
+  const withoutOne = async (method: string, params?: unknown): Promise<JsonRpcResponse | null> =>
+    handleMcpRequest(request(method, params), call);
+
+  it('is offered in the handshake as a prompt and a resource', async () => {
+    const answer = await skill('initialize');
+    const capabilities = (answer?.result as { capabilities: Record<string, unknown> }).capabilities;
+    // Declared, so a client knows to ask. The protocol here has no method called
+    // "skills", so the skill goes out as both of the things it does have.
+    expect(capabilities['prompts']).toBeDefined();
+    expect(capabilities['resources']).toBeDefined();
+  });
+
+  it('lists itself, so nobody has to be told where it is', async () => {
+    const prompts = (await skill('prompts/list'))?.result as {
+      prompts: readonly Record<string, unknown>[];
+    };
+    expect(prompts.prompts).toHaveLength(1);
+    expect(prompts.prompts[0]).toMatchObject({ name: SKILL_NAME, arguments: [] });
+
+    const resources = (await skill('resources/list'))?.result as {
+      resources: readonly Record<string, unknown>[];
+    };
+    expect(resources.resources[0]).toMatchObject({ uri: SKILL_URI, mimeType: 'text/markdown' });
+  });
+
+  it('serves the document itself, so an edit to the docs is an edit to the skill', async () => {
+    expect(document).toContain('# Driving Panorama');
+    // Without the note that explains the file to whoever opens it, which is for a
+    // reader of the repository and noise to a reader of the skill.
+    expect(document.startsWith('<!--')).toBe(false);
+    const asPrompt = (await skill('prompts/get', { name: SKILL_NAME }))?.result as {
+      messages: readonly { content: { text: string } }[];
+    };
+    expect(asPrompt.messages[0]?.content.text).toBe(document);
+  });
+
+  it('offers nothing where there is no document to offer', async () => {
+    // A package installed without its docs beside it. Claiming a capability and
+    // then having nothing under it is worse than not claiming it.
+    const answer = await withoutOne('initialize');
+    const capabilities = (answer?.result as { capabilities: Record<string, unknown> }).capabilities;
+    expect(capabilities['prompts']).toBeUndefined();
+    expect(capabilities['resources']).toBeUndefined();
+    expect((await withoutOne('prompts/list'))?.result).toEqual({ prompts: [] });
+    expect((await withoutOne('resources/list'))?.result).toEqual({ resources: [] });
+    expect((await withoutOne('prompts/get', { name: SKILL_NAME }))?.error?.message).toContain(
+      'no skill to offer',
+    );
+    expect((await withoutOne('resources/read', { uri: SKILL_URI }))?.error?.message).toContain(
+      'no skill to offer',
+    );
+  });
+
+  it('reads the same text either way', async () => {
+    const asPrompt = (await skill('prompts/get', { name: SKILL_NAME }))?.result as {
+      messages: readonly { content: { text: string } }[];
+    };
+    const asResource = (await skill('resources/read', { uri: SKILL_URI }))?.result as {
+      contents: readonly { text: string }[];
+    };
+    // One text: a skill that could drift from the tools it describes would be
+    // worse than none, and two copies of it is how that starts.
+    expect(asPrompt.messages[0]?.content.text).toBe(asResource.contents[0]?.text);
+  });
+
+  it('is read from the repository, and is nothing where there is nothing to read', () => {
+    // What the development server does at startup, and what it does when the
+    // document is not beside it.
+    expect(readSkill()).toBe(document);
+    expect(readSkill(new URL('file:///nowhere-in-particular/'))).toBeNull();
+  });
+
+  it('covers every tool it could be asked about', async () => {
+    // The seam: a tool nobody wrote down is a tool an agent finds by accident,
+    // and one written down and removed is a tool it will look for in vain.
+    for (const tool of AGENT_TOOLS) {
+      expect(document, `${tool.name} is not in the skill`).toContain(`\`${tool.name}\``);
+    }
+  });
+
+  it('says what it is asked about and nothing else', async () => {
+    const wrongPrompt = await skill('prompts/get', { name: 'something-else' });
+    expect(wrongPrompt?.error?.message).toContain(SKILL_NAME);
+    const wrongUri = await skill('resources/read', { uri: 'panorama://nothing' });
+    expect(wrongUri?.error?.message).toContain(SKILL_URI);
+    // And an ask with nothing in it is refused rather than guessed at.
+    expect((await skill('prompts/get'))?.error?.code).toBeDefined();
+    expect((await skill('resources/read'))?.error?.code).toBeDefined();
   });
 });
 
@@ -213,6 +326,14 @@ describe('what an agent is told before it chooses a tool', () => {
     expect(INSTRUCTIONS).toMatch(/the CLI or the native server says about itself/u);
     expect(INSTRUCTIONS).toContain('"overview" reports the database this session actually reached');
     expect(INSTRUCTIONS).toMatch(/say which one you used/u);
+  });
+
+  it('says there is a skill, and where to find it', () => {
+    // The handshake is what an agent reads first, and a page it never learns
+    // exists is a page nobody reads.
+    expect(INSTRUCTIONS).toContain('There is a skill for this server');
+    expect(INSTRUCTIONS).toContain(SKILL_NAME);
+    expect(INSTRUCTIONS).toContain(SKILL_URI);
   });
 
   it('says to read the semantic layer before writing SQL', () => {

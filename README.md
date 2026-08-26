@@ -9,12 +9,13 @@ worker, and the application shell that ties them together.
 The Stage 1 deliverable is one thing: **browsing an arbitrarily large Exasol
 table must feel local, continuous and tactile.**
 
-This file is about running it. Two documents in [`docs/`](docs) cover the rest:
+This file is about running it. Three documents in [`docs/`](docs) cover the rest:
 **[ARCHITECTURE.md](docs/ARCHITECTURE.md)** is how it is built and why — the
 model, the layering, the module map, the flows, and a decision record of
 everything that is not obvious from the code. **[TESTING.md](docs/TESTING.md)** is
 how we know it works — the suite, the doubles, the coverage gate, and the browser
-probes.
+probes. **[AGENT-SKILL.md](docs/AGENT-SKILL.md)** is how to drive it as an agent,
+and is the page the server itself serves.
 
 ---
 
@@ -156,6 +157,16 @@ its own. `catalogue` lists the database.
 Every answer comes from the session in the page — there is no second copy of the
 document — so an agent and a person are looking at the same thing, and an agent's
 edits appear on screen as they are made and undo like anyone else's.
+
+The whole interface is written down once, in
+**[docs/AGENT-SKILL.md](docs/AGENT-SKILL.md)** — the boxes, the command and history
+model, charts and their named data sets, what a picked mark means, cross-filtering,
+and which feedback to read first. It is documentation, reviewed and formatted like
+the rest of `docs/`, and the server **serves that file**: it goes out as the prompt
+`panorama` and as the resource `panorama://skill`, so an agent finds it by listing
+what the server offers rather than by being told where a document lives. There is
+no second copy of it in the code, the handshake names it, and a test insists every
+tool is written down in it.
 
 This server is for the canvas, not for the database. The handshake ranks the routes
 to the engine by how far the rows have to travel: a local `exasol` CLI first where

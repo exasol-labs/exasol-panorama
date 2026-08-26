@@ -8,4 +8,5 @@ export * from './mcp.js';
 export * from './operations.js';
 export * from './router.js';
 export * from './schema.js';
+export * from './skill.js';
 export * from './snapshot.js';
