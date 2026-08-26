@@ -125,7 +125,7 @@ What each suite is responsible for:
 | `renderer/test`      |   473 | Draw lists for tables, charts, query boxes, summary panels; the halo; connector routing; hit testing; interaction; glyph atlas and text; camera, LOD, quad batching, frame stats, XR |
 | `mcp/test`           |   171 | The protocol, the tool catalogue and its handlers, command parsing, snapshots, the HTTP route, the bridge, the stdio host, Claude discovery                                          |
 | `ui/test`            |    85 | The React panels, through their accessible roles                                                                                                                                     |
-| `apps/web/test`      |   378 | The composition root: the workspace and its collaborators, the canvas, the editors, the agent bridge, startup, placement, export jobs                                                |
+| `apps/web/test`      |   429 | The composition root: the workspace and its collaborators, the canvas, the editors, the agent bridge, startup, placement, export jobs, the install shell and its cache policy        |
 | `test-support/test`  |    37 | The doubles themselves — see §5                                                                                                                                                      |
 
 ---
@@ -266,6 +266,8 @@ user-visible bug:
 | Halo geometry (`halo.ts`) ↔ the probe sweep                                    | Every button is hit-testable where it is drawn              | A reorganised halo silently unreachable at a fixed pitch                                                                                               |
 | Chart mark geometry ↔ halo button geometry                                     | A button and the thing it creates share one constant        | A three-bar glyph 33 px tall in a 30 px button                                                                                                         |
 | `AGENT_TOOLS` ↔ `docs/AGENT-SKILL.md`                                          | Every tool is written down in the skill                     | Written to keep it true: a tool nobody wrote down is one an agent finds by accident, and one written down and then removed is one it looks for in vain |
+| `serverInfo.version` (the stamp) ↔ the tools actually offered                  | The handshake fingerprints the list it will answer with     | Written after three rounds of fixing a server nobody was connected to: a client shows the tool list it fetched when it connected, and nothing said so  |
+| `manifest.webmanifest` ↔ the committed icon files                              | Every icon exists and is the size it claims                 | Written to keep it true: a browser refuses a mis-declared icon in silence, and an application with no 192 or 512 is simply never offered for install   |
 
 The pattern generalises: any time information is written down twice — once for a
 machine, once for a person; once in a process, once in another — write the test
@@ -391,7 +393,7 @@ application the gap is wide. Two facts close off the obvious routes:
   crossing; it looks like a line that stops and starts somewhere else. There is no
   pixel to sample, and the draw list is perfectly happy.
 
-So eleven probe scripts drive the real application in a real browser with a real
+So twelve probe scripts drive the real application in a real browser with a real
 pointer, and read back the geometry the canvas actually produced. They also cover
 the things only a browser has at all: WebGL, the save dialog, downloads, WebXR,
 `EventSource`.
@@ -454,11 +456,45 @@ must be shared, it lives in one file used by both sides
 | `npm run sql-check`      | The query box: greying on sample tables, drag, composition, highlighting                                                 | Half of it is canvas and half is a DOM overlay sitting exactly on top                         |
 | `npm run chart-check`    | Every chart control, the marks, picking, the drill-down table, SVG/PNG/PDF                                               | The form is DOM, the chart is geometry, and the export is a file                              |
 | `npm run export-check`   | CSV, XLSX and Parquet as real downloads, through the real halo                                                           | Encoders being correct says nothing about the button working                                  |
-| `npm run agent-check`    | The endpoint, the tools, an edit, the refusals, and the stdio pipe                                                       | Three parts in three processes that can only be wrong together                                |
+| `npm run agent-check`    | The endpoint, the tools, an edit, the refusals, the stdio pipe, and a client told its tool list went stale               | Three parts in three processes that can only be wrong together                                |
+| `npm run install-check`  | A build, served and installed: the worker, the manifest, every icon, and a launch with the network taken away            | Every way installability fails is silent — see below                                          |
 | `npm run probe`          | A scratch pad for graphics-stack questions                                                                               | Some questions — atlas orientation, which material passes vertex colours — only a GPU answers |
 
-`export-check` sets a non-zero exit code when a download is missing or starts with
-the wrong bytes. The others report and leave the judgement to the reader; see §12.
+`export-check` and `install-check` set a non-zero exit code. The others report and
+leave the judgement to the reader; see §12.
+
+`install-check` is the odd one out in two ways, both because it is checking a
+build rather than a development server: it builds and serves the application
+itself instead of expecting one on port 5199, and it is worth running for what it
+found rather than for what it asserts. Two failures, neither visible in any test
+or review:
+
+- **An installed application launched offline and then could not draw a table.**
+  The renderer imports its shader chunks lazily, so a cache filled with "what the
+  launch fetched" was missing exactly the files needed the first time something is
+  drawn. The build now emits the list of what it produced, and the worker fetches
+  all of it while installing.
+- **Everything was cached, and none of it could be found.** Vite's preview server
+  answers static files with `Vary: Origin`, and a `Cache` lookup honours `Vary` by
+  default — so a request whose `Origin` header differed from the one that filled
+  the cache missed, cache-first quietly became network-first, and offline that was
+  no first at all. The lookup now says `ignoreVary`, and the fake cache in
+  `shell-cache.test.ts` misses without it, so the bug cannot come back.
+
+- **The application fetched from a third-party host on every page load.** Babylon
+  asks `immersive-web.github.io` for a WebXR controller profile list the moment the
+  XR experience is built, and Panorama builds it early so that the entry click
+  stays inside its activation window. An installed application that reaches
+  somebody else's server before it has been asked to do anything behaves
+  differently offline, on a first launch, and under a store's review. Babylon takes
+  an option for it; the probe now asserts that the page talks to its own origin and
+  nothing else.
+
+It also asserts the negative that matters most: that what is on the device is
+_only_ the shell. Every cache entry is checked against the paths a build produces,
+so a policy that ever began keeping a result set would fail here. And it asserts
+that `/agent/…` returns 404 — the agent interface is a development-server route,
+and a build answering it would be a hosted endpoint nobody decided to run.
 
 The scratch pad is a different animal from the rest: `scripts/probe/` is a tiny
 Vite app plus a runner, kept in the repository so the next graphics question has
@@ -569,14 +605,15 @@ silently.
 
 Recorded honestly, in rough order of how much they should bother you.
 
-| Gap                                                                                                                                                                                                                                                                                                                  | Consequence                                                                                                            |
-| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| **The probes report; they do not assert.** Only `export-check` sets an exit code. The rest print a JSON report for a human or an agent to read.                                                                                                                                                                      | A probe can regress into nonsense and still "pass". Each should assert its own report and exit non-zero.               |
-| **No CI.** `npm run verify` and the probes are run by hand.                                                                                                                                                                                                                                                          | Nothing prevents a regression from being committed; a green history means only that somebody looked.                   |
-| **WebGPU has never run on real hardware.** No WebGPU-capable browser was available; every screenshot in `scripts/shots/` is WebGL through SwiftShader.                                                                                                                                                               | The preferred backend is the least tested one. The fallback path to WebGL is tested; the fast path is not.             |
-| **No visual regression baseline.** Screenshots are written for people to look at, not compared.                                                                                                                                                                                                                      | A purely visual regression — a colour, a shadow, a two-pixel drift — is invisible to the suite.                        |
-| **jsdom is not a browser.** No layout, no compositor, no WebGL.                                                                                                                                                                                                                                                      | Anything that depends on measured layout is only provable in a probe.                                                  |
-| **WebXR is untested on a device.** `xr-stage.test.ts` covers the arithmetic; a headset has not run it.                                                                                                                                                                                                               | The headset path is structurally right and empirically unknown.                                                        |
-| **Integration coverage depends on somebody's database.** The opt-in suite is the only check against a real engine, and it is skipped by default.                                                                                                                                                                     | Protocol drift in a new Exasol version would be found late.                                                            |
-| **Property coverage stops at four boundaries.** The statement scanner, SQL construction, the agent's arguments and the document (§6.5). The export encoders, the viewport and cache arithmetic, and `formatCell` are covered by examples alone — and all three take their input from a database rather than from us. | A malformed cell value in someone else's data is the likeliest remaining source of a surprise.                         |
-| **The chart surface is pinned to ECharts' internals.** The geometry tests read zrender's display list.                                                                                                                                                                                                               | An ECharts upgrade is a test-suite event, and deliberately so — see [ARCHITECTURE.md §9.6](ARCHITECTURE.md#96-charts). |
+| Gap                                                                                                                                                                                                                                                                                                                  | Consequence                                                                                                                              |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| **The probes report; they do not assert.** Only `export-check` and `install-check` set an exit code. The rest print a JSON report for a human or an agent to read.                                                                                                                                                   | A probe can regress into nonsense and still "pass". Each should assert its own report and exit non-zero.                                 |
+| **No CI.** `npm run verify` and the probes are run by hand.                                                                                                                                                                                                                                                          | Nothing prevents a regression from being committed; a green history means only that somebody looked.                                     |
+| **WebGPU has never run on real hardware.** No WebGPU-capable browser was available; every screenshot in `scripts/shots/` is WebGL through SwiftShader.                                                                                                                                                               | The preferred backend is the least tested one. The fallback path to WebGL is tested; the fast path is not.                               |
+| **No visual regression baseline.** Screenshots are written for people to look at, not compared.                                                                                                                                                                                                                      | A purely visual regression — a colour, a shadow, a two-pixel drift — is invisible to the suite.                                          |
+| **One browser, one host.** `install-check` proves installability in Chromium behind Vite's preview server. Safari's install path, an iOS home-screen launch and the Quest Browser are untested, as is any real host's cache and CORS configuration.                                                                  | The install prompt and the offline launch are proven where they are easiest. A `Vary` header was already enough to break the cache once. |
+| **jsdom is not a browser.** No layout, no compositor, no WebGL.                                                                                                                                                                                                                                                      | Anything that depends on measured layout is only provable in a probe.                                                                    |
+| **WebXR is untested on a device.** `xr-stage.test.ts` covers the arithmetic; a headset has not run it.                                                                                                                                                                                                               | The headset path is structurally right and empirically unknown.                                                                          |
+| **Integration coverage depends on somebody's database.** The opt-in suite is the only check against a real engine, and it is skipped by default.                                                                                                                                                                     | Protocol drift in a new Exasol version would be found late.                                                                              |
+| **Property coverage stops at four boundaries.** The statement scanner, SQL construction, the agent's arguments and the document (§6.5). The export encoders, the viewport and cache arithmetic, and `formatCell` are covered by examples alone — and all three take their input from a database rather than from us. | A malformed cell value in someone else's data is the likeliest remaining source of a surprise.                                           |
+| **The chart surface is pinned to ECharts' internals.** The geometry tests read zrender's display list.                                                                                                                                                                                                               | An ECharts upgrade is a test-suite event, and deliberately so — see [ARCHITECTURE.md §9.6](ARCHITECTURE.md#96-charts).                   |

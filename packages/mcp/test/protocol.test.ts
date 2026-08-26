@@ -6,6 +6,8 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   AGENT_TOOLS,
   INSTRUCTIONS,
+  catalogueStamp,
+  toolDefinitions,
   SKILL_NAME,
   SKILL_PATH,
   SKILL_TOOL,
@@ -86,7 +88,9 @@ describe('the MCP methods', () => {
     const result = answer?.result as Record<string, Record<string, unknown>>;
     expect(result['protocolVersion']).toBe('2024-11-05');
     expect(result['serverInfo']?.['name']).toBe(SERVER_NAME);
-    expect(result['capabilities']?.['tools']).toEqual({ listChanged: false });
+    // The catalogue is source code beside a development server, so the list a
+    // client is holding can go out of date under it — see the stamp tests below.
+    expect(result['capabilities']?.['tools']).toEqual({ listChanged: true });
     // The one place to say something before the agent starts choosing tools.
     const instructions = String(result['instructions']);
     expect(instructions).toContain('commit graph');
@@ -153,6 +157,66 @@ describe('the MCP methods', () => {
     const answer = await handleMcpRequest(request('sampling/createMessage'), call);
     expect(answer?.error?.code).toBe(METHOD_NOT_FOUND);
     expect(answer?.error?.message).toContain('sampling/createMessage');
+  });
+});
+
+/**
+ * A client fetches the tool list once, on connecting, and then shows what it
+ * fetched. So an agent read a fourteen-tool catalogue for days while the server
+ * grew two more — and for part of that time no server was running at all, so the
+ * list it was showing was a memory of one. Nothing on either side was wrong and
+ * nothing on either side could say so.
+ *
+ * What is asserted here is the ability to *notice*: the handshake carries a stamp
+ * of the catalogue it is answering with, and says the number out loud.
+ */
+describe('saying which catalogue this is', () => {
+  const call = vi.fn(async (name: string, args: unknown) => ({ ran: name, with: args }));
+  const handshake = async (
+    skill?: string,
+  ): Promise<{ version: string; instructions: string; tools: number }> => {
+    const answer = await handleMcpRequest(request('initialize'), call, skill);
+    const result = answer?.result as Record<string, Record<string, unknown>>;
+    const listed = await handleMcpRequest(request('tools/list'), call, skill);
+    const tools = (listed?.result as { tools: unknown[] }).tools;
+    return {
+      version: String(result['serverInfo']?.['version']),
+      instructions: String(result['instructions']),
+      tools: tools.length,
+    };
+  };
+
+  it('stamps the handshake with the catalogue it will answer with', async () => {
+    const { version, tools } = await handshake('the skill');
+    expect(tools).toBe(AGENT_TOOLS.length);
+    expect(version).toContain(catalogueStamp(toolDefinitions()));
+    expect(version).toMatch(/^\d+\.\d+\.\d+\+\d+\.[0-9a-f]{8}$/u);
+  });
+
+  it('stamps a server with no skill differently, because it answers differently', async () => {
+    const withSkill = await handshake('the skill');
+    const without = await handshake();
+    expect(without.tools).toBe(withSkill.tools - 1);
+    expect(without.version).not.toBe(withSkill.version);
+  });
+
+  it('says the number and the first name, which is what makes a stale list visible', async () => {
+    const { instructions } = await handshake('the skill');
+    expect(instructions).toContain(`${AGENT_TOOLS.length} tools`);
+    expect(instructions).toContain(`the first of which is "${SKILL_TOOL}"`);
+    expect(instructions).toMatch(/fetched earlier and kept/u);
+  });
+
+  it('changes the stamp when any description changes, not only when a tool is added', () => {
+    const one = toolDefinitions();
+    const edited = one.map((tool, at) => (at === 0 ? { ...tool, description: 'other' } : tool));
+    expect(catalogueStamp(edited)).not.toBe(catalogueStamp(one));
+    // The count is the readable half, so it survives a description-only change.
+    expect(catalogueStamp(edited).split('.')[0]).toBe(String(one.length));
+  });
+
+  it('is stable for the same catalogue, so a comparison means something', () => {
+    expect(catalogueStamp(toolDefinitions())).toBe(catalogueStamp(toolDefinitions()));
   });
 });
 

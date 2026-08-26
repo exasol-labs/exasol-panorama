@@ -1,6 +1,6 @@
 import type { JsonRpcRequest, JsonRpcResponse } from './jsonrpc.js';
 import { INVALID_PARAMS, METHOD_NOT_FOUND, failure, result } from './jsonrpc.js';
-import { toolDefinitions } from './catalogue.js';
+import { catalogueStamp, toolDefinitions } from './catalogue.js';
 import {
   SKILL_NAME,
   SKILL_PATH,
@@ -68,6 +68,28 @@ export const INSTRUCTIONS = [
 
   'Use the semantic layer if there is one. Where the database or its native server exposes a semantic model — described metrics, dimensions, synonyms, curated views, column comments — read it before writing SQL, and use its names and definitions rather than inventing your own from column names. A column called AMT is not a metric, and a metric called "net revenue" usually has a definition somebody has already argued about. Panorama\'s own "catalogue" carries what the Exasol catalogue holds, including comments, and a table\'s columns come back with their types; that is the least of it, and a semantic layer is the rest.',
 ].join('\n\n');
+
+/**
+ * The tools this server will actually answer.
+ *
+ * A tool the server cannot answer is not offered: a build of this package with no
+ * document beside it has no skill to read out. Computed in one place because the
+ * handshake now reports a fingerprint of it, and a fingerprint of a different list
+ * from the one served would be worse than none.
+ */
+const offeredTools = (skill: string | undefined): readonly Record<string, unknown>[] =>
+  toolDefinitions().filter((tool) => skill !== undefined || tool['name'] !== SKILL_TOOL);
+
+/**
+ * What a client is looking at, said out loud.
+ *
+ * An agent cannot tell a server that offers fourteen tools from a client showing
+ * fourteen of the sixteen a server offers, and the difference is the whole of a
+ * failure that took three rounds to find. So the handshake says the number and
+ * the first name, which turns "the skill is not exposed" into one comparison.
+ */
+const catalogueNote = (offered: readonly Record<string, unknown>[]): string =>
+  `This server is answering with ${offered.length} tools, the first of which is "${String(offered[0]?.['name'] ?? '')}", and its catalogue is stamped ${catalogueStamp(offered)} — the same stamp is in serverInfo.version. If your client lists a different number, it is showing a tool list it fetched earlier and kept; ask it to reconnect to this server, and if it will not, restart it. Nothing you call can be newer than the list you are reading from.`;
 
 /** What is said when the document could not be read; see `SKILL_PATH`. */
 const NO_SKILL = 'This server has no skill to offer: its document could not be read.';
@@ -154,7 +176,8 @@ export const handleMcpRequest = async (
     return null;
   }
   switch (request.method) {
-    case 'initialize':
+    case 'initialize': {
+      const offered = offeredTools(skill);
       return result(id, {
         protocolVersion: requestedVersion(request.params),
         /**
@@ -167,7 +190,13 @@ export const handleMcpRequest = async (
          * the tools it describes would be worse than none.
          */
         capabilities: {
-          tools: { listChanged: false },
+          /**
+           * The tool list can change under a client — this is a development
+           * server, and the catalogue is source code beside it. Declared so a
+           * client knows to expect `notifications/tools/list_changed`, which the
+           * stdio pipe sends when it notices the stamp move.
+           */
+          tools: { listChanged: true },
           ...(skill === undefined
             ? {}
             : {
@@ -175,19 +204,17 @@ export const handleMcpRequest = async (
                 resources: { listChanged: false, subscribe: false },
               }),
         },
-        serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
-        instructions: INSTRUCTIONS,
+        serverInfo: {
+          name: SERVER_NAME,
+          version: `${SERVER_VERSION}+${catalogueStamp(offered)}`,
+        },
+        instructions: `${INSTRUCTIONS}\n\n${catalogueNote(offered)}`,
       });
+    }
     case 'ping':
       return result(id, {});
     case 'tools/list':
-      // A tool the server cannot answer is not offered: a build of this package
-      // with no document beside it has no skill to read out.
-      return result(id, {
-        tools: toolDefinitions().filter(
-          (tool) => skill !== undefined || tool['name'] !== SKILL_TOOL,
-        ),
-      });
+      return result(id, { tools: offeredTools(skill) });
     // The skill, by whichever door a client knocks on. Listed so it is found
     // without being told where to look, and answered from one text.
     case 'prompts/list':

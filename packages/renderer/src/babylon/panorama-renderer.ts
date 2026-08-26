@@ -630,6 +630,23 @@ export class PanoramaRenderer {
         disablePointerSelection: true,
         disableNearInteraction: true,
         disableHandTracking: true,
+        /**
+         * Controller profiles come from what is bundled, not from the internet.
+         *
+         * Babylon otherwise fetches a profile list from a third-party host the
+         * moment the experience is built — which is every page load, since this
+         * runs early to keep the entry click inside its activation window. In an
+         * installed application that is a request to somebody else's server
+         * before anything has been asked for, and it fails outright with no
+         * network: the installability probe found it exactly that way.
+         *
+         * Nothing visible is given up here. Pointer selection and near
+         * interaction are off, so a controller is a pose and a button rather than
+         * something to aim; the locally defined profiles cover that, at the cost
+         * of a generic mesh where an exact model of somebody's controller would
+         * otherwise have been drawn.
+         */
+        inputOptions: { disableOnlineControllerRepository: true },
       });
       const base = experience.baseExperience;
       // Babylon resolves even where WebXR is unavailable, leaving no base

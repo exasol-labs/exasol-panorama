@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import react from '@vitejs/plugin-react';
-import { defineConfig } from 'vite';
+import { type Plugin, defineConfig } from 'vite';
 import { panoramaAgent } from '../../packages/mcp/src/vite-plugin.js';
 import { readStartupConnection } from './src/panorama/startup.js';
 
@@ -33,6 +33,40 @@ const httpsFromEnvironment = (): { https?: { key: Buffer; cert: Buffer } } => {
  */
 const DEV_PORT = Number(process.env['PANORAMA_PORT'] ?? 5173);
 
+/**
+ * The worker's entry name, which becomes its file name, which is the path the
+ * page registers. One constant: a mismatch here is an install that silently
+ * never happens. `src/panorama/install.ts` holds the other end of it.
+ */
+const SERVICE_WORKER = 'service-worker';
+
+/**
+ * Writes the list of files the build produced, for the service worker to fetch
+ * while installing. See `src/panorama/shell-cache.ts` for why it needs one: the
+ * renderer imports its shaders lazily, so "cache what has been used" leaves an
+ * installed application unable to draw a table the first time it is offline.
+ *
+ * Emitted from the bundle rather than by walking the output directory, so it can
+ * only ever name files this build actually made. Source maps are left out: they
+ * are five times the size of the application and are for a debugger with a
+ * network.
+ */
+const shellAssets = (): Plugin => ({
+  name: 'panorama-shell-assets',
+  apply: 'build',
+  generateBundle(_options, bundle) {
+    const files = Object.keys(bundle)
+      .filter((name) => name.startsWith('assets/') && !name.endsWith('.map'))
+      .map((name) => `/${name}`)
+      .sort();
+    this.emitFile({
+      type: 'asset',
+      fileName: 'shell-assets.json',
+      source: `${JSON.stringify(files, null, 2)}\n`,
+    });
+  },
+});
+
 const startupForServing = (): ReturnType<typeof readStartupConnection> => {
   loadEnvFile();
   return readStartupConnection(process.env);
@@ -47,6 +81,7 @@ export default defineConfig(({ command }) => ({
   plugins: [
     react(),
     panoramaAgent({ port: DEV_PORT, onLog: (message) => console.info(`[agent] ${message}`) }),
+    shellAssets(),
   ],
   resolve: {
     alias: {
@@ -78,6 +113,26 @@ export default defineConfig(({ command }) => ({
   define: {
     __PANORAMA_STARTUP__: JSON.stringify(command === 'serve' ? startupForServing() : null),
   },
-  build: { target: 'esnext', sourcemap: true },
+  /**
+   * Two entry points, because a service worker has to be reachable at a fixed
+   * path: its scope is the directory it is served from, so a hashed name under
+   * `assets/` could control neither the document nor a client that registered an
+   * earlier one. Everything else keeps the hashed names that make it cacheable
+   * forever — see `src/panorama/shell-cache.ts`.
+   */
+  build: {
+    target: 'esnext',
+    sourcemap: true,
+    rollupOptions: {
+      // Relative to the project root, which is this directory: naming them by
+      // absolute path would mean resolving one while the config is merely being
+      // read, which is something a test does too.
+      input: { index: 'index.html', [SERVICE_WORKER]: 'src/service-worker.ts' },
+      output: {
+        entryFileNames: (chunk) =>
+          chunk.name === SERVICE_WORKER ? '[name].js' : 'assets/[name]-[hash].js',
+      },
+    },
+  },
   worker: { format: 'es' },
 }));

@@ -72,6 +72,10 @@ export default defineConfig({
         // functions they delegate to.
         'apps/web/src/main.tsx',
         'apps/web/src/data-worker.ts',
+        // Same: it wires three listeners onto a service worker global. The policy
+        // it wires them to is `panorama/shell-cache.ts`, which is covered, and the
+        // wiring itself is checked in a real browser by `npm run install-check`.
+        'apps/web/src/service-worker.ts',
       ],
       // Locked to what the suite currently achieves; the residue is defensive
       // `??` fallbacks and browser-only engine paths.

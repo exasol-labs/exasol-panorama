@@ -541,3 +541,31 @@ export const toolDefinitions = (): readonly Record<string, unknown>[] =>
     inputSchema: jsonSchema(tool.args),
     ...(tool.writes === true ? {} : { annotations: { readOnlyHint: true } }),
   }));
+
+/**
+ * A short fingerprint of a catalogue: how many tools, and a hash of all of it.
+ *
+ * This exists because of a failure that took three rounds to find. A client
+ * fetches the tool list once, when it connects, and then shows what it fetched —
+ * so an agent was reading a fourteen-tool catalogue from a server that had since
+ * grown two more, and every fix went into a server nobody was talking to. Nothing
+ * on either side was wrong, and nothing on either side could tell.
+ *
+ * So the catalogue says which catalogue it is, in `serverInfo.version` and in the
+ * handshake's own words. A number that does not match is then one comparison
+ * rather than an investigation, and the pipe in `bin/panorama-agent.mjs` watches
+ * it so a client can be told to look again.
+ *
+ * FNV-1a rather than a real digest: this needs to be stable, short, and computable
+ * in a browser as well as in Node, and it is guarding against a stale copy rather
+ * than against anybody malicious.
+ */
+export const catalogueStamp = (definitions: readonly Record<string, unknown>[]): string => {
+  const text = JSON.stringify(definitions);
+  let hash = 0x81_1c_9d_c5;
+  for (let at = 0; at < text.length; at += 1) {
+    hash ^= text.charCodeAt(at);
+    hash = Math.imul(hash, 0x01_00_01_93) >>> 0;
+  }
+  return `${definitions.length}.${hash.toString(16).padStart(8, '0')}`;
+};

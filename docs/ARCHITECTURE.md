@@ -88,7 +88,7 @@ Four participants, three trust boundaries:
 Credentials cross exactly one of those boundaries — from the connection dialog's
 local state into the worker's `connect` message — and go no further (§8.4). The
 agent endpoint exists only while the development server does, binds to loopback,
-and holds no state of its own (§9.9).
+and holds no state of its own (§9.10).
 
 ---
 
@@ -212,7 +212,7 @@ This is why `packages/renderer` can be tested with no workspace, and
 | `ui`            | React shell: connection dialog, schema explorer, export panel, settings, performance overlay                        | The canvas internals                         |
 | `mcp`           | Agent interface: tool catalogue, MCP endpoint, the bridge into the live session                                     | Which client is calling                      |
 | `test-support`  | Deterministic mock sources, virtual clock, pathological relation generators                                         | Production code paths                        |
-| `apps/web`      | Composition: workspace, canvas component, worker bootstrap, agent host                                              | —                                            |
+| `apps/web`      | Composition: workspace, canvas component, worker bootstrap, agent host, installability                              | —                                            |
 
 Inside the composition root, four objects rather than one:
 
@@ -352,7 +352,7 @@ agent ─▶ MCP endpoint (dev server) ─▶ event stream ─▶ page bridge
 
 The endpoint holds no state: every answer comes from the live session in the page,
 so an agent and a person are looking at the same document, and an agent's edits
-appear on screen as they are made and undo like anyone else's (§9.9).
+appear on screen as they are made and undo like anyone else's (§9.10).
 
 ---
 
@@ -410,15 +410,16 @@ and drawn in ours.
 
 ### 8.5 Extensibility seams
 
-| Seam           | Interface                              | Already used for                                 |
-| -------------- | -------------------------------------- | ------------------------------------------------ |
-| Data source    | `TableDataSource`                      | Exasol; deterministic mocks; demo relations      |
-| Text           | `TextRenderer`                         | Canvas atlas                                     |
-| Chart library  | `ChartSurface`                         | ECharts                                          |
-| Renderer host  | `TableViewProvider`, `InteractionHost` | The workspace                                    |
-| Agent host     | `AgentHost`                            | The workspace                                    |
-| File sink      | `ByteSink`                             | File System Access API; collecting sink in tests |
-| Machine access | `ClaudeEnvironment`                    | Node; a fake machine in tests                    |
+| Seam           | Interface                                | Already used for                                 |
+| -------------- | ---------------------------------------- | ------------------------------------------------ |
+| Data source    | `TableDataSource`                        | Exasol; deterministic mocks; demo relations      |
+| Text           | `TextRenderer`                           | Canvas atlas                                     |
+| Chart library  | `ChartSurface`                           | ECharts                                          |
+| Renderer host  | `TableViewProvider`, `InteractionHost`   | The workspace                                    |
+| Agent host     | `AgentHost`                              | The workspace                                    |
+| File sink      | `ByteSink`                               | File System Access API; collecting sink in tests |
+| Machine access | `ClaudeEnvironment`                      | Node; a fake machine in tests                    |
+| Installability | `registerShell`, `ShellCacheEnvironment` | The build; fakes for cache storage and network   |
 
 XR is not a seam but a consequence: because the halo, the connectors and the
 charts are all drawn by the same batches, the entire interface exists in the 3-D
@@ -766,7 +767,51 @@ allocation is not what limits anything.
 builds a data source is injected, so the deterministic mocks and the real driver
 are reached by the same code path rather than by a parallel one.
 
-### 9.9 The agent interface
+### 9.9 Distribution: installed, not wrapped
+
+**The deliverable is the web application, made installable.** The renderer needs a
+browser engine — no system webview ships WebXR, and Electron compiles VR out — so
+every wrapper considered was a downgrade on the two axes this application lives
+on. A web app manifest plus a service worker gets a launcher entry, its own
+window and an offline start on desktop, Android, iOS and the Quest Browser, and
+is also the input to the only store route that keeps WebXR: a Trusted Web
+Activity. The evaluation, including what a desktop shell would and would not buy,
+is `plans/panorama-packaging-plan.md`.
+
+**The cache holds the shell and never data.** A row kept from a query is a row
+that can be shown as current when it is not, and a database browser that lies
+about the database is worse than one that says it is offline. So the worker
+answers the document network-first, hashed assets cache-first, and passes
+everything else through untouched — the socket, the schema and every result set
+behave exactly as they do in a tab (`apps/web/src/panorama/shell-cache.ts`).
+
+**The build emits the list of what to cache.** "Cache what has been used" is the
+tempting policy and it is wrong here: the renderer imports its shader chunks the
+first time it draws something, so an install that had only what the launch
+happened to fetch produced an application that started offline and then could not
+open a table. A build plugin writes `shell-assets.json` and the worker fetches all
+of it while installing. It is a file rather than a compiled-in constant because
+the names are hashed and change every deployment.
+
+**Cached copies are matched ignoring `Vary`.** Hosts routinely answer static
+files with `Vary: Origin` — Vite's own preview server does, as do the usual CDN
+configurations — and a request whose `Origin` differs from the one that filled the
+cache then does not match it, silently, so cache-first became network-first
+against no network. Ignoring it is sound and not merely convenient: these are
+hashed public assets, and the Cache API stores bodies already decoded.
+
+**The worker is registered only in a build.** In front of a development server a
+cache is a way of being shown a file you have already changed. The flag is passed
+in at the call site rather than read inside, so both sides of it are testable.
+
+**Nothing about installability is trusted to review.** Every failure mode here is
+silent — a missing icon size means no install prompt, a declared size that does
+not match the file means an icon the platform ignores, a manifest the document
+does not link is a manifest nobody reads. So `npm run install-check` builds,
+serves and drives the real thing, and asserts what is on the device is only the
+shell; `apps/web/test/manifest.test.ts` checks the declarations against the bytes.
+
+### 9.10 The agent interface
 
 **It is a pipe, not a second application.** The document, its history and the
 session exist in one core in one browser tab. A server with its own copy would be
@@ -783,6 +828,32 @@ to loopback.
 half that offers the tools runs in a process with no document, so it cannot import
 the half that needs one. A test insists the two name exactly the same tools —
 without it, a tool could exist and do nothing.
+
+**The catalogue says which catalogue it is.** A client fetches the tool list once,
+when it connects, and then shows what it fetched. That is reasonable of it, and it
+produced the longest-running failure in this repository's short history: an agent
+read a fourteen-tool catalogue for days while the server had grown to sixteen, and
+three separate fixes went into a server nobody was talking to. Worse, for most of
+that time no development server was running at all, so the list being shown was
+the memory of one. Nothing on either side was wrong and nothing on either side
+could say so. So `serverInfo.version` now carries a fingerprint of the tools being
+offered — count and hash — and the handshake says the number and the first name in
+words. A mismatch is one comparison rather than an investigation.
+
+**A stale list is corrected rather than waited out.** The stdio pipe watches that
+stamp and sends `notifications/tools/list_changed` when it moves, which includes
+the case that caused all this: connect with nothing listening, start the server
+later, and the client is told to ask again rather than left holding a snapshot.
+The `tools.listChanged` capability is declared because it is now true. The pipe
+still knows nothing about the protocol beyond one JSON value per line — it
+compares two strings.
+
+**End-to-end checks that start their own server prove the wrong thing.** The
+verification that said the skill was reachable started a development server, asked
+it, and shut it down. It was correct and it was irrelevant: what an agent talks to
+is a server somebody else started, and its tool list is whatever their client
+cached. `agent-check` now prints the stamp for exactly that comparison, and drives
+the connect-to-nothing-then-a-server sequence directly.
 
 **A hand-written mirror of someone else's shape needs a seam.** Commands are
 described twice: as interfaces in the core, and as a table of field names for the
@@ -910,6 +981,8 @@ An honest register. Nothing here is urgent; all of it is real.
 | A calendar heatmap draws and cannot be pointed at     | Its cells are drawn by the calendar component and carry no row index anywhere in the display list, so the structural search has nothing to find. Every other series type Panorama has met links its elements back to its rows | Reported rather than hidden: `drawn.pickable` is false and says so, which makes it measurable instead of a caveat to remember               |
 | A matrix cell drills down on one axis                 | A row filter is one predicate, so a data set names one key column and a cell of a cross-tabulation opens the rows of whichever axis that is                                                                                   | A predicate of several clauses, which cross-filtering wants too — [plans/panorama-chart-data-plan.md](../plans/panorama-chart-data-plan.md) |
 | The agent endpoint is development-only                | Deliberate, but it means an agent cannot drive a deployed page                                                                                                                                                                | If that is wanted, it is a hosted endpoint with authentication, not a flag                                                                  |
+| An installed app remembers nothing but the shell      | Credentials are typed per session and never stored, which is a defensible answer for a development tool and an irritating one for an application launched from a dock                                                         | A product decision, not a packaging one: a page can offer no better than the browser's password manager; a shell could use the keychain     |
+| XR has never run on real hardware                     | The renderer's XR path is exercised headlessly and reviewed, but no session has been entered on a device                                                                                                                      | The one measurement that decides the distribution plan — `plans/panorama-packaging-plan.md`                                                 |
 
 ---
 

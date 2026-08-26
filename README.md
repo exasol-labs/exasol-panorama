@@ -65,6 +65,38 @@ npm run build          # production bundle
 Everything else about the tests — the browser probes, the coverage thresholds, the
 opt-in runs against a real database — is in [TESTING.md](docs/TESTING.md).
 
+### Installing it as an application
+
+The build is installable: a browser can launch it in its own window, from a dock,
+a home screen or a headset's library, with no wrapper around it. To try that:
+
+```bash
+npm run build
+npm run preview        # http://localhost:4173
+```
+
+Then use the install control in the address bar (Chrome and Edge: the icon at the
+right; Safari: **Share → Add to Dock**; Android and the Quest Browser: **Install**
+in the menu). It launches without browser chrome, keeps its own window, and — the
+part worth checking — **starts with no network at all**, because the build is on
+the device. The sample tables work offline; a database, of course, does not.
+
+Nothing is cached but the application itself. No query result, no schema, no row
+ever goes into that cache: a stale row shown as current is a worse failure than
+being offline. See [`shell-cache.ts`](apps/web/src/panorama/shell-cache.ts).
+
+```bash
+npm run install-check  # builds, serves, and drives it: worker, manifest, offline
+npm run icons          # redraws the icons after a change to the mark
+```
+
+A service worker is registered **only in a build** — in front of the dev server a
+cache is just a way of being shown a file you have already changed.
+
+The route from here to a store listing (a Trusted Web Activity for Play and the
+Meta Horizon Store, and what a desktop shell would and would not buy) is
+evaluated in [`plans/panorama-packaging-plan.md`](plans/panorama-packaging-plan.md).
+
 ### If the canvas stays blank
 
 The renderer reports startup and per-frame failures as a message in the sidebar
@@ -146,13 +178,15 @@ Code**, in a new terminal window in this project's directory, on a machine with 
 application to open. Both say what they did, and the panel then shows the pairing
 as done.
 
-There are fifteen tools. `overview` is where to start — what is open, what is
+`overview` is where to start — what is open, what is
 being edited, where the history stands. `entities`, `entity` and `rows` describe
 the boxes and read their cells; `history` is the commit graph; `session` is what
 is selected. `dispatch` applies a document command — one, or a list of
 them — `checkout` moves the history head, `label` renames a box, and `open_table`,
 `action`, `query` and `chart` do the things a document command cannot express on
-its own. `catalogue` lists the database.
+its own. `catalogue` lists the database. `session_dispatch` changes what is
+selected, and `skill` is the page describing all of it. The handshake says how many
+tools there are, which matters — see below.
 
 Every answer comes from the session in the page — there is no second copy of the
 document — so an agent and a person are looking at the same thing, and an agent's
@@ -175,7 +209,38 @@ to the engine by how far the rows have to travel: a local `exasol` CLI first whe
 the database is on this machine, a native Exasol MCP server next, this server for
 the canvas — and check first that the other route is the same database. Why the
 interface is shaped this way is in
-[ARCHITECTURE.md §9.9](docs/ARCHITECTURE.md#99-the-agent-interface).
+[ARCHITECTURE.md §9.10](docs/ARCHITECTURE.md#910-the-agent-interface).
+
+#### If an agent cannot see a tool that is there
+
+Almost always the same thing, and it is not on the agent's side: **a client fetches
+the tool list once, when it connects, and then shows what it fetched.** So a client
+that connected before a tool existed — or while nothing was listening at all, which
+looks the same to it — keeps showing the old list however many times the server is
+corrected.
+
+Two things to check, in order:
+
+1. **Is the endpoint running?** `curl http://localhost:5173/agent/health`. It lives
+   on the development server; without `npm run dev` there is nothing there, and a
+   client that connected anyway is holding a memory of one.
+2. **Which catalogue is the agent looking at?** The handshake stamps it, in
+   `serverInfo.version` (`0.1.0+16.850d7b2f`: sixteen tools and a hash of them) and
+   again in words at the end of the instructions. Ask the agent what its client
+   shows. A different number means a cached list, not a missing tool.
+
+The fix is to reconnect the server in the client — in Claude Code, `/mcp`; in the
+desktop application, restart it. The stdio pipe now watches the stamp and sends
+`notifications/tools/list_changed` when it moves, so a client that honours it is
+corrected on its own, including when the server appears after the client did.
+
+To see what a client will actually get, ask the server rather than the code:
+
+```bash
+curl -s -X POST http://localhost:5173/agent/mcp \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | jq '.result.tools | length, .[0].name'
+```
 
 ### Viewing it in a headset
 

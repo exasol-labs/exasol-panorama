@@ -283,6 +283,25 @@ describe('PanoramaRenderer', () => {
     expect(create.mock.calls.length).toBe(afterFirst);
   });
 
+  /**
+   * Found by the installability probe: building the XR experience fetched a
+   * controller profile list from a third-party host, on every page load, and
+   * failed with no network. An installed application asks nobody's server for
+   * anything before it has been asked to.
+   */
+  it('takes controller profiles from the bundle and not from the internet', async () => {
+    const harness = setup();
+    const module = await import('@babylonjs/core/XR/webXRDefaultExperience.js');
+    const create = vi.spyOn(module.WebXRDefaultExperience, 'CreateAsync');
+    await harness.renderer.prepareXR();
+    expect(create).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        inputOptions: { disableOnlineControllerRepository: true },
+      }),
+    );
+  });
+
   it('leaves the world on the desk when a session will not start', async () => {
     const harness = setup();
     await expect(harness.renderer.enterXR()).resolves.toBeNull();

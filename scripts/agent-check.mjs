@@ -14,6 +14,7 @@
  */
 import { chromium } from 'playwright';
 import { spawn } from 'node:child_process';
+import { createServer } from 'node:http';
 
 const URL_UNDER_TEST = process.env.PANORAMA_SMOKE_URL ?? 'http://localhost:5199/';
 const origin = new URL(URL_UNDER_TEST).origin;
@@ -83,6 +84,15 @@ const instructions = String(initialize?.result?.instructions ?? '');
 report.handshake = {
   protocolVersion: initialize?.result?.protocolVersion,
   serverName: initialize?.result?.serverInfo?.name,
+  /**
+   * Which catalogue this is. Printed because it is the one thing to compare
+   * against what an agent's client is showing: a different number of tools there
+   * means the client is holding a list it fetched earlier, not that the server
+   * is missing anything.
+   */
+  catalogue: initialize?.result?.serverInfo?.version,
+  saysWhichCatalogue: /catalogue is stamped/u.test(instructions),
+  tellsAClientToReconnect: /fetched earlier and kept/u.test(instructions),
   // What an agent is told before it picks a tool: which server to use for what,
   // how to establish that a native one is the same database, and to read the
   // semantic layer first.
@@ -801,6 +811,73 @@ report.stdio = await new Promise((resolve) => {
     resolve({ answered: lines.length, timedOut: true });
   }, 8000);
 });
+
+/**
+ * 10b. The stale list, which is the failure a unit test cannot see.
+ *
+ * A client fetches the tool list once, on connecting, and shows what it fetched.
+ * An agent read a fourteen-tool catalogue for days while the server had sixteen —
+ * and for part of that time nothing was listening at all, so the list it showed
+ * was the memory of a server. Neither side was wrong; neither side could say so.
+ *
+ * So the pipe watches the catalogue stamp and tells the client to list again. The
+ * sequence checked here is the one that happened: connect to nothing, have a
+ * server appear, and see whether the client is told. The real endpoint cannot be
+ * taken down from here — it is somebody's `npm run dev` — so the pipe is pointed
+ * at a port with nothing on it and a stub is started there afterwards. The pipe
+ * compares stamps and knows nothing else, which is exactly what is under test.
+ */
+report.staleListAnnounced = await (async () => {
+  const port = 5182;
+  const child = spawn('node', ['packages/mcp/bin/panorama-agent.mjs'], {
+    env: {
+      ...process.env,
+      PANORAMA_AGENT_URL: `http://localhost:${port}/agent/mcp`,
+      PANORAMA_AGENT_POLL_MS: '300',
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  const seen = [];
+  let pending = '';
+  child.stdout.on('data', (chunk) => {
+    pending += chunk.toString();
+    const parts = pending.split('\n');
+    pending = parts.pop() ?? '';
+    for (const part of parts) if (part.trim() !== '') seen.push(JSON.parse(part));
+  });
+
+  // Connect while there is nothing there: what a client does when the dev server
+  // is not running, and the state it then holds a tool list in.
+  child.stdin.write(
+    `${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })}\n`,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 900));
+  const beforeAnyServer = seen.some(
+    (message) => message.method === 'notifications/tools/list_changed',
+  );
+
+  // A server appears, stamped the way the real one stamps itself.
+  const stub = createServer((incoming, outgoing) => {
+    outgoing.writeHead(200, { 'content-type': 'application/json' });
+    outgoing.end(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'panorama-agent/stamp',
+        result: { serverInfo: { name: 'panorama', version: '0.1.0+16.deadbeef' } },
+      }),
+    );
+  });
+  await new Promise((resolve) => stub.listen(port, resolve));
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  child.kill();
+  await new Promise((resolve) => stub.close(resolve));
+
+  return {
+    // Nothing to announce while there was nothing to announce it about.
+    quietWhileNothingWasThere: !beforeAnyServer,
+    toldToListAgain: seen.some((message) => message.method === 'notifications/tools/list_changed'),
+  };
+})();
 
 // 11. And the page detaching, which is a reload as far as an agent is concerned.
 await page.close();
