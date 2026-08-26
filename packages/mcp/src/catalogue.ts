@@ -181,7 +181,8 @@ export const COMMAND_FIELDS: Readonly<Record<string, ArgsSpec>> = {
   CreateBinding: {
     binding: {
       kind: 'object',
-      describe: 'The connector: {id, kind, fromId, toId, from, to, directed}',
+      describe:
+        'The connector: {id, fromId, toId}. Optionally directed, label, and from/to as {mode: "fixed", x, y} where an end should stay put; left out, each end slides around its box to face the other.',
     },
   },
   SetBindingLabel: {

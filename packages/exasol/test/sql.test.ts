@@ -171,6 +171,15 @@ describe('writing a number for SQL to read', () => {
     expect(numberLiteral(1e14)).toBe('100000000000000');
   });
 
+  it('expands a number past the point where a fixed expansion gives up', () => {
+    // `(1e21).toFixed(12)` is the string `1e+21`, which is exactly the form this
+    // function promises never to produce. A DOUBLE column holding figures this
+    // size is unusual and entirely legal.
+    expect(numberLiteral(1e21)).toBe('1000000000000000000000');
+    expect(numberLiteral(-1e21)).toBe('-1000000000000000000000');
+    expect(numberLiteral(1.5e300)).toMatch(/^15\d+$/u);
+  });
+
   it('writes something a parser will accept for a number that is not one', () => {
     expect(numberLiteral(Number.NaN)).toBe('0');
     expect(numberLiteral(Number.POSITIVE_INFINITY)).toBe('0');

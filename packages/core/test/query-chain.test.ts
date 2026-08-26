@@ -65,6 +65,11 @@ describe('finding where a statement names its input', () => {
     expect(derivedTableRanges('SELECT * FROM derived_table2')).toEqual([]);
   });
 
+  it('finds no name at all where there is no name to find', () => {
+    // A zero-length name matches everywhere and consumes nothing.
+    expect(identifierRanges('SELECT * FROM derived_table', '')).toEqual([]);
+  });
+
   it('leaves it alone inside a string, which is a value and not a name', () => {
     expect(derivedTableRanges("SELECT * FROM t WHERE label = 'derived_table'")).toEqual([]);
     // A doubled quote is SQL's escape, so the literal has not ended there.

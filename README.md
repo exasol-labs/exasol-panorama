@@ -9,9 +9,12 @@ worker, and the application shell that ties them together.
 The Stage 1 deliverable is one thing: **browsing an arbitrarily large Exasol
 table must feel local, continuous and tactile.**
 
-This file is about running it. **[ARCHITECTURE.md](ARCHITECTURE.md)** is about how
-it is built and why — the model, the layering, the module map, the flows, and a
-decision record of everything that is not obvious from the code.
+This file is about running it. Two documents in [`docs/`](docs) cover the rest:
+**[ARCHITECTURE.md](docs/ARCHITECTURE.md)** is how it is built and why — the
+model, the layering, the module map, the flows, and a decision record of
+everything that is not obvious from the code. **[TESTING.md](docs/TESTING.md)** is
+how we know it works — the suite, the doubles, the coverage gate, and the browser
+probes.
 
 ---
 
@@ -53,12 +56,13 @@ but browser-direct access to a self-signed instance needs a manual trust step �
 which is a strong argument for the thin gateway the plan keeps as an option.
 
 ```bash
-npm test               # unit + integration tests
-npm run coverage       # tests with coverage thresholds enforced
-npm run typecheck      # tsc --noEmit across every package
-npm run verify         # typecheck + coverage
+npm test               # the test suite
+npm run verify         # typecheck + coverage — the gate
 npm run build          # production bundle
 ```
+
+Everything else about the tests — the browser probes, the coverage thresholds, the
+opt-in runs against a real database — is in [TESTING.md](docs/TESTING.md).
 
 ### If the canvas stays blank
 
@@ -80,41 +84,6 @@ http://localhost:5173/?backend=webgpu
 
 The overlay's **Backend** field shows which one is live; `—` with 0 FPS means no
 engine ever started.
-
-### Looking at pixels
-
-The test suite proves structure; it cannot prove appearance. A dozen probe scripts
-close that gap by driving the real application in a real browser with a real
-pointer, and reading back the geometry the canvas actually produced. They need
-Chromium once (`npx playwright install chromium`) and a dev server:
-
-```bash
-npm run dev -- --port 5199        # in one terminal
-npm run smoke                     # in another
-```
-
-Every probe takes `PANORAMA_SMOKE_URL` (default `http://localhost:5199/`), and
-`smoke` also takes `PANORAMA_SMOKE_DPR=2` to reproduce a Retina display.
-Screenshots land in `scripts/shots/`.
-
-| Command                  | Drives                                                                                                  |
-| ------------------------ | ------------------------------------------------------------------------------------------------------- |
-| `npm run smoke`          | Every sample relation, a fling through ten billion rows, a five-thousand-column table scrolled sideways |
-| `npm run halo-check`     | The halo: hover, press, close                                                                           |
-| `npm run halo-reach`     | Reaching a halo button across the gap, on a table that is not selected                                  |
-| `npm run halo-exclusive` | That only one halo is ever on screen                                                                    |
-| `npm run binding-check`  | Following a foreign key, and the connector it leaves behind                                             |
-| `npm run route-check`    | A connector routed around a table parked between two joined ones                                        |
-| `npm run summary-check`  | The statistics panel under a picked-out column                                                          |
-| `npm run sql-check`      | The query box: greying, drag, composition, highlighting                                                 |
-| `npm run chart-check`    | Every chart control, the marks, picking, the drill-down, SVG/PNG/PDF                                    |
-| `npm run export-check`   | CSV, XLSX and Parquet as real downloads                                                                 |
-| `npm run agent-check`    | The agent endpoint: handshake, tools, an edit, the refusals, the stdio pipe                             |
-| `npm run probe`          | A scratch pad for graphics-stack questions only a GPU can answer                                        |
-
-What each one asserts, and why these particular techniques (a canvas that has been
-composited reads back black; a line hidden behind a table is invisible to pixels
-_and_ to geometry), is in [ARCHITECTURE.md §10](ARCHITECTURE.md#10-testing-as-architecture).
 
 ### Supplying connection details at startup
 
@@ -191,7 +160,7 @@ edits appear on screen as they are made and undo like anyone else's.
 This server is for the canvas, not for the database: where a native Exasol MCP
 server is available, the handshake tells an agent to compute with that one and to
 check first that it is the same database. Why the interface is shaped this way is
-in [ARCHITECTURE.md §9.9](ARCHITECTURE.md#99-the-agent-interface).
+in [ARCHITECTURE.md §9.9](docs/ARCHITECTURE.md#99-the-agent-interface).
 
 ### Viewing it in a headset
 
@@ -238,57 +207,45 @@ a headset is actually on offer, so it stays hidden on the desktop — if it is
 missing in the headset, the page is not secure or the session was refused, and
 the notice says which.
 
+---
+
+## Testing
+
+`npm run verify` is the gate: a type check across every package, then the suite
+with its coverage thresholds enforced. **[TESTING.md](docs/TESTING.md)** is the
+full account — the two Vitest projects, the doubles and the injected clock, the six
+kinds of test, what the 100 % line gate is for, and an honest register of the
+gaps. Three things are worth knowing from here.
+
+### Looking at pixels
+
+The test suite proves structure; it cannot prove appearance. Eleven probe scripts
+close that gap by driving the real application in a real browser with a real
+pointer and reading back the geometry the canvas actually produced:
+
+```bash
+npx playwright install chromium   # once
+npm run dev -- --port 5199        # in one terminal
+npm run smoke                     # in another
+```
+
+`smoke`, `halo-check`, `halo-reach`, `halo-exclusive`, `binding-check`,
+`route-check`, `summary-check`, `sql-check`, `chart-check`, `export-check`,
+`agent-check`, and `probe` as a graphics scratch pad. What each one asserts, the
+techniques behind them, and how to read their output are in
+[TESTING.md §8](docs/TESTING.md#8-browser-probes).
+
 ### Checking the export files against someone else's reader
 
-The suite proves the encoders write what they meant to. It cannot prove that is
-what Parquet, or Excel, or a spreadsheet's CSV import actually expects — no test
-can assert that about a format it also implements. So the samples are written out
-on request and opened with libraries this repository does not depend on:
+No test can prove a format is right against the code that wrote it, so the samples
+are written out on request and opened with libraries this repository does not
+depend on — pyarrow, openpyxl, Ghostscript, `pdftotext`. The commands are in
+[TESTING.md §9](docs/TESTING.md#9-checking-files-against-other-peoples-readers).
 
-```bash
-PANORAMA_EXPORT_SAMPLES=/tmp/panorama-export npm test
-python3 -m venv /tmp/verify && /tmp/verify/bin/pip install pyarrow openpyxl
-/tmp/verify/bin/python -c "import pyarrow.parquet as pq; print(pq.read_table('/tmp/panorama-export/types.parquet').schema)"
-/tmp/verify/bin/python -c "import openpyxl; print(openpyxl.load_workbook('/tmp/panorama-export/types.xlsx').active.max_row)"
-```
+### Against a real Exasol
 
-The shapes written cover full type coverage, a mostly-NULL relation, 1 200
-columns, an empty result set, several Parquet row groups, and the awkward values
-the generators do not produce: thirty-six-digit decimals, exponent notation, the
-edges of Excel's calendar and of the Unix epoch, embedded quotes, delimiters,
-newlines, carriage returns and astral-plane characters.
-
-A chart's picture formats are checked the same way, by tools that had no part in
-writing them:
-
-```
-gs -dNOPAUSE -dBATCH -sDEVICE=nullpage chart.pdf   # does a real reader accept it
-pdftotext chart.pdf -                              # is the text real text
-python3 -c "import xml.dom.minidom as m; m.parse('chart.svg')"
-sips -g pixelWidth -g pixelHeight chart.png
-```
-
-A chart's picture formats are checked the same way, by tools that had no hand in
-writing them:
-
-```bash
-gs -dNOPAUSE -dBATCH -sDEVICE=nullpage chart.pdf  # does a real reader accept it
-pdftotext chart.pdf -                             # is the text real text
-python3 -c "import xml.dom.minidom as m; m.parse('chart.svg')"
-sips -g pixelWidth -g pixelHeight chart.png
-```
-
-### Integration tests against a real Exasol
-
-They are skipped unless a URL is provided:
-
-```bash
-PANORAMA_EXASOL_URL=wss://localhost:8563 \
-PANORAMA_EXASOL_USER=sys PANORAMA_EXASOL_PASSWORD=exasol \
-PANORAMA_EXASOL_SCHEMA=SALES PANORAMA_EXASOL_TABLE=ORDERS \
-NODE_TLS_REJECT_UNAUTHORIZED=0 \
-npm test
-```
+The driver's integration tests are skipped unless `PANORAMA_EXASOL_URL` is set;
+see [TESTING.md §10](docs/TESTING.md#10-against-a-real-exasol).
 
 ---
 
@@ -313,7 +270,7 @@ Three dependency rules hold the shape together, and each buys a specific freedom
 - no package outside `renderer/` knows about Babylon objects;
 - no package outside `chart-echarts/` knows that ECharts exists.
 
-**[ARCHITECTURE.md](ARCHITECTURE.md) is the full account** — the constraint the
+**[ARCHITECTURE.md](docs/ARCHITECTURE.md) is the full account** — the constraint the
 design answers to, the core model, the layering and module map, the principal
 flows, the cross-cutting concerns, a decision record of everything that is not
 obvious from the code, the test strategy, and an honest register of what is still

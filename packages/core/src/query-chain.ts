@@ -71,6 +71,13 @@ const skipQuoted = (sql: string, start: number, quote: string): number => {
  * without regard to case, because an unquoted identifier is.
  */
 export const identifierRanges = (sql: string, name: string): readonly SqlRange[] => {
+  // No name is nowhere. Said here rather than left to the scan: a zero-length
+  // name matches at every position without consuming anything, so the walk below
+  // would report an empty range at each index and never reach the end of the
+  // string. Nothing in the application asks this — the one name it looks for is
+  // a constant — but an exported function that hangs on the empty string is a
+  // trap for the next caller.
+  if (name === '') return [];
   const ranges: SqlRange[] = [];
   const lower = sql.toLowerCase();
   const wanted = name.toLowerCase();

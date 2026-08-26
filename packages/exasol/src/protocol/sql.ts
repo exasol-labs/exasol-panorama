@@ -128,6 +128,10 @@ export const foreignKeyQuery = (schema: string, table: string): string =>
 export const numberLiteral = (value: number): string => {
   if (!Number.isFinite(value)) return '0';
   if (Number.isInteger(value) && Math.abs(value) < 1e15) return String(value);
+  // `toFixed` gives up at 1e21 and returns exponent notation — the one thing
+  // this function exists to avoid. A double that large has no fraction left to
+  // lose, so it is expanded as the integer it already is.
+  if (Math.abs(value) >= 1e21) return BigInt(Math.trunc(value)).toString();
   return value.toFixed(12).replace(/0+$/u, '').replace(/\.$/u, '');
 };
 

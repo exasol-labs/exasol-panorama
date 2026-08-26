@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Exasol Panorama \u2014 a spatial visual environment for exploring data in Exasol.",
+  "description": "Exasol Panorama — a spatial visual environment for exploring data in Exasol.",
   "workspaces": [
     "packages/*",
     "apps/*"
@@ -42,6 +42,7 @@
     "@testing-library/react": "^16.3.2",
     "@types/node": "^26.2.0",
     "@vitest/coverage-v8": "^4.1.11",
+    "fast-check": "^4.9.0",
     "jsdom": "^30.0.1",
     "playwright": "^1.62.1",
     "prettier": "^3.9.6",

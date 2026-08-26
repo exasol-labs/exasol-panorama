@@ -85,6 +85,68 @@ describe('readCommand', () => {
   });
 });
 
+describe('reading a connector', () => {
+  const ends = { fromId: 'table:1', toId: 'table:2' };
+
+  const binding = (extra: Record<string, unknown>): Record<string, unknown> =>
+    readCommand({ type: 'CreateBinding', binding: { id: 'binding:1', ...ends, ...extra } })[
+      'binding' as keyof ReturnType<typeof readCommand>
+    ] as unknown as Record<string, unknown>;
+
+  it('fills in the ends a hand-drawn connector would have got', () => {
+    // The crash this reader was written for: a binding with no `from` reached the
+    // anchor check as `undefined` and took the page with it. Absent is the mobile
+    // attachment, which is what a connector drawn with a pointer gets.
+    expect(binding({})).toEqual({
+      id: 'binding:1',
+      kind: 'connector',
+      ...ends,
+      from: { mode: 'auto' },
+      to: { mode: 'auto' },
+      directed: false,
+    });
+  });
+
+  it('keeps what was said about an end that should stay put', () => {
+    expect(binding({ from: { mode: 'fixed', x: 0.25, y: 1 } })['from']).toEqual({
+      mode: 'fixed',
+      x: 0.25,
+      y: 1,
+    });
+    expect(binding({ from: { mode: 'auto' } })['from']).toEqual({ mode: 'auto' });
+    expect(binding({ from: null })['from']).toEqual({ mode: 'auto' });
+  });
+
+  it('carries a label and machine-readable detail through', () => {
+    const carried = binding({ label: 'follows', meta: { column: 'COUNTRY' }, directed: true });
+    expect(carried['label']).toBe('follows');
+    expect(carried['meta']).toEqual({ column: 'COUNTRY' });
+    expect(carried['directed']).toBe(true);
+  });
+
+  it('says what is wrong with one that is not a connector', () => {
+    const refused =
+      (value: unknown): (() => unknown) =>
+      (): unknown =>
+        readCommand({ type: 'CreateBinding', binding: value });
+    expect(refused('a line')).toThrow(/binding must be an object/u);
+    expect(refused({ ...ends })).toThrow(/binding.id must be a non-empty string/u);
+    expect(refused({ id: '', ...ends })).toThrow(/binding.id must be a non-empty string/u);
+    expect(refused({ id: 'binding:1', toId: 't' })).toThrow(/binding.fromId/u);
+    expect(refused({ id: 'binding:1', fromId: 'f' })).toThrow(/binding.toId/u);
+    expect(refused({ id: 'binding:1', ...ends, kind: 'attachment' })).toThrow(/binding.kind/u);
+    expect(refused({ id: 'binding:1', ...ends, directed: 'yes' })).toThrow(/binding.directed/u);
+    expect(refused({ id: 'binding:1', ...ends, label: 7 })).toThrow(/binding.label/u);
+    expect(refused({ id: 'binding:1', ...ends, meta: 'COUNTRY' })).toThrow(/binding.meta/u);
+    expect(refused({ id: 'binding:1', ...ends, meta: { column: 7 } })).toThrow(/binding.meta/u);
+    expect(refused({ id: 'binding:1', ...ends, from: 'left' })).toThrow(/binding.from must be/u);
+    expect(refused({ id: 'binding:1', ...ends, to: { mode: 'edge' } })).toThrow(/binding.to.mode/u);
+    expect(refused({ id: 'binding:1', ...ends, to: { mode: 'fixed', x: 0 } })).toThrow(
+      /binding.to needs x and y/u,
+    );
+  });
+});
+
 describe('readChartSpec', () => {
   const base = { type: 'bar', category: 'COUNTRY', values: ['REVENUE'], aggregate: 'sum' };
 
@@ -191,6 +253,18 @@ describe('readChartSpec', () => {
     expect(() => readChartSpec({ type: 'bar', category: 'C', values: [] })).toThrow(
       /spec.aggregate must be one of/u,
     );
+  });
+});
+
+describe('reading something that is not a command at all', () => {
+  it('refuses it in the terms a sender can act on', () => {
+    // The readers take `unknown` on purpose: what arrives has been through a
+    // pipe, and a boundary that trusts its own parameter type trusts the sender.
+    expect(() => readCommand(null)).toThrow(/must be an object naming a type/u);
+    expect(() => readCommand('MoveEntities')).toThrow(/must be an object naming a type/u);
+    expect(() => readCommand(['MoveEntities'])).toThrow(/must be an object naming a type/u);
+    expect(() => readSessionCommand(null)).toThrow(/must be an object naming a type/u);
+    expect(() => readSessionCommand(42)).toThrow(/must be an object naming a type/u);
   });
 });
 

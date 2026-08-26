@@ -8,7 +8,7 @@ This document is for somebody who has to change the system. It states the
 constraint the design answers to, the model everything else is a projection of,
 the rules about what may depend on what, and — at length, in §9 — the decisions
 that are not obvious from the code, with the reasoning that produced them. The
-[README](README.md) covers running it; this covers why it is shaped as it is.
+[README](../README.md) covers running it; this covers why it is shaped as it is.
 
 1. [The constraint](#1-the-constraint) — the one sentence the rest follows from
 2. [System context](#2-system-context) — participants and trust boundaries
@@ -723,47 +723,46 @@ whatever semantic layer exists before writing SQL.
 
 ## 10. Testing as architecture
 
-The test strategy is part of the design, not a layer over it. Four kinds, each
-answering a question the others cannot.
+The test strategy is part of the design rather than a layer over it, and two of
+its properties are architectural claims in their own right.
 
-**Unit tests over pure functions.** Most of the system is pure: `applyCommand`,
-the history graph, viewport arithmetic, the block cache, placement, connector
-routing, the chart reduction, every encoder, the option builder, the agent's
-projections. These are tested as data in and data out, which is why there are
-thousands of them and they run in seconds.
+**The suite runs without a browser, a GPU or a database.** That is not a
+convenience; it is the layering of §4 stated as a fact about the build. Every
+impure thing is injected — the clock, the randomness, the socket, the data source,
+the engine, the byte sink — so most of the system is testable as data in and data
+out, which is why some two thousand cases run in twenty seconds. The day a
+draw-list function reaches for `window`, its test stops compiling.
 
-**Coverage gates, and what they are for.** `npm run verify` enforces **100 % of
-lines**, 99 % of functions and statements, 96 % of branches. The line gate is the
-interesting one: it makes unreachable code fail the build, so defensive branches
-have to be justified or deleted. Several dead methods in this codebase were found
-by it rather than by review.
+**Latency invariance is asserted, not hoped for.** The claim in §1 — that the
+database cannot make Panorama slow — is checked by replaying one scripted fling at
+0, 50, 250 and 1 000 ms of simulated latency and demanding that the scroll
+positions, the rows walked, the cells read and the peak cache size come out
+identical. Only how many of those cells have data yet is allowed to differ. No
+amount of frame-rate measurement makes that point as sharply.
 
-**Seam tests.** Where one thing mirrors another — the tool catalogue against the
-tool handlers, the agent's field names against the core's command shapes, a
-connector's mark against the halo button that made it — a test asserts the mirror
-holds. Every one of these was written after the mirror had already drifted.
+The rest is carried by unit tests over pure functions; harness tests that run the
+real composition root over mock sources; **seam tests**, where one thing mirrors
+another — the tool catalogue against the tool handlers, the agent's field names
+against the core's command shapes, a connector's marker against the line that drew
+it — every one of which was written after the mirror had already drifted;
+**property tests** at the four boundaries whose input is not ours to choose (the
+statement scanner, SQL construction, an agent's arguments, and command sequences
+against the document), which is where a scanner that never returned and a literal
+that fell back to exponent notation were found; and **browser probes**,
+because anything the GPU drew cannot be asserted from a unit test at all
+(`readPixels` on a composited canvas returns black, and a line hidden behind a
+table is invisible to both pixels and geometry), so the probes drive the real
+application with a real pointer and read back the geometry it actually produced.
 
-**Browser probes** (`scripts/*.mjs`, `npm run <name>-check`). Anything drawn by
-the GPU cannot be asserted from a unit test: `readPixels` on a composited canvas
-returns black, and a line hidden behind a table is invisible to both pixels and
-geometry. So the probes drive the real application in a real browser with a real
-pointer and read back the _geometry the canvas actually produced_, or compare two
-screenshots of the same strip, or catch the file the browser downloaded. They also
-cover the things only a browser has: WebGL, the save dialog, WebXR, `EventSource`.
+The coverage gate is also a design tool rather than a report: at **100 % of
+lines**, unreachable code fails the build, so a defensive branch has to be
+justified or deleted. Several dead methods in this codebase were found that way
+rather than by review.
 
-| Probe                                        | Answers                                                                                          |
-| -------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `smoke`                                      | Does the app open every sample relation, fling through ten billion rows, and hold its frame rate |
-| `halo-check`, `halo-reach`, `halo-exclusive` | Can the halo be reached and pressed; is only ever one on screen                                  |
-| `sql-check`                                  | The query box end to end: greying, drag, composition, highlighting                               |
-| `chart-check`                                | Every chart control, the marks, picking, the drill-down, three file formats                      |
-| `route-check`, `binding-check`               | Does a connector go round an obstacle; is its marker where the line is                           |
-| `summary-check`                              | Are the statistics panels actually drawn                                                         |
-| `export-check`                               | Do CSV, XLSX and Parquet reach the disk with the right first bytes                               |
-| `agent-check`                                | The protocol, the tools, an edit, the refusals, the stdio pipe                                   |
-
-**Integration against a real Exasol** is opt-in (`PANORAMA_EXASOL_URL`), because
-the suite must run with no database.
+**[TESTING.md](TESTING.md) is the full account** — the layout and the two Vitest
+projects, the doubles and the injected clock, the six kinds of test in detail, the
+probe techniques, verifying file formats against other people's readers, and a
+register of the gaps.
 
 ---
 

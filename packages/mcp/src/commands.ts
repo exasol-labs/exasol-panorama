@@ -1,5 +1,13 @@
-import type { ChartSpec, ChartType, Command, SessionCommand } from '@panorama/core';
+import type {
+  Binding,
+  BindingAnchor,
+  ChartSpec,
+  ChartType,
+  Command,
+  SessionCommand,
+} from '@panorama/core';
 import {
+  AUTO_ANCHOR,
   isCustomChart,
   parseChartExtra,
   CHART_AGGREGATES,
@@ -12,7 +20,7 @@ import {
 } from '@panorama/core';
 import { COMMAND_FIELDS, COMMAND_INSTEAD, describeCommands } from './catalogue.js';
 import type { ArgsSpec } from './schema.js';
-import { AgentError, readArgs } from './schema.js';
+import { AgentError, isRecord, readArgs } from './schema.js';
 
 /**
  * Which commands an agent may send, and what each one takes.
@@ -153,6 +161,81 @@ export const readChartSpec = (value: Readonly<Record<string, unknown>>): ChartSp
 };
 
 /**
+ * Reads one end of a connector.
+ *
+ * Absent is the mobile attachment, because that is what a connector drawn by
+ * hand gets and an agent asking for a line has no view on where it should meet
+ * the box.
+ */
+const readAnchor = (value: unknown, side: string): BindingAnchor => {
+  if (value === undefined || value === null) return AUTO_ANCHOR;
+  if (!isRecord(value)) throw new AgentError(`binding.${side} must be {mode: "auto"} or omitted`);
+  const mode = value['mode'];
+  if (mode === undefined || mode === 'auto') return AUTO_ANCHOR;
+  if (mode !== 'fixed') {
+    throw new AgentError(`binding.${side}.mode must be "auto" or "fixed"`);
+  }
+  const { x, y } = value as { x?: unknown; y?: unknown };
+  if (typeof x !== 'number' || typeof y !== 'number') {
+    throw new AgentError(`binding.${side} needs x and y, each a number from 0 to 1`);
+  }
+  return { mode: 'fixed', x, y };
+};
+
+/**
+ * Checks a connector, field by field.
+ *
+ * `applyCommand` decides whether the entities exist and whether a fixed anchor is
+ * within the box, exactly as it does for a pointer — but it is entitled to assume
+ * a binding is *shaped* like one, and an agent's message is JSON that no compiler
+ * ever saw. Without this, a binding missing its ends reached the anchor check as
+ * `undefined` and took the page down with it.
+ *
+ * Given a record, because the field is declared as an object and `readArgs` has
+ * already refused anything that is not one.
+ */
+const readBinding = (value: Readonly<Record<string, unknown>>): Binding => {
+  const text = (name: string): string => {
+    const found = value[name];
+    if (typeof found !== 'string' || found === '') {
+      throw new AgentError(`binding.${name} must be a non-empty string`);
+    }
+    return found;
+  };
+  const kind = value['kind'];
+  if (kind !== undefined && kind !== null && kind !== 'connector') {
+    throw new AgentError('binding.kind must be "connector", which is the only kind there is');
+  }
+  const directed = value['directed'];
+  if (directed !== undefined && directed !== null && typeof directed !== 'boolean') {
+    throw new AgentError('binding.directed must be true or false');
+  }
+  const label = value['label'];
+  if (label !== undefined && label !== null && typeof label !== 'string') {
+    throw new AgentError('binding.label must be a string');
+  }
+  const meta = value['meta'];
+  if (meta !== undefined && meta !== null) {
+    if (!isRecord(meta) || Object.values(meta).some((entry) => typeof entry !== 'string')) {
+      throw new AgentError('binding.meta must be an object of strings');
+    }
+  }
+  return {
+    id: text('id'),
+    kind: 'connector',
+    fromId: text('fromId'),
+    toId: text('toId'),
+    from: readAnchor(value['from'], 'from'),
+    to: readAnchor(value['to'], 'to'),
+    directed: directed === true,
+    ...(typeof label === 'string' ? { label } : {}),
+    ...(meta === undefined || meta === null
+      ? {}
+      : { meta: meta as Readonly<Record<string, string>> }),
+  } as Binding;
+};
+
+/**
  * Reads a document command, or refuses it in terms the sender can act on.
  *
  * The fields are checked; the *meaning* is not. Whether the entity exists, or
@@ -160,7 +243,13 @@ export const readChartSpec = (value: Readonly<Record<string, unknown>>): ChartSp
  * the same answer a pointer gets, and duplicating it here would be a second
  * opinion that could disagree with the first.
  */
-export const readCommand = (value: Readonly<Record<string, unknown>>): Command => {
+export const readCommand = (value: unknown): Command => {
+  // Taken as `unknown` rather than as a record: everything that reaches here has
+  // been through a pipe, and a reader at a boundary that trusts its own parameter
+  // type is trusting the sender.
+  if (!isRecord(value)) {
+    throw new AgentError(`a command must be an object naming a type:\n${describeCommands()}`);
+  }
   const type = value['type'];
   if (typeof type !== 'string') {
     throw new AgentError(`command.type must name a command:\n${describeCommands()}`);
@@ -175,6 +264,12 @@ export const readCommand = (value: Readonly<Record<string, unknown>>): Command =
     point === undefined || point['z'] !== undefined
       ? checked
       : { ...checked, position: { ...point, z: 0 } };
+  if (type === 'CreateBinding') {
+    return {
+      type: 'CreateBinding',
+      binding: readBinding(read['binding'] as Readonly<Record<string, unknown>>),
+    };
+  }
   if (type === 'SetChartSpec') {
     return {
       type: 'SetChartSpec',
@@ -229,7 +324,8 @@ const NOTHING: Readonly<Record<string, Readonly<Record<string, null>>>> = {
  * is worth saying — what is selected, what has focus, which columns are picked
  * out — is here.
  */
-export const readSessionCommand = (value: Readonly<Record<string, unknown>>): SessionCommand => {
+export const readSessionCommand = (value: unknown): SessionCommand => {
+  if (!isRecord(value)) throw new AgentError('a session command must be an object naming a type');
   const type = value['type'];
   if (typeof type !== 'string') {
     throw new AgentError('command.type must name a session command');
