@@ -25,6 +25,14 @@ export interface AgentToolSpec {
   readonly args: ArgsSpec;
   /** True for anything that changes the document, the history or the session. */
   readonly writes?: true;
+  /**
+   * True where the server answers it and the page never sees it.
+   *
+   * One tool is like this: the skill, which is a file beside the server rather
+   * than anything in the document. It is also the one tool worth having before a
+   * page is open at all, which is the other reason it is not forwarded.
+   */
+  readonly answeredByServer?: true;
 }
 
 /** Rows read in one go, so a table cannot be asked for a million cells. */
@@ -314,6 +322,22 @@ export const describeCommands = (): string =>
  * then what is in it, then how to change it.
  */
 export const AGENT_TOOLS: readonly AgentToolSpec[] = [
+  {
+    /**
+     * First, and a tool rather than a prompt or a resource.
+     *
+     * The page it returns was offered as both of those, which is what the
+     * protocol has for exactly this — and an agent whose client shows it only
+     * tools could not see it at all. A door nobody can open is not a door, so the
+     * page is a tool as well: the same text, reachable by the one mechanism every
+     * client surfaces.
+     */
+    name: 'skill',
+    describe:
+      'Read this first. The whole interface on one page: the boxes on the canvas, the command and history model, charts and their named data sets, what a picked mark means, cross-filtering, and which feedback to read before believing a picture. Answered by the server, so it works before anything is open — and it is the same text as the prompt "panorama" and the resource "panorama://skill", for a client that shows those.',
+    args: NO_ARGS,
+    answeredByServer: true,
+  },
   {
     name: 'overview',
     describe:

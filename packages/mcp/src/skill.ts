@@ -18,6 +18,15 @@
  * computer — the development-server plugin.
  */
 
+/**
+ * The tool that reads it out.
+ *
+ * A tool as well as a prompt and a resource, because a client that shows only
+ * tools shows only tools — and a page an agent cannot reach is a page nobody
+ * reads. First in the list, since it is what to call first.
+ */
+export const SKILL_TOOL = 'skill';
+
 export const SKILL_NAME = 'panorama';
 
 export const SKILL_TITLE = 'Driving Panorama, the spatial canvas';

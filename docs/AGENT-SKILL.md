@@ -35,7 +35,8 @@ Selection, hover and drafts are _session_ state and are not in history.
 
 ## The tools
 
-**Read.** `overview` (start here: what is open, which database, where history
+**Read.** `skill` (this page, answered by the server, so it works before anything
+is open) · `overview` (start here: what is open, which database, where history
 stands) · `entities` · `entity` (one box in detail) · `rows` (cells that have
 arrived; a cell that has not is not null) · `history` · `session` · `catalogue`
 (schemas and tables — but explore on a shorter route where you have one).

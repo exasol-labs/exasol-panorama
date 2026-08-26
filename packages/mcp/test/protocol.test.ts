@@ -8,6 +8,7 @@ import {
   INSTRUCTIONS,
   SKILL_NAME,
   SKILL_PATH,
+  SKILL_TOOL,
   SKILL_URI,
   skillText,
   INVALID_REQUEST,
@@ -180,6 +181,36 @@ describe('the skill, by whichever door a client knocks on', () => {
     expect(capabilities['resources']).toBeDefined();
   });
 
+  it('is a tool, because that is the one thing every client shows', async () => {
+    // The gap this closes: it was a prompt and a resource, which is what the
+    // protocol has for exactly this — and an agent whose client surfaces only
+    // tools could not see it at all. A door nobody can open is not a door.
+    const tools = (await skill('tools/list'))?.result as {
+      tools: readonly Record<string, unknown>[];
+    };
+    expect(tools.tools[0]).toMatchObject({ name: SKILL_TOOL });
+    const answer = (await skill('tools/call', { name: SKILL_TOOL }))?.result as {
+      content: readonly { text: string }[];
+    };
+    expect(answer.content[0]?.text).toBe(document);
+    // Answered by the server, so the page is never asked: it works before
+    // anything is open, which is when it is most worth reading.
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it('is neither listed nor answered where there is no document', async () => {
+    const tools = (await withoutOne('tools/list'))?.result as {
+      tools: readonly Record<string, unknown>[];
+    };
+    expect(tools.tools.some((tool) => tool['name'] === SKILL_TOOL)).toBe(false);
+    const refused = (await withoutOne('tools/call', { name: SKILL_TOOL }))?.result as {
+      content: readonly { text: string }[];
+      isError?: boolean;
+    };
+    expect(refused.isError).toBe(true);
+    expect(refused.content[0]?.text).toContain('no skill to offer');
+  });
+
   it('lists itself, so nobody has to be told where it is', async () => {
     const prompts = (await skill('prompts/list'))?.result as {
       prompts: readonly Record<string, unknown>[];
@@ -331,7 +362,7 @@ describe('what an agent is told before it chooses a tool', () => {
   it('says there is a skill, and where to find it', () => {
     // The handshake is what an agent reads first, and a page it never learns
     // exists is a page nobody reads.
-    expect(INSTRUCTIONS).toContain('There is a skill for this server');
+    expect(INSTRUCTIONS).toContain('Start by calling the "skill" tool');
     expect(INSTRUCTIONS).toContain(SKILL_NAME);
     expect(INSTRUCTIONS).toContain(SKILL_URI);
   });

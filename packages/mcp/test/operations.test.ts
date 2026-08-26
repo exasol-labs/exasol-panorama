@@ -46,7 +46,17 @@ describe('the tool list', () => {
     // The two halves run in different processes — the list is offered by the
     // development server and the handlers run in the page — so this is the seam
     // where a tool that exists but does nothing would be caught.
-    expect(Object.keys(AGENT_HANDLERS).sort()).toEqual(AGENT_TOOLS.map((tool) => tool.name).sort());
+    // Every tool the page answers, and nothing else. The skill is answered by the
+    // server — it is a file beside it, and worth reading before a page is open —
+    // so it has no handler here and must not have one.
+    expect(Object.keys(AGENT_HANDLERS).sort()).toEqual(
+      AGENT_TOOLS.filter((tool) => tool.answeredByServer !== true)
+        .map((tool) => tool.name)
+        .sort(),
+    );
+    expect(
+      AGENT_TOOLS.filter((tool) => tool.answeredByServer === true).map((tool) => tool.name),
+    ).toEqual(['skill']);
   });
 });
 

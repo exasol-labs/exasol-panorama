@@ -104,14 +104,21 @@ const asPrompt = await rpc('prompts/get', { name: 'panorama' });
 const asResource = await rpc('resources/read', { uri: 'panorama://skill' });
 const promptText = asPrompt?.result?.messages?.[0]?.content?.text ?? '';
 const resourceText = asResource?.result?.contents?.[0]?.text ?? '';
+// The one that matters: a client that surfaces only tools has to be able to reach
+// it, which is why it is a tool as well as a prompt and a resource.
+// The skill is prose, not JSON, so it comes back through the unparsed branch.
+const asTool = (await callTool('skill', {})).unparsed ?? '';
 report.skill = {
+  listedAsTool: (report.tools ?? []).includes('skill'),
+  firstInTheList: report.tools?.[0],
+  readAsTool: asTool.slice(0, 18),
   listedAsPrompt: prompts?.result?.prompts?.map((prompt) => prompt.name),
   listedAsResource: resources?.result?.resources?.map((resource) => resource.uri),
-  sameTextEitherWay: promptText === resourceText && promptText.length > 0,
+  sameTextEveryWay: promptText === resourceText && promptText.length > 0 && asTool === promptText,
   bytes: promptText.length,
   // Every tool it could be asked about is written down in it.
   coversEveryTool: (report.tools ?? []).filter((name) => !promptText.includes(`\`${name}\``)),
-  saidInTheHandshake: /There is a skill for this server/u.test(instructions),
+  saidInTheHandshake: /Start by calling the "skill" tool/u.test(instructions),
 };
 
 // 4. Exploring: the empty document, then a table opened through the interface.

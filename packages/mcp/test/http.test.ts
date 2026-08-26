@@ -434,7 +434,7 @@ describe('the dev-server plugin', () => {
     expect(written[0]).toBe(200);
   });
 
-  it('points a paired client at the port that was actually bound', async () => {
+  it('points a paired client at the port that was actually bound', () => {
     // `configureServer` runs before the server listens, and `--port` on the
     // command line beats anything the configuration said.
     type Middleware = (request: never, response: never, next: () => void) => void;
@@ -444,19 +444,21 @@ describe('the dev-server plugin', () => {
       middlewares: { use: (handler: Middleware): void => void answers.push(handler) },
       httpServer: { address: (): { port: number } | string | null => bound },
     });
-    const paired = async (): Promise<string> => {
+    // Asked of the health route, which answers from what it already knows: the
+    // pairing route looks for Claude on the machine, and waiting on a subprocess
+    // would make this a test of how busy the machine is.
+    const paired = (): string => {
       const { written, response } = recordingResponse();
-      answers[0]?.({ url: CLAUDE_PATH, method: 'GET' } as never, response, () => {});
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      answers[0]?.({ url: HEALTH_PATH, method: 'GET' } as never, response, () => {});
       return JSON.stringify(written);
     };
     // Nothing bound yet: the configured port.
-    expect(await paired()).toContain('4000');
+    expect(paired()).toContain('4000');
     bound = { port: 5_199 };
-    expect(await paired()).toContain('5199');
+    expect(paired()).toContain('5199');
     // A socket path rather than a port falls back to what was configured.
     bound = '/tmp/somewhere.sock';
-    expect(await paired()).toContain('4000');
+    expect(paired()).toContain('4000');
   });
 
   it('serves the skill it found beside it', async () => {

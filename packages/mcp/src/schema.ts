@@ -74,7 +74,10 @@ const plainSchema = (field: FieldSpec): Record<string, unknown> => ({
   description: field.describe,
   ...(field.enum === undefined ? {} : { enum: [...field.enum] }),
   ...(field.kind === 'string-array' ? { items: { type: 'string' } } : {}),
-  ...(field.kind === 'object-array' ? { items: { type: 'object' } } : {}),
+  // `minItems`, because the check refuses an empty list and a schema that did not
+  // say so would be advertising something that gets refused. Found by the property
+  // test that compares the two, the moment it happened to draw the case.
+  ...(field.kind === 'object-array' ? { items: { type: 'object' }, minItems: 1 } : {}),
   ...(field.kind === 'mark-array'
     ? {
         items: {

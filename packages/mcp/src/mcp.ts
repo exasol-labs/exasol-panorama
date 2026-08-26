@@ -1,7 +1,14 @@
 import type { JsonRpcRequest, JsonRpcResponse } from './jsonrpc.js';
 import { INVALID_PARAMS, METHOD_NOT_FOUND, failure, result } from './jsonrpc.js';
 import { toolDefinitions } from './catalogue.js';
-import { SKILL_NAME, SKILL_PATH, SKILL_SUMMARY, SKILL_TITLE, SKILL_URI } from './skill.js';
+import {
+  SKILL_NAME,
+  SKILL_PATH,
+  SKILL_SUMMARY,
+  SKILL_TITLE,
+  SKILL_TOOL,
+  SKILL_URI,
+} from './skill.js';
 import { isRecord } from './schema.js';
 
 /**
@@ -49,7 +56,7 @@ export const LATEST_PROTOCOL = PROTOCOL_VERSIONS[0] as string;
  * nobody wrote down.
  */
 export const INSTRUCTIONS = [
-  `There is a skill for this server: one page covering the whole interface — the boxes, the command and history model, charts and their named data sets, what a picked mark means, cross-filtering, and the feedback that says whether a picture is right. Read it before the third call. It is offered as the prompt "${SKILL_NAME}" and as the resource "${SKILL_URI}", it is the same text either way, and it is a document in this repository at ${SKILL_PATH} if you would rather read it there.`,
+  `Start by calling the "${SKILL_TOOL}" tool. It is one page covering the whole interface — the boxes, the command and history model, charts and their named data sets, what a picked mark means, cross-filtering, and the feedback that says whether a picture is right — and reading it first will save you several calls. The same text is offered as the prompt "${SKILL_NAME}" and the resource "${SKILL_URI}" for a client that shows those, and it is a document in this repository at ${SKILL_PATH}.`,
 
   'Panorama is a spatial canvas of database tables, queries and charts, and this server is the way in to a live one. "overview" says what is open and which database is behind it; "entities" and "entity" describe the boxes; "rows" reads cells; "history" is the commit graph, which branches rather than being a stack; "dispatch" applies a document command, which is the same way a pointer changes anything. Answers are terse by default — pass verbose where you need ids, widths and composed statements.',
 
@@ -174,7 +181,13 @@ export const handleMcpRequest = async (
     case 'ping':
       return result(id, {});
     case 'tools/list':
-      return result(id, { tools: toolDefinitions() });
+      // A tool the server cannot answer is not offered: a build of this package
+      // with no document beside it has no skill to read out.
+      return result(id, {
+        tools: toolDefinitions().filter(
+          (tool) => skill !== undefined || tool['name'] !== SKILL_TOOL,
+        ),
+      });
     // The skill, by whichever door a client knocks on. Listed so it is found
     // without being told where to look, and answered from one text.
     case 'prompts/list':
@@ -207,6 +220,13 @@ export const handleMcpRequest = async (
       const name = params['name'];
       if (typeof name !== 'string') {
         return result(id, toolFailure('A tool call needs the name of a tool.'));
+      }
+      // Answered here rather than forwarded: the skill is a file beside the
+      // server, and it is the one thing worth reading before a page is open.
+      if (name === SKILL_TOOL) {
+        return skill === undefined
+          ? result(id, toolFailure(NO_SKILL))
+          : result(id, { content: [{ type: 'text', text: skill }] });
       }
       try {
         return result(id, toolContent(await call(name, params['arguments'])));

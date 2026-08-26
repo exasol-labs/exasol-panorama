@@ -162,11 +162,13 @@ The whole interface is written down once, in
 **[docs/AGENT-SKILL.md](docs/AGENT-SKILL.md)** — the boxes, the command and history
 model, charts and their named data sets, what a picked mark means, cross-filtering,
 and which feedback to read first. It is documentation, reviewed and formatted like
-the rest of `docs/`, and the server **serves that file**: it goes out as the prompt
-`panorama` and as the resource `panorama://skill`, so an agent finds it by listing
-what the server offers rather than by being told where a document lives. There is
-no second copy of it in the code, the handshake names it, and a test insists every
-tool is written down in it.
+the rest of `docs/`, and the server **serves that file** three ways: as the
+`skill` **tool**, first in the list, which is the one mechanism every client
+surfaces; and as the prompt `panorama` and the resource `panorama://skill` for a
+client that shows those. Same text every way. The tool is answered by the server
+rather than forwarded to the page, so it works before anything is open. There is no
+second copy of it in the code, the handshake says to call it first, and a test
+insists every tool is written down in it.
 
 This server is for the canvas, not for the database. The handshake ranks the routes
 to the engine by how far the rows have to travel: a local `exasol` CLI first where
