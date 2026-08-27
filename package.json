@@ -23,6 +23,8 @@
     "desktop": "npm run dev --workspace @panorama/desktop",
     "desktop:build": "npm run build && npm run build --workspace @panorama/desktop",
     "desktop:debug": "npm run build && npm run build --workspace @panorama/desktop -- --debug",
+    "desktop-check": "node scripts/desktop-check.mjs",
+    "shell-check": "node scripts/shell-check.mjs",
     "install-check": "node scripts/install-check.mjs",
     "icons": "node scripts/make-icons.mjs && node scripts/desktop-icons.mjs",
     "smoke": "node scripts/smoke.mjs",

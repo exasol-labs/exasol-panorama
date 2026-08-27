@@ -312,6 +312,106 @@ button:disabled {
 }
 
 /*
+ * A row for something that is there and cannot be opened — a deployment that is
+ * installed and stopped. It has to read as present and inert, which is a colour
+ * and the absence of a hover, not a hidden row.
+ */
+.pn-list button:disabled {
+  color: var(--pn-muted);
+  cursor: default;
+}
+
+.pn-list button:disabled:hover {
+  background: transparent;
+}
+
+/*
+ * Whether a deployment is running, which is the difference between a row that can
+ * be clicked and one that cannot. A dot rather than a word because the row already
+ * spends its words on the name and the address — and never *only* a dot: the
+ * status is in the row's accessible name too.
+ */
+.pn-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  vertical-align: middle;
+  border-radius: 50%;
+}
+
+.pn-dot--running {
+  background: #1f8a4c;
+}
+
+.pn-dot--idle {
+  /* Present and inert: an outline rather than a fill, so it does not read as a
+     duller version of running. */
+  background: transparent;
+  box-shadow: inset 0 0 0 1px var(--pn-muted);
+}
+
+/*
+ * Two ways into a database, where there are two: the deployments Exasol Personal
+ * manages, and typing an address. A quiet row of two, because the choice is
+ * secondary to the thing being chosen — this is not the top-level navigation of an
+ * application, it is a switch inside one panel.
+ */
+.pn-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  background: #e9ecf1;
+  border-radius: 4px;
+}
+
+.pn-tabs__tab {
+  flex: 1;
+  padding: 3px 6px;
+  font-size: 11px;
+  color: var(--pn-muted);
+  background: transparent;
+  border-radius: 3px;
+}
+
+.pn-tabs__tab:hover {
+  color: var(--pn-text);
+}
+
+.pn-tabs__tab--on {
+  color: var(--pn-text);
+  background: var(--pn-panel);
+  box-shadow: 0 1px 2px rgb(20 24 30 / 8%);
+}
+
+/* Each panel is a column like the form it replaces, so switching does not shift. */
+.pn-connection__manual,
+.pn-connection [role='tabpanel'] {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/*
+ * The deployments Exasol Personal manages, above the form that would otherwise ask
+ * for what they already know. Its own heading, one step quieter than the panel's.
+ */
+.pn-connection__local {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pn-connection__subtitle {
+  margin: 0;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--pn-muted);
+}
+
+/*
  * The explorer tree. Rows are one grid each so the icons line up down the
  * column whatever the name beside them is, and the branch is indented by the
  * width of a chevron so a table sits under its schema's name rather than under

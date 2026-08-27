@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { agentEndpointOrigin, inDesktopShell } from '../src/panorama/shell.js';
+import { agentEndpointOrigin, databaseSocketUrl, inDesktopShell } from '../src/panorama/shell.js';
 
 /**
  * One build is packaged two ways, so the difference between them is a runtime
@@ -54,6 +54,36 @@ describe('where the agent endpoint is', () => {
   it('is the development server when the desktop window was pointed at one', () => {
     expect(agentEndpointOrigin({ protocol: 'http:', origin: 'http://localhost:5173' }, shell)).toBe(
       'http://localhost:5173',
+    );
+  });
+});
+
+describe('the socket a database connection opens', () => {
+  it('is the shell’s own, carrying the database it is for', () => {
+    expect(
+      databaseSocketUrl('ws://127.0.0.1:7356/database?token=abc', 'wss://localhost:8563'),
+    ).toBe('ws://127.0.0.1:7356/database?token=abc&target=wss%3A%2F%2Flocalhost%3A8563');
+  });
+
+  /**
+   * The target is escaped, not concatenated: a URL with a query of its own would
+   * otherwise arrive at the shell as several parameters, and the shell would
+   * forward to whichever it read last.
+   */
+  it('escapes the database URL, whatever is in it', () => {
+    const composed = databaseSocketUrl(
+      'ws://127.0.0.1:7356/database?token=abc',
+      'wss://db.internal:8563/?token=stolen&x=1',
+    );
+    expect(composed.split('target=')[1]).toBe(
+      encodeURIComponent('wss://db.internal:8563/?token=stolen&x=1'),
+    );
+    expect(composed.split('&').length).toBe(2);
+  });
+
+  it('opens the query string when the shell gave none', () => {
+    expect(databaseSocketUrl('ws://127.0.0.1:7356/database', 'ws://x:1')).toBe(
+      'ws://127.0.0.1:7356/database?target=ws%3A%2F%2Fx%3A1',
     );
   });
 });

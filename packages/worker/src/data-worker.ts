@@ -115,6 +115,8 @@ export interface ConnectionFactoryOptions {
   readonly url: string;
   readonly credentials: ExasolCredentials;
   readonly onStatusChange: (status: string, error?: unknown) => void;
+  /** Where to open the socket, if not `url`. See `ConnectMessage.via`. */
+  readonly via?: string;
 }
 
 export interface DataWorkerOptions {
@@ -190,7 +192,7 @@ export class DataWorker {
   async handle(message: MainToWorkerMessage): Promise<void> {
     switch (message.type) {
       case 'connect':
-        return this.#connect(message.requestId, message.url, message.credentials);
+        return this.#connect(message.requestId, message.url, message.credentials, message.via);
       case 'disconnect':
         return this.#disconnect(message.requestId);
       case 'listSchemas':
@@ -481,7 +483,12 @@ export class DataWorker {
     return this.#connection;
   }
 
-  async #connect(requestId: number, url: string, credentials: ExasolCredentials): Promise<void> {
+  async #connect(
+    requestId: number,
+    url: string,
+    credentials: ExasolCredentials,
+    via?: string,
+  ): Promise<void> {
     const factory = this.#options.createConnection;
     if (factory === undefined) {
       this.#fail(requestId, new TableDataError('connection-failed', 'No connection factory'));
@@ -491,6 +498,7 @@ export class DataWorker {
       this.#connection = factory({
         url,
         credentials,
+        ...(via === undefined ? {} : { via }),
         onStatusChange: (status, error): void => {
           this.#post({
             type: 'connectionStatus',

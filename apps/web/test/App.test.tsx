@@ -193,6 +193,225 @@ describe('App', () => {
     expect((screen.getByLabelText('Password') as HTMLInputElement).value).toBe('');
   });
 
+  /**
+   * The same panel inside the desktop application, where there is no development
+   * server behind it: the endpoint is a socket in the process hosting the window,
+   * so the health it shows comes from the shell and the Claude section — which
+   * needs a machine the shell cannot reach yet — says it is unavailable.
+   */
+  /**
+   * The databases Exasol Personal already has on this machine, offered in the
+   * dialog. One click has to be a whole connection: the address, the user and the
+   * password come from the shell, and the password goes straight into the
+   * connection rather than into the form or into anything that re-renders.
+   *
+   * This test passed while the feature was broken in the real application, which
+   * is worth knowing about: the sidebar is memoised, and jsdom happened to
+   * re-render it for another reason. What proves it in a browser is
+   * `npm run shell-check`.
+   */
+  it('connects to a local deployment in one click', async () => {
+    const harness = createAppHarness();
+    const asked: unknown[] = [];
+    vi.stubGlobal('fetch', () => Promise.resolve(new Response('nope', { status: 404 })));
+    vi.stubGlobal('__TAURI__', {
+      event: { listen: async () => (): void => undefined },
+      core: {
+        invoke: async (command: string, args: unknown) => {
+          asked.push({ command, args });
+          if (command === 'exasol_deployments') {
+            return {
+              installed: true,
+              deployments: [
+                {
+                  name: 'default',
+                  status: 'running',
+                  infrastructure: 'local',
+                  url: 'wss://127.0.0.1:58325',
+                  username: 'sys',
+                },
+              ],
+            };
+          }
+          if (command === 'exasol_deployment_credentials') {
+            return { url: 'wss://127.0.0.1:58325', username: 'sys', password: 'exa' };
+          }
+          return undefined;
+        },
+      },
+    });
+    try {
+      render(<App workspace={harness.workspace} />);
+      await waitFor(() =>
+        expect(screen.getByLabelText('Exasol Personal deployments')).toBeDefined(),
+      );
+      fireEvent.click(screen.getByRole('button', { name: /default/u }));
+      await waitFor(() => expect(harness.connections).toHaveLength(1));
+      expect(harness.connections[0]?.url).toBe('wss://127.0.0.1:58325');
+      expect(harness.connections[0]?.credentials).toEqual({
+        kind: 'password',
+        username: 'sys',
+        password: 'exa',
+      });
+      // The password was asked for at the click, not when the list was drawn.
+      // The explorer names the connection by the deployment it came from, with
+      // the address as the tooltip: `wss://127.0.0.1:58325` is not what anybody
+      // calls their database.
+      await waitFor(() =>
+        expect(screen.getByRole('button', { name: 'Disconnect from default' })).toBeDefined(),
+      );
+      expect(screen.getByText('default')).toBeDefined();
+      expect(document.querySelector('.pn-connected')?.getAttribute('title')).toBe(
+        'wss://127.0.0.1:58325',
+      );
+
+      // Three times for the list — names, probed, described, each shown as it
+      // lands — and the password only once somebody clicked.
+      expect(
+        asked
+          .map((entry) => (entry as { command: string }).command)
+          // The timing reports are not part of this sequence; what matters is the
+          // order of the questions about databases.
+          .filter((command) => command !== 'report_timing'),
+      ).toEqual([
+        'exasol_deployments',
+        'exasol_deployments',
+        'exasol_deployments',
+        'exasol_deployment_credentials',
+      ]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  /**
+   * A connection typed into the form has no deployment to name, so the address is
+   * what identifies it — and a name from a previous connection must not linger.
+   */
+  it('names a typed-in connection by its address', async () => {
+    const harness = createAppHarness();
+    vi.stubGlobal('fetch', () => Promise.resolve(new Response('nope', { status: 404 })));
+    try {
+      render(<App workspace={harness.workspace} />);
+      fireEvent.change(screen.getByLabelText('Database URL'), {
+        target: { value: 'wss://db.internal:8563' },
+      });
+      fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'x' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
+      await waitFor(() =>
+        expect(
+          screen.getByRole('button', { name: 'Disconnect from db.internal:8563' }),
+        ).toBeDefined(),
+      );
+      expect(document.querySelector('.pn-connected')?.getAttribute('title')).toBe(
+        'wss://db.internal:8563',
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('says why when a local deployment cannot be connected to', async () => {
+    const harness = createAppHarness();
+    vi.stubGlobal('fetch', () => Promise.resolve(new Response('nope', { status: 404 })));
+    vi.stubGlobal('__TAURI__', {
+      event: { listen: async () => (): void => undefined },
+      core: {
+        invoke: async (command: string) => {
+          if (command === 'exasol_deployments') {
+            return {
+              installed: true,
+              deployments: [
+                {
+                  name: 'fusion',
+                  status: 'running',
+                  infrastructure: 'aws',
+                  url: 'wss://db.eu-central-1.example:8563',
+                  username: 'sys',
+                },
+              ],
+            };
+          }
+          if (command === 'exasol_deployment_credentials') {
+            throw new Error('fusion holds no password.');
+          }
+          return undefined;
+        },
+      },
+    });
+    try {
+      render(<App workspace={harness.workspace} />);
+      await waitFor(() =>
+        expect(screen.getByLabelText('Exasol Personal deployments')).toBeDefined(),
+      );
+      fireEvent.click(screen.getByRole('button', { name: /fusion/u }));
+      await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('no password'));
+      expect(harness.connections).toHaveLength(0);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('pairs Claude from inside the application, with no server and no terminal', async () => {
+    const harness = createAppHarness();
+    const asked: string[] = [];
+    vi.stubGlobal('fetch', (url: string) => {
+      asked.push(url);
+      return Promise.resolve(new Response('nope', { status: 404 }));
+    });
+    const invoked: string[] = [];
+    vi.stubGlobal('__TAURI__', {
+      event: { listen: async () => (): void => undefined },
+      core: {
+        invoke: async (command: string) => {
+          invoked.push(command);
+          if (command === 'agent_status') {
+            return {
+              attached: 1,
+              calls: 2,
+              lastCallAt: null,
+              mcpUrl: 'http://127.0.0.1:7355/agent/mcp',
+              port: 7355,
+            };
+          }
+          if (command === 'claude_status') {
+            return {
+              platform: 'macos',
+              cli: { found: true, path: '/usr/local/bin/claude', paired: false },
+              desktop: { found: false, configPath: '/tmp/claude.json', paired: false },
+              canOpenTerminal: true,
+              mcpUrl: 'http://127.0.0.1:7355/agent/mcp',
+            };
+          }
+          if (command === 'claude_pair') {
+            return [{ target: 'cli', done: true, detail: 'Added "panorama" to Claude Code.' }];
+          }
+          return undefined;
+        },
+      },
+    });
+    try {
+      render(<App workspace={harness.workspace} />);
+      fireEvent.click(screen.getByRole('button', { name: 'Show settings' }));
+      await waitFor(() =>
+        expect(screen.getByText('http://127.0.0.1:7355/agent/mcp')).toBeDefined(),
+      );
+      // Nothing went to the network: the shell answered both routes.
+      expect(asked).toEqual([]);
+      expect(invoked).toContain('claude_status');
+      await waitFor(() => expect(screen.getByText('found, not paired')).toBeDefined());
+
+      // And pairing happens in the application, with no terminal and no server.
+      fireEvent.click(screen.getByRole('button', { name: 'Pair with Claude' }));
+      await waitFor(() =>
+        expect(screen.getByText('Added "panorama" to Claude Code.')).toBeDefined(),
+      );
+      expect(invoked).toContain('claude_pair');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('opens the settings panel and pairs through the development server', async () => {
     const harness = createAppHarness();
     const asked: string[] = [];

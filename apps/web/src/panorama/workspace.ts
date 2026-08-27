@@ -95,6 +95,16 @@ export interface WorkspaceOptions {
   /** Called when cached data changed and a redraw is worthwhile. */
   readonly onDataChanged?: () => void;
   /**
+   * Where a database socket should be opened, when that is not the database's own
+   * URL — the desktop application's shell, which owns TLS so that a certificate
+   * this machine does not know can be a question rather than a refusal.
+   *
+   * A function rather than a value because the answer arrives from the shell a
+   * moment after the page loads, and asking for it at the moment of connecting is
+   * simpler than a value that has to be set before anybody can type a URL.
+   */
+  readonly databaseSocket?: () => string | undefined;
+  /**
    * Supplies a schema without asking the database. The built-in demo relations
    * use this, so following one of their foreign keys works with no connection.
    */
@@ -470,7 +480,11 @@ export class Workspace implements TableViewProvider, InteractionHost {
     url: string;
     credentials: ExasolCredentials;
   }): Promise<{ connectionId: string }> {
-    const result = await this.#client.connect(request.url, request.credentials);
+    const result = await this.#client.connect(
+      request.url,
+      request.credentials,
+      this.#options.databaseSocket?.(),
+    );
     this.#connectionId = result.connectionId as ConnectionId;
     // Which database this is, kept so that anything else claiming to reach the
     // same one can be checked against it. The URL and the name the server gave;

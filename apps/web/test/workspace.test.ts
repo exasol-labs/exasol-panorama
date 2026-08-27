@@ -755,3 +755,52 @@ describe('what a panel shows when there are no numbers', () => {
     expect(summaryPanelView({ status: 'ready', summary })).toEqual({ summary });
   });
 });
+
+describe('where a database socket is opened', () => {
+  /**
+   * A browser opens the database's own URL, and a certificate it does not trust
+   * ends the matter there. The desktop application opens the socket in its shell
+   * instead — so what has to be true here is that the *route* reaches the
+   * connection while the *address* the session reports stays the database's own.
+   * An agent that asked which database this is must not be told about a proxy.
+   */
+  it('is the shell’s socket in an application, and the database is still the database', async () => {
+    const harness = createAppHarness({
+      databaseSocket: () => 'ws://127.0.0.1:7356/database?token=abc',
+    });
+    await harness.workspace.connect({
+      url: 'wss://localhost:8563',
+      credentials: { kind: 'token', token: 't' },
+    });
+    expect(harness.connections[0]?.via).toBe('ws://127.0.0.1:7356/database?token=abc');
+    expect(harness.connections[0]?.url).toBe('wss://localhost:8563');
+    expect(harness.workspace.reachedDatabase()?.url).toBe('wss://localhost:8563');
+  });
+
+  it('is the database itself in a browser, where nothing offered another', async () => {
+    const harness = createAppHarness();
+    await harness.workspace.connect({
+      url: 'wss://localhost:8563',
+      credentials: { kind: 'token', token: 't' },
+    });
+    expect(harness.connections[0]?.via).toBeUndefined();
+  });
+
+  /** The shell answers a moment after the page loads; before that, nothing. */
+  it('is the database itself while the shell has not answered yet', async () => {
+    let socket: string | undefined;
+    const harness = createAppHarness({ databaseSocket: () => socket });
+    await harness.workspace.connect({
+      url: 'wss://localhost:8563',
+      credentials: { kind: 'token', token: 't' },
+    });
+    expect(harness.connections[0]?.via).toBeUndefined();
+    socket = 'ws://127.0.0.1:7356/database?token=abc';
+    await harness.workspace.disconnect();
+    await harness.workspace.connect({
+      url: 'wss://localhost:8563',
+      credentials: { kind: 'token', token: 't' },
+    });
+    expect(harness.connections[1]?.via).toBe('ws://127.0.0.1:7356/database?token=abc');
+  });
+});

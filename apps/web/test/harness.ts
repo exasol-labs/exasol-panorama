@@ -64,6 +64,8 @@ export interface HarnessOptions {
    * having, not only a branch worth covering.
    */
   readonly quietLogin?: boolean;
+  /** Where database sockets should be opened; the desktop shell's, in an app. */
+  readonly databaseSocket?: WorkspaceOptions['databaseSocket'];
 }
 
 export const createAppHarness = (options: HarnessOptions = {}): AppHarness => {
@@ -143,6 +145,7 @@ export const createAppHarness = (options: HarnessOptions = {}): AppHarness => {
     ...(options.chartSurface === undefined ? {} : { chartSurface: options.chartSurface }),
     ...(options.rasteriseSvg === undefined ? {} : { rasteriseSvg: options.rasteriseSvg }),
     ...(options.rowWaitMs === undefined ? {} : { rowWaitMs: options.rowWaitMs }),
+    ...(options.databaseSocket === undefined ? {} : { databaseSocket: options.databaseSocket }),
   });
 
   return {

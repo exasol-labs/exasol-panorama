@@ -61,3 +61,24 @@ export const agentEndpointOrigin = (
   if (!inDesktopShell(host)) return location.origin;
   return location.protocol === 'http:' || location.protocol === 'https:' ? location.origin : null;
 };
+
+/**
+ * The socket a database connection should actually open.
+ *
+ * A browser refuses a `wss://` handshake to a host whose certificate it does not
+ * trust and never offers to make an exception — which makes the most common local
+ * Exasol, a Personal instance with a certificate it signed itself, unreachable
+ * from a page however much its user would like to reach it.
+ *
+ * The desktop application therefore opens the socket in its shell, where trusting
+ * a certificate is a decision a person can be asked to make, and hands the page a
+ * plain WebSocket on loopback to talk down. This composes the address of it: the
+ * shell's own URL, which already carries the token that says the request came from
+ * its window, plus the database this connection is for.
+ *
+ * The target is passed rather than assumed because the shell forwards to it and to
+ * nothing else — it checks the scheme, and it is the authority a trust decision is
+ * remembered against.
+ */
+export const databaseSocketUrl = (proxy: string, target: string): string =>
+  `${proxy}${proxy.includes('?') ? '&' : '?'}target=${encodeURIComponent(target)}`;

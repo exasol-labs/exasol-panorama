@@ -18,6 +18,11 @@ export interface BootstrapOptions {
   /** Set to false to run the data worker in-process. */
   readonly useWorker?: boolean;
   readonly demoLatencyMs?: number;
+  /**
+   * Where database sockets are opened, if not at the database itself. The desktop
+   * application answers this with its own; see `panorama/shell.ts`.
+   */
+  readonly databaseSocket?: () => string | undefined;
 }
 
 export const createWorkerEndpoint = (options: BootstrapOptions = {}): WorkerEndpoint => {
@@ -47,6 +52,7 @@ export const createWorkspace = (options: BootstrapOptions = {}): Workspace =>
     chartSurface: new EChartsSurface(),
     // Rasterising is the browser's job: it has the fonts and the decoder.
     rasteriseSvg,
+    ...(options.databaseSocket === undefined ? {} : { databaseSocket: options.databaseSocket }),
   });
 
 /**

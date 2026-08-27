@@ -1,9 +1,11 @@
+import type { SocketLike } from '@panorama/exasol';
 import { ExasolConnection, ExasolTableDataSource } from '@panorama/exasol';
 import type { RowFilter, TableDataSource } from '@panorama/table';
 import type { WorkerEndpoint } from '@panorama/worker';
 import { DataWorker } from '@panorama/worker';
 import { MockTableDataSource } from '@panorama/test-support';
 import { DEMO_SCHEMA, demoRelation } from './demo.js';
+import { databaseSocketUrl } from './shell.js';
 
 /**
  * Starts the data worker on an endpoint.
@@ -67,12 +69,28 @@ export const startDataWorker = (
 ): DataWorker =>
   new DataWorker({
     endpoint,
-    createConnection: (connection) =>
-      new ExasolConnection({
+    createConnection: (connection) => {
+      const via = connection.via;
+      return new ExasolConnection({
         url: connection.url,
         credentials: connection.credentials,
         onStatusChange: connection.onStatusChange,
-      }),
+        /**
+         * Where the socket actually goes. Left alone in a browser: the driver
+         * opens the database's URL, and a certificate the browser does not trust
+         * is the end of it. In the desktop application the shell opens the socket
+         * instead, so the page connects to the shell and the shell decides about
+         * the certificate — see `shell.ts`. The driver is not told, and does not
+         * need to be: it is handed a socket either way.
+         */
+        ...(via === undefined
+          ? {}
+          : {
+              socketFactory: (url: string): SocketLike =>
+                new WebSocket(databaseSocketUrl(via, url)) as unknown as SocketLike,
+            }),
+      });
+    },
     createSource: (request, connection): TableDataSource =>
       createTableSource(request, connection, options),
   });

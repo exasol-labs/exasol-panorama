@@ -8,6 +8,7 @@ import {
   createPanoramaEngine,
 } from '@panorama/renderer';
 import type { FrameStats } from '@panorama/renderer';
+import { reportTiming } from './shell-agent.js';
 import type { Workspace } from './workspace.js';
 
 /**
@@ -44,6 +45,8 @@ export const PanoramaCanvas = ({
   onFollowForeignKey,
 }: PanoramaCanvasProps): React.JSX.Element => {
   const hostRef = useRef<HTMLDivElement | null>(null);
+  /** Whether a frame has been drawn, so the first one can be timed exactly once. */
+  const drawn = useRef(false);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -85,6 +88,14 @@ export const PanoramaCanvas = ({
             beforeFrame: (deltaMs) => {
               workspace.update(deltaMs);
               if (statsRef !== undefined) statsRef.current = renderer.stats;
+              // The first frame is the moment the application *appears*, which is
+              // later than the moment the loop was started: a first frame compiles
+              // the shaders and rasterises the glyphs it needs. It is therefore the
+              // number the instantness requirement is about — see `reportTiming`.
+              if (!drawn.current) {
+                drawn.current = true;
+                reportTiming('first frame drawn');
+              }
             },
           });
           const interaction = new InteractionController({

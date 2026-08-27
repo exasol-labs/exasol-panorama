@@ -215,15 +215,31 @@ This is why `packages/renderer` can be tested with no workspace, and
 | `apps/web`      | Composition: workspace, canvas component, worker bootstrap, agent host, installability                              | —                                            |
 | `apps/desktop`  | Packaging only: a window onto `apps/web`'s build, bundled by Tauri                                                  | Everything. It holds no application code     |
 
-`apps/desktop` deserves a sentence, because a second deployable usually means a
-second place for behaviour to hide and this one must not become that. It is a
-Tauri crate whose `main` opens a window on the `dist` that `apps/web` produces —
-the same bytes the browser install ships. What is packaged twice is one
-application, and the only thing the page asks about which packaging it is in is
-`apps/web/src/panorama/shell.ts`: a service worker belongs in front of a network
-and not in front of a file on disk. When the agent endpoint moves into the shell
-(see `plans/panorama-agent-local-plan.md`), it arrives as a transport under the
-existing bridge, not as a second copy of the protocol.
+`apps/desktop` deserves a paragraph, because a second deployable usually means a
+second place for behaviour to hide and this one must not become that. It is a Tauri
+crate whose `main` opens a window on the `dist` that `apps/web` produces — the same
+bytes the browser install ships — and whose other two jobs are the two things a
+page cannot do for itself: it owns the agent endpoint an installed application
+cannot get from a development server, and it owns the _database socket_, because
+deciding whether to trust a certificate is a decision a browser will not delegate
+to a page (§9 has the shape of the seam; `packages/exasol`'s `SocketFactory` is
+where it plugs in, and the driver is not told).
+
+That endpoint is arranged so the shell holds no part of the interface. It accepts a
+message on loopback, emits it to the window, and returns what the window said; the
+handshake, the catalogue and the sixteen tools are answered _in the page_, by
+`packages/mcp/src/answer.ts`, which is the same `handleMcpRequest` and the same
+`runOperation` the development server calls. So there is one implementation of the
+protocol and one copy of the document, and "every answer comes from the session a
+person is looking at" (§9.10) holds in the desktop application for the same reason
+it holds in a browser. The same binary is also the stdio pipe an agent's client
+speaks to (`--mcp-stdio`), which finds the window through a session file rather than
+through a port anybody has to know — and starts one if a call needs it. The page
+asks `apps/web/src/panorama/shell.ts` which packaging it is in, and the answer
+decides three things: where the agent endpoint is, where a database socket is
+opened, and that a service worker belongs in front of a network rather than in
+front of a file on disk. Each is one function with both answers tested; none of
+them is a second version of the application.
 
 Inside the composition root, four objects rather than one:
 

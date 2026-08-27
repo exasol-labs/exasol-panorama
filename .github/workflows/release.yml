@@ -207,7 +207,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev patchelf file
+            libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev patchelf file libssl-dev
 
       # rustup is already on every runner, so there is no third-party action here
       # to trust with a toolchain.
@@ -241,8 +241,46 @@ jobs:
       - name: Build the web application
         run: npm run build
 
+      # The shell's own tests: the guards on the endpoint, the session file, and
+      # the pipe's decisions. Cheap here, because the toolchain and most of the
+      # build are already warm.
+      - name: Test the shell
+        working-directory: apps/desktop/src-tauri
+        run: cargo test
+
+      # Signed and notarised when this repository holds the secrets, ad-hoc signed
+      # when it does not — which is what the artifacts are today, and why macOS
+      # asks about them on a machine that did not build them.
+      #
+      # To turn it on, add these repository secrets and nothing else changes:
+      #   APPLE_CERTIFICATE           a Developer ID Application .p12, base64
+      #   APPLE_CERTIFICATE_PASSWORD  its password
+      #   APPLE_SIGNING_IDENTITY      e.g. "Developer ID Application: Exasol (TEAMID)"
+      #   APPLE_ID, APPLE_PASSWORD    an Apple ID and an app-specific password
+      #   APPLE_TEAM_ID               for notarisation
+      # Windows needs a certificate thumbprint in tauri.conf.json instead; there is
+      # no environment-only route for it, so it is a separate decision.
       - name: Bundle the desktop application
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: npm run build --workspace @panorama/desktop -- ${{ matrix.args }}
+
+      # Said out loud, because "unsigned" is the difference between an application
+      # somebody can open and one macOS refuses until they know the trick.
+      - name: Say whether it was signed
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          app="$(find apps/desktop/src-tauri/target -name '*.app' -maxdepth 5 | head -1)"
+          codesign -dvv "$app" 2>&1 | grep -E 'Authority|Signature' || true
+          if [ -z "${{ secrets.APPLE_SIGNING_IDENTITY }}" ]; then
+            echo "::warning::Built ad-hoc signed: this repository holds no Developer ID secrets, so first launch needs right-click -> Open."
+          fi
 
       # Collected by searching rather than by naming paths, which differ per
       # platform and per target triple. Installers only: the unpacked `.app` and

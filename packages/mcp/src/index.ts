@@ -1,3 +1,4 @@
+export * from './answer.js';
 export * from './bridge.js';
 export * from './catalogue.js';
 export * from './commands.js';

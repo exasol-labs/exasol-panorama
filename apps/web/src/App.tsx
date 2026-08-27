@@ -13,6 +13,13 @@ import type { ConnectionRequest, ConnectionStatus, SchemaListing } from '@panora
 import type { ForeignKeyFollow, FrameStats, PanoramaRenderer } from '@panorama/renderer';
 import type { ConnectionId, EntityActionId, EntityId } from '@panorama/core';
 import type { CreateEngineOptions } from '@panorama/renderer';
+import type { PersonalDatabases } from './panorama/shell-agent.js';
+import {
+  reportTiming,
+  shellDeploymentCredentials,
+  shellDeployments,
+  shellSetting,
+} from './panorama/shell-agent.js';
 import { PanoramaCanvas } from './panorama/PanoramaCanvas.js';
 import { ChartEditors } from './panorama/ChartEditors.js';
 import { SqlEditors } from './panorama/SqlEditors.js';
@@ -179,6 +186,9 @@ export const App = ({
     (renderer: PanoramaRenderer, backend: string) => {
       rendererRef.current = renderer;
       backendRef.current = backend;
+      // The moment the application starts drawing, named with the engine that got
+      // there — the two things worth knowing about a slow start.
+      reportTiming(`canvas drawing on ${backend}`);
       // Placement needs to know what is on screen, and only the camera does.
       // Handed over here because the renderer does not exist until now.
       workspace.viewport = (): ReturnType<typeof renderer.camera.visibleWorldRect> =>
@@ -196,10 +206,25 @@ export const App = ({
    * once connected — opening the table named at startup — can wait for it. The
    * dialog ignores the result, as a void-returning handler may.
    */
+  /**
+   * The deployment this connection came from, when it came from one.
+   *
+   * The explorer's indicator is the one place a live connection is named, and
+   * `wss://127.0.0.1:58325` is not what anybody calls their database — `agent-alpha`
+   * is. So a connection opened by clicking a deployment is shown by its name, with
+   * the address kept as the tooltip; a connection typed into the form has no name
+   * to show and is shown by its address, as before.
+   *
+   * Cleared by `connect`, so that connecting to something else cannot leave the
+   * previous deployment's name on screen.
+   */
+  const [connectedDeployment, setConnectedDeployment] = useState<string | null>(null);
+
   const connect = useCallback(
     async (request: ConnectionRequest): Promise<boolean> => {
       setStatus('connecting');
       setConnectionError(null);
+      setConnectedDeployment(null);
       try {
         const result = await workspace.connect(request);
         workspace.connectionId = result.connectionId as ConnectionId;
@@ -225,6 +250,7 @@ export const App = ({
       await workspace.disconnect();
       setStatus('disconnected');
       setConnectedTo(null);
+      setConnectedDeployment(null);
       setSchemas([]);
       setContents(new Map());
     })();
@@ -287,6 +313,62 @@ export const App = ({
   );
 
   const samples = useMemo(() => demoTables(), []);
+
+  /**
+   * The databases Exasol Personal manages for whoever is at this machine — which
+   * may be running here or in a cloud it deployed to.
+   *
+   * Asked as the page starts: the desktop application runs the `exasol` command
+   * and answers, and a browser answers nothing. `null` until the answer arrives,
+   * and forever in a browser, which is what keeps the section out of the dialog
+   * entirely rather than showing it empty.
+   */
+  const [local, setLocal] = useState<PersonalDatabases | null>(null);
+  useEffect(() => {
+    // Asked again whenever there is no connection, because by then a person may
+    // have started a deployment — the dialog is on screen exactly when a stale
+    // list would be the thing they are looking at.
+    if (status === 'connected' || status === 'connecting') return;
+    let live = true;
+    void (async (): Promise<void> => {
+      // Three answers, each shown as it lands. The names are instant, so the list
+      // is on screen rather than absent; the probe says which rows can be clicked
+      // and takes a few hundred milliseconds; the tool's own words for the rest
+      // take seconds and are worth nothing to somebody who wants to connect.
+      for (const detail of ['names', 'probed', 'described'] as const) {
+        const answer = await shellDeployments(undefined, detail);
+        if (!live) return;
+        setLocal(answer);
+      }
+    })();
+    return (): void => {
+      live = false;
+    };
+  }, [status]);
+
+  /**
+   * Connects to one of them by name.
+   *
+   * The password is fetched here, at the click, and handed straight to `connect` —
+   * it is never in this component's state, in the form, or in anything that
+   * re-renders.
+   */
+  const openDeployment = useCallback(
+    (name: string) => {
+      void (async (): Promise<void> => {
+        try {
+          // Named only once connected: a failed attempt should leave the indicator
+          // saying what it said before.
+          if (await connect(await shellDeploymentCredentials(name))) {
+            setConnectedDeployment(name);
+          }
+        } catch (error) {
+          setConnectionError(describeError(error));
+        }
+      })();
+    },
+    [connect],
+  );
 
   /**
    * Connects with details supplied before the page opened, and opens the table
@@ -370,6 +452,12 @@ export const App = ({
    * what a built page — where these routes do not exist — will always get.
    */
   const loadSetting = useCallback(async <TValue,>(path: string): Promise<TValue | null> => {
+    // The desktop application answers these itself: the endpoint is a socket in
+    // the process hosting this window, and the machine is the one it is running
+    // on. Anything it does not answer falls through to the network, which is what
+    // a browser has.
+    const fromShell = await shellSetting<TValue>(path);
+    if (fromShell !== undefined) return fromShell;
     try {
       const response = await fetch(path);
       return response.ok ? ((await response.json()) as TValue) : null;
@@ -380,6 +468,11 @@ export const App = ({
 
   const actSetting = useCallback(
     async <TValue,>(path: string, body: unknown): Promise<TValue | null> => {
+      // Pairing and opening Claude are things a shell can do and a page cannot;
+      // in a browser they stay what they were, a request to the development
+      // server.
+      const fromShell = await shellSetting<TValue>(path);
+      if (fromShell !== undefined) return fromShell;
       try {
         const response = await fetch(path, {
           method: 'POST',
@@ -412,7 +505,7 @@ export const App = ({
           <SchemaExplorer
             schemas={schemas}
             connection={{
-              label: connectionLabel(connectedTo ?? ''),
+              label: connectedDeployment ?? connectionLabel(connectedTo ?? ''),
               ...(connectedTo === null ? {} : { detail: connectedTo }),
               onDisconnect: disconnect,
             }}
@@ -433,6 +526,13 @@ export const App = ({
               : { defaultUrl: startup.url })}
             {...(startup?.username === undefined ? {} : { defaultUsername: startup.username })}
             onConnect={connect}
+            {...(local === null
+              ? {}
+              : {
+                  deploymentsAvailable: local.installed,
+                  deployments: local.deployments,
+                  onOpenDeployment: openDeployment,
+                })}
           />
         )}
         <SampleDataPanel tables={samples} onOpen={openSample} />
@@ -459,6 +559,7 @@ export const App = ({
     [
       status,
       connectedTo,
+      connectedDeployment,
       connectionError,
       defaultUrl,
       connect,
@@ -478,6 +579,13 @@ export const App = ({
       cancelExport,
       dismissExport,
       settingsOpen,
+      // The local deployments and the click that opens one. Every value the
+      // sidebar reads has to be named here: a memo that misses one silently
+      // freezes the panel that reads it — which is exactly what happened when
+      // these two were left out, and no test noticed because a test that
+      // re-renders for some other reason cannot tell.
+      local,
+      openDeployment,
       toggleSettings,
       loadSetting,
       actSetting,

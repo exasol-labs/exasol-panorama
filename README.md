@@ -121,6 +121,10 @@ agent reads cannot drift apart.
 - **Take it with you.** Charts export as SVG, PNG or PDF; result sets export to
   CSV, XLSX or Parquet — encoded off the main thread, streamed to disk, with
   progress and cancellation.
+- **Reach your own deployments in one click.** The desktop application asks the
+  `exasol` command what Exasol Personal manages — here or in a cloud — and lists
+  them with whether each is running; clicking one connects, with the address, user
+  and password from the deployment itself.
 - **Install it, or wear it.** One build, packaged two ways: a desktop
   application with a window of its own, and a browser install that starts with no
   network — the same bytes either way. In a headset it enters WebXR on the same
@@ -158,10 +162,36 @@ CI-only standard: if it passes there, it passes here.
 
 ### Connecting to a local instance (self-signed certificate)
 
-A browser refuses a `wss://` handshake to a host whose certificate it does not
-trust, and — unlike a page navigation — it never offers to make an exception. It
-just reports a generic failure. Development instances are almost always
-self-signed, so:
+An Exasol Personal on your own machine presents a certificate it signed itself,
+and that is the most common local instance there is. What happens next depends
+entirely on which Panorama you are running.
+
+**In the desktop application it just works.** The socket is opened by the shell
+rather than by the page, so Panorama can do what a browser will not: decide about
+a certificate. The rules, in order —
+
+- A certificate the **system trusts** is used with no ceremony. A managed
+  instance or Exasol SaaS never comes up.
+- A certificate on **this machine's loopback interface** is accepted without
+  asking. Reaching `localhost` means talking to this computer, and a certificate
+  is not what stands between you and a program you are already running.
+- **Anything else asks you, once**, in a native dialog naming the fingerprint,
+  and remembers the answer per host _and_ per certificate in
+  `~/.panorama/trusted-certificates.json` — so a certificate that changes asks
+  again. Trust on first use, for the same reason `ssh` does it.
+
+Nothing is relaxed quietly. Verification is tried properly first, and the log
+line says which of the three answers a connection got:
+
+```
+[panorama] connected to localhost:8563 (self-signed certificate, accepted because it is this machine)
+```
+
+**In a browser it does not**, and cannot: a browser refuses a `wss://` handshake
+to a host whose certificate it does not trust and — unlike a page navigation — it
+never offers to make an exception. It reports a generic failure. For the
+development server and the browser install, the workaround is still to trust the
+certificate in the browser once:
 
 1. Check what the certificate is actually issued for:
    `openssl s_client -connect localhost:8563 -brief </dev/null`
@@ -171,12 +201,15 @@ self-signed, so:
    HTTP — but the exception is recorded.
 3. Connect Panorama to **`wss://localhost:8563`**.
 
-Use the _same host_ as the certificate. `localhost` and `127.0.0.1` are
-different hosts to a browser, so an exception accepted for one does nothing for
-the other. The driver itself is fine here — its integration tests pass against a
-real instance over TLS — but browser-direct access to a self-signed instance
-needs that manual trust step, which is the strongest argument there is for
-putting a thin gateway in front of one.
+Use the _same host_ as the certificate: `localhost` and `127.0.0.1` are different
+hosts to a browser, so an exception accepted for one does nothing for the other.
+
+The socket itself is not a hole in the machine. It is bound to loopback; it
+refuses any handshake carrying an `Origin` that is not the application's own —
+the header a web page cannot forge — and it needs the token this application
+generated at startup, which only its own window is given. Credentials pass
+through it encrypted by the page against the key the database offered, exactly as
+they would from a browser: the shell moves bytes and could not read them.
 
 ### Supplying connection details at startup
 
@@ -386,13 +419,12 @@ One web build, packaged two ways, and both come out of a release:
 | **PWA**                 | the built directory, installed by a browser from any HTTPS origin                                     | Headsets, phones, tablets, a locked-down laptop — anywhere a browser is the only way in, and the only route to WebXR |
 
 The desktop shell holds no part of the application: it opens a window onto the
-same `dist` the PWA ships and its Rust is a `main` and a comment. That is
-deliberate — everything that decides what Panorama _is_ stays in TypeScript,
-where it is tested, and the two packagings cannot drift into different products.
-Which one you are inside is answered at runtime, in
-[`shell.ts`](apps/web/src/panorama/shell.ts), and today it decides exactly one
-thing: the desktop application does not cache its own bundle, because it is
-already on the disk.
+same `dist` the PWA ships, and the only other thing it owns is a socket — see
+[**the agent, inside the application**](#the-agent-inside-the-application) below.
+That is deliberate: everything that decides what Panorama _is_ stays in
+TypeScript, where it is tested, and the two packagings cannot drift into different
+products. Which one you are inside is answered at runtime, in
+[`shell.ts`](apps/web/src/panorama/shell.ts).
 
 ### The desktop application
 
@@ -400,13 +432,38 @@ already on the disk.
 npm run desktop        # a window on the dev server: needs `npm run dev` in another terminal
 npm run desktop:build  # builds the web app, then bundles it
 npm run desktop:debug  # the same bundle with devtools left in — right-click, Inspect Element
+npm run desktop-check  # drives the built application the way an agent would
+npm run shell-check    # drives the built page as if it were inside the shell
 ```
 
+It behaves like an application rather than like a program that happens to have a
+window: **one instance** — a second launch, from the Dock, from Spotlight or from
+an agent's pipe, focuses the window you already have rather than opening a second
+canvas — and it **comes back where you left it**, size and position remembered
+between launches.
+
 The bundles land in `apps/desktop/src-tauri/target/release/bundle/` — or
-`target/debug/bundle/` for the devtools one. They are
-**unsigned**: macOS will refuse the first launch until it is opened from the
-right-click menu, or `xattr -d com.apple.quarantine` is applied, and Windows will
-warn. Signing needs certificates this repository does not hold.
+`target/debug/bundle/` for the devtools one. Install it the way you would any
+other application:
+
+```bash
+cp -R "apps/desktop/src-tauri/target/release/bundle/macos/Exasol Panorama.app" /Applications/
+open -a "Exasol Panorama"
+```
+
+Open the **`.app`**, not the file inside it. `Contents/MacOS/panorama-desktop` is a
+Unix executable, and Finder runs one of those inside Terminal — so double-clicking
+it gets you a terminal full of the shell's log and then the window, which is a
+confusing way to meet an application. The same file _is_ the right thing to give an
+agent (`--mcp-stdio`, above) and the right thing to run when you want to watch that
+log.
+
+They are
+**unsigned**: on a machine that did not build them, macOS refuses the first launch
+until it is opened from the right-click menu, and Windows warns. The release
+workflow signs and notarises as soon as the repository holds a Developer ID — the
+six secrets it wants are named in `.github/workflows/release.yml`, and until they
+are there it says so on every run rather than shipping quietly unsigned.
 
 Two things to know before judging it, both measured in the window rather than
 assumed. The webview is the platform's own, and on macOS 26 WKWebView _does_ offer
@@ -416,9 +473,162 @@ what actually draws. WebView2 on Windows is Chromium; WebKitGTK on Linux has no
 WebGPU at all. And **no webview offers WebXR** — the shell says so on startup — so
 a headset is the PWA's job, not this one's.
 
-`npm run desktop` is the interesting one for development: the window is served by
-the development server, so the agent endpoint is on the page's own origin and
-Claude can drive that window today, exactly as it drives a tab.
+### Your Exasol Personal deployments
+
+If Exasol Personal is installed, the connection panel has two tabs — **Personal**
+and **Manual** — and opens on Personal, because the deployments it lists are the
+answer to everything the form would ask. Where the tool is not installed there are
+no tabs at all: the form is the only way in, and a single choice presented as a
+choice is furniture. Installed with nothing deployed yet is the one in-between case,
+and it opens on the form while still offering the tab, so you can see that the tool
+is there and has nothing.
+
+The Personal tab lists what Exasol Personal **manages** — not hosts: the same
+command installs to this machine or to AWS, Azure, Exoscale or STACKIT, so a
+deployment listed here may be running anywhere. Clicking one connects: the address
+and user come from `exasol info`, the password from the deployment's own
+`secrets.json`, and for a local one the certificate question does not arise because
+the address is loopback.
+
+Each row answers the three questions you would otherwise go and look up:
+
+- **Is it running?** A filled dot, and the tool's own word for it in the row's
+  accessible name. A deployment that is not running is listed and not clickable —
+  more use than not listing it, and better than a failure a second later.
+
+  **Panorama asks the socket rather than the tool**, and that took finding out.
+  Three measurements on a machine with six deployments, filed upstream as
+  [exasol/exasol-personal#309](https://github.com/exasol/exasol-personal/issues/309),
+  [#310](https://github.com/exasol/exasol-personal/issues/310) and
+  [#311](https://github.com/exasol/exasol-personal/issues/311):
+
+  - `exasol deployments list` called all six `running` while only one had a
+    database listening. Its status is unusable.
+  - `exasol status` knows more — it reports `stopped` and
+    `database_connection_failed` correctly — but it also reported _two_ of them as
+    `database_ready` at the same `127.0.0.1:8563`, which cannot be true: one
+    process holds a port. A stopped deployment's readiness check had found the
+    other's database on the port it used to use.
+  - And it is not reliably quick: about two seconds against a healthy database,
+    but _minutes_ against an unreachable one.
+
+  So a row is offered when a TCP connection to its address is accepted — the
+  question a click actually asks, answered in milliseconds on loopback and bounded
+  by a two-and-a-half-second timeout elsewhere. The tool is still asked for its
+  status, with a three-second deadline, because its words and its sentences beat
+  anything invented here; when it does not answer in time the row says what the
+  socket found instead. It is checked again at the moment you click, because a
+  database can stop in between.
+
+  So the panel asks three questions rather than one, and shows each answer as it
+  lands: the names (instant), then which rows can be clicked (a few hundred
+  milliseconds, or about a second on a machine with a port clash), then the tool's
+  own words for the rest (seconds, and worth nothing to somebody who came to
+  connect). Rows are therefore on screen immediately, marked `checking…`, and
+  become connectable well before the slow answer arrives.
+
+- **Two deployments claiming one address: the running one is found.** Exasol
+  Personal can install two deployments on the same port, and then `info` reports
+  that port for both — the stopped one included. The tool cannot say which is real,
+  and neither can the listening process's command line (`launcher __daemon__ 2
+18432`). But the process table can: the local runner works _inside its own
+  deployment directory_, so one `lsof` names every deployment with a live process.
+  The one that has it keeps its address; the others read `port taken` and are told
+  whose it is. Where that cannot be settled — nothing live, or two live claimants —
+  both rows read `address conflict` and name the other to stop, because opening the
+  wrong database under the right name is worse than any refusal.
+
+  That answer costs the best part of a second, so it is worked out in the
+  background as the application starts, remembered for thirty seconds, and asked
+  for **only when something is actually contested** — a machine with no clash never
+  pays it. It is also established again, from scratch, at the moment you click: a
+  list may be seconds old, and in those seconds a deployment can be stopped and
+  another started on the same port.
+
+- **Where is it?** Six on this machine differ only by port, so the row shows the
+  port; one in a cloud has a host nobody would guess, so the row shows the host.
+  Hovering gives both, with the infrastructure that deployed it: `aws ·
+wss://db.eu-central-1.example:8563`.
+- **What is it called?** Which is what you actually think of it as. Hovering adds
+  whatever the tool said about it — for a stopped one, that is a sentence telling
+  you how to start it.
+
+And once connected, the explorer's indicator says that name rather than an address,
+with the address as its tooltip: `agent-alpha` is what you call your database;
+`wss://127.0.0.1:58325` is not. A connection typed into the form has no name to
+show, so it is identified by its host, as before.
+
+The list is asked for again whenever there is no connection, so starting one with
+`exasol start` and coming back finds it.
+
+Nothing about this is in the web build: a page cannot run a command, and a page on
+a hosted origin is not on the machine that would. The shell asks, and — the part
+that needed care — it looks where a program launched from the Dock has to look,
+because such a process inherits almost no `PATH`. The password is fetched at the
+click rather than with the list, so what is drawn, logged or read aloud is names,
+statuses and addresses.
+
+### The agent, inside the application
+
+The installed application carries its own agent endpoint. Nothing else has to be
+running — no development server, no Node, no second install — and the file an
+agent is pointed at is the file that was installed:
+
+```bash
+claude mcp add panorama -- "/Applications/Exasol Panorama.app/Contents/MacOS/panorama-desktop" --mcp-stdio
+```
+
+That is the whole of the setup. `--mcp-stdio` makes the same binary a Model
+Context Protocol pipe on stdin and stdout, and the pipe talks to whichever window
+is open — **or opens one.** So an agent can be asked about a canvas that does not
+exist yet, and the application appears.
+
+How it fits together, because the shape is the point:
+
+- **The window is the server.** The shell owns a loopback socket and knows nothing
+  about the protocol: it takes a message, hands it to the page and returns what the
+  page said. The handshake, the catalogue, the sixteen tools and everything they
+  mean run in the page, in one copy, the same code the development server calls —
+  [`answer.ts`](packages/mcp/src/answer.ts). There is no second implementation to
+  keep in step, and no second opinion about what is on the canvas.
+- **Nothing has a port in it.** A running window writes where it is to
+  `~/.panorama/sessions/<pid>.json`, and the pipe reads that. Two windows are two
+  files; a crashed one is recognised by its pid being gone. Nothing you paste
+  anywhere contains a number that can go stale.
+- **Only this machine, and only this user.** The socket is bound to loopback, the
+  endpoint refuses any request carrying an `Origin` that is not the application's
+  own — which is what a web page cannot fake — and every call needs the token from
+  the session file. A local page that talks a browser into reaching a local address
+  still gets nothing.
+- **A client that starts before the application does not open one.** `initialize`
+  and `tools/list` are answered from the catalogue the pipe saw last time — a menu,
+  never any state — so opening a terminal does not open a window. A real call does.
+
+To see it from outside:
+
+```bash
+curl -s localhost:7355/agent/health                       # is anybody home
+TOKEN=$(sed -n 's/.*"token": "\([^"]*\)".*/\1/p' ~/.panorama/sessions/*.json)
+curl -s -X POST localhost:7355/agent/mcp -H "authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | jq '.result.tools | length'
+```
+
+Or press the gear and let it do that for itself. **Pair with Claude** in the
+settings panel works in the application: it finds Claude Code and the desktop
+client on this machine, registers _this executable_ with both — the pipe, not a
+port, so the pairing cannot go stale — and **Open Claude app** starts it. No
+terminal, and nothing to paste. Finding Claude is the part that needed care: an
+application launched from the Dock inherits almost no `PATH`, so the search asks
+your login shell as well as the usual places.
+
+`npm run desktop` is the same arrangement against the development server's build:
+the window takes its endpoint from the shell exactly as the bundle does, so what you
+drive in development is what ships. One consequence to know about — a Claude paired
+through this repository's `.mcp.json` is pointed at the _development server's_
+endpoint, which serves browser tabs. It will report that nothing is attached while
+the only thing open is a desktop window. Pair with the binary, as above, or open the
+application in a tab.
 
 ### Installing it from a browser
 
@@ -568,12 +778,13 @@ Worth knowing before you judge something a bug:
 - **Typography, colour and the _feel_ of scrolling need a human at a real
   display.** Everything about them is verified structurally — draw lists, batch
   contents, glyph geometry, camera maths — which is not the same as looking good.
-- **The agent endpoint still lives on the development server.** A deployed PWA
-  is the application alone, and the desktop shell does not carry the endpoint
-  yet — so an installed Panorama has no agent, which is the next thing to fix and
-  the reason the desktop shell exists. `npm run desktop` has one, because the
-  window is pointed at the dev server. See
+- **A deployed PWA has no agent.** The desktop application carries its own
+  endpoint; a browser install has nowhere to put one, so in a headset or on a
+  tablet the canvas is driven by hand. Why, and what the alternatives cost, is in
   [`plans/panorama-agent-local-plan.md`](plans/panorama-agent-local-plan.md).
+- **A browser install cannot reach a self-signed instance.** Only the desktop
+  application owns its socket; in a headset or a tab, a certificate the browser
+  does not trust is the end of the matter.
 - **The desktop application has not been driven by a test.** The suite and the
   probes cover the web build, which is all of the application; nothing yet
   launches the bundle and checks that it opened, drew, and could read a table.

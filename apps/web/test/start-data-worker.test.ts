@@ -1,8 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { dataType } from '@panorama/core';
 import type { RowFilter } from '@panorama/table';
 import type { ExasolConnection, ExasolResultSetHandle } from '@panorama/exasol';
-import { createTableSource } from '../src/panorama/start-data-worker.js';
+import { DataWorkerClient, createInProcessEndpointPair } from '@panorama/worker';
+import { createTableSource, startDataWorker } from '../src/panorama/start-data-worker.js';
 import { DEMO_SCHEMA } from '../src/panorama/demo.js';
 
 /**
@@ -116,6 +117,61 @@ describe('createTableSource', () => {
     );
     expect(() => createTableSource({ schema: 'S', table: 'T', sql: 'SELECT 1' }, null)).toThrow(
       /without a database/u,
+    );
+  });
+});
+
+/**
+ * The socket the real factory opens.
+ *
+ * Here rather than in the harness for the reason at the top of this file: the
+ * harness supplies its own connection factory, so the one the application
+ * installs — the only one that knows about the desktop shell's socket — would
+ * never run. A browser opens the database's own URL; the application opens the
+ * shell's, carrying the database as a parameter.
+ */
+describe('the socket the application opens', () => {
+  const recording = (opened: string[]): new (url: string) => unknown =>
+    class {
+      readyState = 0;
+      onopen: unknown = null;
+      onmessage: unknown = null;
+      onerror: unknown = null;
+      onclose: unknown = null;
+      constructor(url: string) {
+        opened.push(url);
+      }
+      send(): void {}
+      close(): void {}
+    };
+
+  const socketFor = async (via?: string): Promise<string | undefined> => {
+    const opened: string[] = [];
+    vi.stubGlobal('WebSocket', recording(opened));
+    const pair = createInProcessEndpointPair();
+    startDataWorker(pair.worker);
+    const client = new DataWorkerClient(pair.main);
+    try {
+      // Never resolves: the stub socket never opens, and what is being asserted
+      // is which address was dialled, not what came back.
+      void client
+        .connect('wss://localhost:8563', { kind: 'token', token: 't' }, via)
+        .catch(() => undefined);
+      await vi.waitFor(() => expect(opened.length).toBe(1));
+      return opened[0];
+    } finally {
+      client.dispose();
+      vi.unstubAllGlobals();
+    }
+  };
+
+  it('is the database itself in a browser', async () => {
+    expect(await socketFor()).toBe('wss://localhost:8563');
+  });
+
+  it('is the shell’s socket, carrying the database, in the application', async () => {
+    expect(await socketFor('ws://127.0.0.1:7356/database?token=abc')).toBe(
+      'ws://127.0.0.1:7356/database?token=abc&target=wss%3A%2F%2Flocalhost%3A8563',
     );
   });
 });

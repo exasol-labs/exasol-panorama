@@ -206,6 +206,8 @@ export class DataWorkerClient implements TableDataGateway {
   connect(
     url: string,
     credentials: ExasolCredentials,
+    /** Where to open the socket, if not the database's own URL. See `ConnectMessage`. */
+    via?: string,
   ): Promise<{
     connectionId: string;
     /** What the database called itself at login, where it said. */
@@ -213,7 +215,13 @@ export class DataWorkerClient implements TableDataGateway {
     version?: string;
     sessionId?: number;
   }> {
-    return this.#request((requestId) => ({ type: 'connect', requestId, url, credentials }));
+    return this.#request((requestId) => ({
+      type: 'connect',
+      requestId,
+      url,
+      credentials,
+      ...(via === undefined ? {} : { via }),
+    }));
   }
 
   disconnect(): Promise<void> {

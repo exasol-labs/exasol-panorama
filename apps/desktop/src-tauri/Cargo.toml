@@ -19,6 +19,36 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+# The endpoint's server. A hand-written parser would have to get chunked bodies
+# and keep-alive right for clients this repository did not write; this is smaller
+# than that would be.
+tiny_http = "0.12"
+# For the pipe: reading a method out of a message, and remembering a catalogue.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# The per-run token. Already in the tree behind Tauri; named here because this
+# crate uses it directly.
+uuid = { version = "1", features = ["v4"] }
+
+# The database socket. The page keeps the whole Exasol driver; what these are for
+# is one WebSocket in, one WebSocket out, and a certificate decision in the
+# middle — the thing a browser will not let a page make for itself.
+tokio = { version = "1", features = ["net", "rt", "io-util", "sync", "macros"] }
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+tokio-native-tls = "0.3"
+# The platform's own trust store, so a managed instance verifies with no ceremony:
+# Security.framework on macOS, schannel on Windows, OpenSSL on Linux.
+native-tls = "0.2"
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
+# Certificate fingerprints, for the question a person is asked.
+sha2 = "0.10"
+# Asking that question in the application's own window rather than in the page.
+tauri-plugin-dialog = "2"
+# One application, not one per launch: a second start focuses the window that is
+# already open. Also settles which window an agent drives, since there is one.
+tauri-plugin-single-instance = "2"
+# A window that comes back where it was left. Expected of anything with a window.
+tauri-plugin-window-state = "2"
 
 # A release bundle is something a person downloads over a network and keeps on a
 # laptop, so it is built for size rather than for compile time.

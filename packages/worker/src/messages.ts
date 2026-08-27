@@ -33,6 +33,16 @@ export interface ConnectMessage {
   readonly requestId: number;
   readonly url: string;
   readonly credentials: ExasolCredentials;
+  /**
+   * Where to open the socket, when that is not the database's own URL.
+   *
+   * The desktop application connects through a socket its shell owns, because a
+   * page cannot be given permission to trust a certificate and the shell can —
+   * see `apps/web/src/panorama/shell.ts`. `url` stays the database's own address:
+   * it is what a session reports having reached, and it is what the driver names
+   * in an error. This is only where the bytes go.
+   */
+  readonly via?: string;
 }
 
 export interface DisconnectMessage {

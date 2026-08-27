@@ -21,6 +21,29 @@ export interface TokenCredentials {
 
 export type ConnectionCredentials = PasswordCredentials | TokenCredentials;
 
+/**
+ * A database Exasol Personal manages for this user.
+ *
+ * *Manages*, not hosts: the same command installs to this machine or to a cloud,
+ * so a deployment listed here may be running anywhere. `infrastructure` is which.
+ *
+ * Supplied by whatever knows how to ask — the desktop application's shell, which
+ * runs the `exasol` command — and absent everywhere else, because a page has no way
+ * to ask and nothing to show.
+ */
+export interface PersonalDeployment {
+  readonly name: string;
+  /** As the tool said it: `running`, `stopped`, whatever else it has. */
+  readonly status: string;
+  /** Where it runs: `local`, `aws`, `azure` — one of Exasol Personal's presets. */
+  readonly infrastructure?: string;
+  /** Whatever the tool said about that status, for a tooltip. */
+  readonly message?: string;
+  /** `wss://host:port`. Absent for one that is not running, which cannot be opened. */
+  readonly url?: string;
+  readonly username?: string;
+}
+
 export interface ConnectionRequest {
   readonly url: string;
   readonly credentials: ConnectionCredentials;
