@@ -443,7 +443,9 @@ canvas — and it **comes back where you left it**, size and position remembered
 between launches.
 
 The bundles land in `apps/desktop/src-tauri/target/release/bundle/` — or
-`target/debug/bundle/` for the devtools one. Install it the way you would any
+`target/debug/bundle/` for the devtools one. A release builds one per platform: a
+`.dmg` on macOS, an NSIS `-setup.exe` and an `.msi` on Windows, a `.deb` and an
+AppImage on Linux. Install it the way you would any
 other application:
 
 ```bash
@@ -575,7 +577,10 @@ running — no development server, no Node, no second install — and the file a
 agent is pointed at is the file that was installed:
 
 ```bash
+# macOS
 claude mcp add panorama -- "/Applications/Exasol Panorama.app/Contents/MacOS/panorama-desktop" --mcp-stdio
+# Windows
+claude mcp add panorama -- "C:\Program Files\Exasol Panorama\panorama-desktop.exe" --mcp-stdio
 ```
 
 That is the whole of the setup. `--mcp-stdio` makes the same binary a Model
@@ -785,6 +790,11 @@ Worth knowing before you judge something a bug:
 - **A browser install cannot reach a self-signed instance.** Only the desktop
   application owns its socket; in a headset or a tab, a certificate the browser
   does not trust is the end of the matter.
+- **On Windows, two deployments claiming one address stay refused.** Working out
+  which of them is running means asking the process table what it has open, and
+  `lsof` has no one-line Windows equivalent — so both rows say `address conflict`
+  there, as they did on every platform before. Everything else about the deployment
+  list works the same.
 - **The desktop application has not been driven by a test.** The suite and the
   probes cover the web build, which is all of the application; nothing yet
   launches the bundle and checks that it opened, drew, and could read a table.

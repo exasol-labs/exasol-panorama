@@ -50,7 +50,7 @@
 use std::collections::{HashMap, HashSet};
 use std::net::ToSocketAddrs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
@@ -174,7 +174,9 @@ fn run(exasol: &Path, arguments: &[&str]) -> Result<String, String> {
 }
 
 fn run_within(exasol: &Path, arguments: &[&str], limit: Duration) -> Result<String, String> {
-    let child = Command::new(exasol)
+    // Through `locate::command`: on Windows the tool may be a `.cmd` shim, which
+    // has to be run by the command interpreter.
+    let child = locate::command(exasol)
         .args(arguments)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -363,6 +365,12 @@ pub fn address_of(url: &str) -> Option<(String, u16)> {
 /// (about eight hundred milliseconds here), and it resolves any number of conflicts
 /// at once.
 pub fn live_dirs_now() -> HashSet<String> {
+    // `lsof` is a unix tool, and Windows has no one-line equivalent. Without it a
+    // contested address stays contested: both rows are refused, which is the safe
+    // answer and the one this had before the process table was consulted at all.
+    if cfg!(windows) {
+        return HashSet::new();
+    }
     let listed = run_within(
         Path::new("lsof"),
         &["-a", "-d", "cwd", "-Fn"],

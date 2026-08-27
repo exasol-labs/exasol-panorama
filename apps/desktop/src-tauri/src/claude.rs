@@ -157,7 +157,9 @@ fn pair_cli() -> PairOutcome {
         };
     };
     let (command, args) = pipe_command();
-    let mut invocation = Command::new(&claude);
+    // Through `locate::command`, because on Windows the CLI is often a `.cmd`
+    // shim and those cannot be executed directly.
+    let mut invocation = locate::command(&claude);
     invocation.args(["mcp", "add", "--scope", "user", SERVER_NAME, "--"]);
     invocation.arg(&command);
     invocation.args(&args);

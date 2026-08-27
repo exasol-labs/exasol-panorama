@@ -188,6 +188,11 @@ jobs:
             label: Linux
             args: ''
             targets: ''
+          # Produces two artifacts, which is Tauri's default for this platform and
+          # worth having both of: an NSIS installer (`…-setup.exe`, per-user, no
+          # administrator) and an MSI for whoever deploys by policy. WiX and NSIS
+          # are fetched by the bundler on first use; the runner already has MSVC and
+          # WebView2.
           - os: windows-latest
             label: Windows
             args: ''
@@ -283,8 +288,9 @@ jobs:
           fi
 
       # Collected by searching rather than by naming paths, which differ per
-      # platform and per target triple. Installers only: the unpacked `.app` and
-      # the raw executable are inside them. Spaces out of the names on the way —
+      # platform and per target triple: a `.dmg` on macOS, a `.deb` and an AppImage
+      # on Linux, an NSIS `-setup.exe` and an `.msi` on Windows. Installers only —
+      # the unpacked `.app` and the raw executable are inside them. Spaces out of the names on the way —
       # the application is called "Exasol Panorama" and a downloaded file should
       # not be.
       - name: Collect the bundles
