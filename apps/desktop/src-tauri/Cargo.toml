@@ -1,0 +1,30 @@
+# The desktop shell.
+#
+# Deliberately almost empty. The application is the web build; this crate opens a
+# window onto it and will, next, carry the agent endpoint that an installed
+# Panorama cannot get from a development server. Everything that decides what
+# Panorama *is* stays in TypeScript, where it is tested.
+[package]
+name = "panorama-desktop"
+version = "0.1.0"
+description = "Exasol Panorama"
+authors = ["Exasol"]
+license = "MIT"
+edition = "2021"
+rust-version = "1.82"
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+
+# A release bundle is something a person downloads over a network and keeps on a
+# laptop, so it is built for size rather than for compile time.
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

@@ -121,8 +121,10 @@ agent reads cannot drift apart.
 - **Take it with you.** Charts export as SVG, PNG or PDF; result sets export to
   CSV, XLSX or Parquet — encoded off the main thread, streamed to disk, with
   progress and cancellation.
-- **Install it, or wear it.** It installs as a standalone application and starts
-  with no network; and it enters WebXR on the same scene, with the same renderer.
+- **Install it, or wear it.** One build, packaged two ways: a desktop
+  application with a window of its own, and a browser install that starts with no
+  network — the same bytes either way. In a headset it enters WebXR on the same
+  scene, with the same renderer.
 
 <img src="scripts/shots/chart-shown.png" alt="A pie chart of a table's rows, drawn as a box on the canvas" width="470">
 
@@ -374,10 +376,54 @@ the notice says which.
 
 ---
 
-## Installing it as an application
+## Getting it as an application
 
-The build is installable: a browser can launch it in its own window, from a dock,
-a home screen or a headset's library, with no wrapper around it. To try that:
+One web build, packaged two ways, and both come out of a release:
+
+|                         | What it is                                                                                            | Where it fits                                                                                                        |
+| ----------------------- | ----------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| **Desktop application** | `apps/desktop` — the build in a window of its own, bundled by Tauri: a `.dmg`, an installer, a `.deb` | A machine you work on. Nothing to install first, and where the agent endpoint is going to live                       |
+| **PWA**                 | the built directory, installed by a browser from any HTTPS origin                                     | Headsets, phones, tablets, a locked-down laptop — anywhere a browser is the only way in, and the only route to WebXR |
+
+The desktop shell holds no part of the application: it opens a window onto the
+same `dist` the PWA ships and its Rust is a `main` and a comment. That is
+deliberate — everything that decides what Panorama _is_ stays in TypeScript,
+where it is tested, and the two packagings cannot drift into different products.
+Which one you are inside is answered at runtime, in
+[`shell.ts`](apps/web/src/panorama/shell.ts), and today it decides exactly one
+thing: the desktop application does not cache its own bundle, because it is
+already on the disk.
+
+### The desktop application
+
+```bash
+npm run desktop        # a window on the dev server: needs `npm run dev` in another terminal
+npm run desktop:build  # builds the web app, then bundles it
+npm run desktop:debug  # the same bundle with devtools left in — right-click, Inspect Element
+```
+
+The bundles land in `apps/desktop/src-tauri/target/release/bundle/` — or
+`target/debug/bundle/` for the devtools one. They are
+**unsigned**: macOS will refuse the first launch until it is opened from the
+right-click menu, or `xattr -d com.apple.quarantine` is applied, and Windows will
+warn. Signing needs certificates this repository does not hold.
+
+Two things to know before judging it, both measured in the window rather than
+assumed. The webview is the platform's own, and on macOS 26 WKWebView _does_ offer
+WebGPU — but Panorama's WebGPU path fails there while building its glyph texture,
+so the renderer does what it is built to do and **retries on WebGL**, which is
+what actually draws. WebView2 on Windows is Chromium; WebKitGTK on Linux has no
+WebGPU at all. And **no webview offers WebXR** — the shell says so on startup — so
+a headset is the PWA's job, not this one's.
+
+`npm run desktop` is the interesting one for development: the window is served by
+the development server, so the agent endpoint is on the page's own origin and
+Claude can drive that window today, exactly as it drives a tab.
+
+### Installing it from a browser
+
+A browser can launch the same build in its own window, from a dock, a home screen
+or a headset's library, with no wrapper around it. To try that:
 
 ```bash
 npm run build
@@ -402,12 +448,13 @@ npm run icons          # redraws the icons after a change to the mark
 A service worker is registered **only in a build** — in front of the dev server a
 cache is just a way of being shown a file you have already changed.
 
-### Releasing it
+### Releasing both
 
-`.github/workflows/release.yml` builds the application, drives **that build** in a
-browser — worker registered, manifest and every icon checked, network taken away
-and the application launched again — and publishes the result as a zip on a GitHub
-release. Tag it and the release makes itself:
+`.github/workflows/release.yml` builds the web application, drives **that build**
+in a browser — worker registered, manifest and every icon checked, network taken
+away and the application launched again — publishes it as a zip, and then bundles
+the desktop application on macOS, Windows and Linux runners and adds those to the
+same release. One tag, both artifacts, one gate in front of them:
 
 ```bash
 npm version patch      # or edit package.json; the tag has to match it
@@ -415,9 +462,10 @@ git push --follow-tags
 ```
 
 Run the workflow by hand from the Actions tab to build and check without
-publishing anything. The zip is the whole product: static files to copy anywhere
-an HTTPS origin will serve them, with a `SERVING.md` inside saying what a host has
-to get right.
+publishing anything. The zip is the whole web product: static files to copy
+anywhere an HTTPS origin will serve them, with a `SERVING.md` inside saying what a
+host has to get right. The desktop bundles are built per platform, because a
+bundle can only be made by the operating system it is for.
 
 **Anywhere** is meant literally. The build is relative, so one artifact installs at
 an origin's root, under a repository name, or several directories deep — the
@@ -507,18 +555,28 @@ weak.
 
 Worth knowing before you judge something a bug:
 
-- **WebGPU is preferred but has not been verified on real hardware.** No
+- **WebGPU is preferred and does not yet work anywhere it has been tried.** No
   WebGPU-capable browser was available while this was built, so every renderer
-  screenshot here is WebGL. WebGL is a complete fallback and is taken
-  automatically when the preferred backend cannot draw.
+  screenshot here is WebGL. The first engine that offered it — WKWebView on
+  macOS 26, in the desktop application — refused the glyph texture and produced
+  validation errors on the first frame, and the renderer fell back to WebGL as
+  designed. So the fallback is proven on real hardware and the fast path is
+  proven broken; a graphics bug to chase, not a mystery.
 - **No frame timings on real hardware.** The tests prove the renderer's work is
   proportional to visible cells and independent of database latency; they do not
   prove 60 FPS on a given machine. That is what the performance overlay is for.
 - **Typography, colour and the _feel_ of scrolling need a human at a real
   display.** Everything about them is verified structurally — draw lists, batch
   contents, glyph geometry, camera maths — which is not the same as looking good.
-- **The agent endpoint lives on the development server.** A static build is the
-  application alone; there is no MCP server in it.
+- **The agent endpoint still lives on the development server.** A deployed PWA
+  is the application alone, and the desktop shell does not carry the endpoint
+  yet — so an installed Panorama has no agent, which is the next thing to fix and
+  the reason the desktop shell exists. `npm run desktop` has one, because the
+  window is pointed at the dev server. See
+  [`plans/panorama-agent-local-plan.md`](plans/panorama-agent-local-plan.md).
+- **The desktop application has not been driven by a test.** The suite and the
+  probes cover the web build, which is all of the application; nothing yet
+  launches the bundle and checks that it opened, drew, and could read a table.
 
 ---
 

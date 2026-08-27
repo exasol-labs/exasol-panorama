@@ -4,6 +4,7 @@ import { App } from './App.js';
 import { createWorkspace } from './bootstrap.js';
 import { startAgent } from './panorama/agent.js';
 import { registerShell } from './panorama/install.js';
+import { agentEndpointOrigin, inDesktopShell } from './panorama/shell.js';
 import { injectedStartup } from './panorama/startup.js';
 import './styles.css';
 
@@ -17,20 +18,26 @@ const workspace = createWorkspace();
 /**
  * Attach to the agent interface on the development server.
  *
- * Unconditional on purpose: the endpoint only exists while the dev server is
- * serving this page, so in a build the stream simply never opens — and there is
- * no flag to remember to turn on when an agent is wanted.
+ * Wherever the document came from over HTTP, that is: the endpoint only exists
+ * while the dev server is serving this page, so in a deployed build the stream
+ * simply never opens — and there is no flag to remember to turn on when an agent
+ * is wanted. The desktop application serves its document from its own scheme,
+ * which an event stream refuses outright, so there it is not attempted at all.
+ * See `panorama/shell.ts`.
  */
-const agent = startAgent(workspace);
+const endpoint = agentEndpointOrigin(globalThis.location);
+const agent = endpoint === null ? null : startAgent(workspace, { origin: endpoint });
 (globalThis as unknown as { __panoramaAgent?: unknown }).__panoramaAgent = agent;
 
 /**
  * Installability: the service worker that lets this launch without a tab. Only
  * in a build — in front of a dev server a cache is just a way to be shown a file
- * you have already changed. See `panorama/install.ts`.
+ * you have already changed — and never inside the desktop application, which has
+ * the whole bundle on disk and nothing to gain from a copy of it. See
+ * `panorama/install.ts` and `panorama/shell.ts`.
  */
 void registerShell({
-  enabled: import.meta.env.PROD,
+  enabled: import.meta.env.PROD && !inDesktopShell(),
   // Where this build was told it would be served from; `/` unless a deployment
   // said otherwise. See `panorama/install.ts`.
   base: import.meta.env.BASE_URL,

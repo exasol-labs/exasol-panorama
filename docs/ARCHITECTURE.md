@@ -213,6 +213,17 @@ This is why `packages/renderer` can be tested with no workspace, and
 | `mcp`           | Agent interface: tool catalogue, MCP endpoint, the bridge into the live session                                     | Which client is calling                      |
 | `test-support`  | Deterministic mock sources, virtual clock, pathological relation generators                                         | Production code paths                        |
 | `apps/web`      | Composition: workspace, canvas component, worker bootstrap, agent host, installability                              | —                                            |
+| `apps/desktop`  | Packaging only: a window onto `apps/web`'s build, bundled by Tauri                                                  | Everything. It holds no application code     |
+
+`apps/desktop` deserves a sentence, because a second deployable usually means a
+second place for behaviour to hide and this one must not become that. It is a
+Tauri crate whose `main` opens a window on the `dist` that `apps/web` produces —
+the same bytes the browser install ships. What is packaged twice is one
+application, and the only thing the page asks about which packaging it is in is
+`apps/web/src/panorama/shell.ts`: a service worker belongs in front of a network
+and not in front of a file on disk. When the agent endpoint moves into the shell
+(see `plans/panorama-agent-local-plan.md`), it arrives as a transport under the
+existing bridge, not as a second copy of the protocol.
 
 Inside the composition root, four objects rather than one:
 

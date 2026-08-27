@@ -3,3 +3,7 @@ dist
 coverage
 package-lock.json
 plans
+# The Rust build output and the schemas Tauri generates. Ignored here as well as
+# in git, because Prettier only reads the .gitignore beside this file.
+apps/desktop/src-tauri/target
+apps/desktop/src-tauri/gen

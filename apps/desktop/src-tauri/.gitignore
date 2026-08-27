@@ -1,0 +1,3 @@
+# Build output and the schemas Tauri generates from the configuration.
+/target/
+/gen/schemas/

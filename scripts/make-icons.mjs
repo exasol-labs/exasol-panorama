@@ -22,7 +22,18 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const out = join(dirname(fileURLToPath(import.meta.url)), '../apps/web/public/icons');
+const here = dirname(fileURLToPath(import.meta.url));
+const out = join(here, '../apps/web/public/icons');
+
+/**
+ * Where the desktop bundler's source icon goes.
+ *
+ * `tauri icon` derives the `.icns`, the `.ico` and the sizes each platform's
+ * bundler wants from one square PNG, and it insists on an alpha channel. So the
+ * mark is drawn once more, larger and with a fourth channel, and committed beside
+ * the icons it was turned into — see `apps/desktop/package.json`.
+ */
+const desktopOut = join(here, '../apps/desktop/src-tauri/icons');
 
 /** The application's own palette: accent on the canvas grey. See `styles.css`. */
 const ACCENT = [0x2f, 0x6f, 0xed];
@@ -118,14 +129,20 @@ const chunk = (type, data) => {
   return Buffer.concat([length, body, check]);
 };
 
-/** Truecolour, 8 bits a channel, no interlacing — the simplest PNG there is. */
-const encodePng = (size, pixels) => {
+/**
+ * Truecolour, 8 bits a channel, no interlacing — the simplest PNG there is.
+ *
+ * With or without an alpha channel: a browser is happy either way, and the
+ * desktop bundler refuses a source that has none. The mark is opaque in both
+ * cases, so the extra channel is a constant 255 rather than a second drawing.
+ */
+const encodePng = (size, pixels, channels = 3) => {
   const header = Buffer.alloc(13);
   header.writeUInt32BE(size, 0);
   header.writeUInt32BE(size, 4);
   header[8] = 8;
-  header[9] = 2;
-  const stride = size * 3;
+  header[9] = channels === 4 ? 6 : 2;
+  const stride = size * channels;
   const raw = Buffer.alloc((stride + 1) * size);
   for (let y = 0; y < size; y += 1) {
     // Filter 0: the rows are flat colour, so nothing else earns its complexity.
@@ -149,9 +166,30 @@ const ICONS = [
   { file: 'apple-touch-icon.png', size: 180, inset: 0.06 },
 ];
 
+/** RGB to RGBA, opaque: the desktop bundler will not read a source without it. */
+const opaque = (size, pixels) => {
+  const out = new Uint8Array(size * size * 4);
+  for (let at = 0; at < size * size; at += 1) {
+    out[at * 4] = pixels[at * 3];
+    out[at * 4 + 1] = pixels[at * 3 + 1];
+    out[at * 4 + 2] = pixels[at * 3 + 2];
+    out[at * 4 + 3] = 255;
+  }
+  return out;
+};
+
 mkdirSync(out, { recursive: true });
 for (const { file, size, inset } of ICONS) {
   const png = encodePng(size, draw(size, inset));
   writeFileSync(join(out, file), png);
   console.info(`${file}  ${size}x${size}  ${png.length} bytes`);
 }
+
+/**
+ * The desktop source, at the size every platform's bundler can be derived from.
+ * 1024 because macOS asks for it and nothing asks for more.
+ */
+mkdirSync(desktopOut, { recursive: true });
+const source = encodePng(1024, opaque(1024, draw(1024, 0.06)), 4);
+writeFileSync(join(desktopOut, 'source.png'), source);
+console.info(`source.png  1024x1024  ${source.length} bytes  (desktop bundler source)`);

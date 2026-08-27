@@ -1,21 +1,25 @@
-# Builds the installable application and publishes it as a release.
+# Builds the application, both ways, and publishes them as one release.
 #
-# What comes out is the whole of the product: a directory of static files that a
-# browser can install as an application — on a desktop, a phone, or a headset —
-# and that talks to Exasol over a socket from wherever it is served. There is no
-# server to deploy, which is why the artifact is a zip and not an image.
+# Two artifacts from one build of the web application, because the product is one
+# thing packaged twice:
 #
-# The order here is the point. The release gate is the same `npm run verify` a
-# developer runs, then the application is built *once*, and then the installability
-# probe is pointed at that build rather than making its own. So the bytes that were
-# driven in a browser — worker registered, manifest and icons checked, network
-# taken away, application launched again — are the bytes in the zip.
+#   - the **PWA**: a directory of static files a browser installs as an
+#     application — desktop, phone or headset — talking to Exasol over a socket
+#     from wherever it is served. No server to deploy, which is why it is a zip.
+#   - the **desktop application**: the same `dist`, in a window of its own, with
+#     no browser and nothing to install first. `apps/desktop`, built by Tauri.
 #
-# Deploying it is a copy to any HTTPS origin that serves the directory at its
-# root. The root matters: the service worker's scope is the directory it is served
-# from, and the manifest names `/` as the start URL, so a subpath (GitHub Pages
-# under a repository name, say) needs base-path support this build does not yet
-# have. See plans/panorama-packaging-plan.md.
+# The order is the point. The gate is the same `npm run verify` a developer runs;
+# then the web application is built *once*; then the installability probe is
+# pointed at that build rather than making its own. So the bytes driven in a
+# browser — worker registered, manifest and icons checked, network taken away,
+# application launched again — are the bytes in the zip, and the desktop job
+# rebuilds the same source on each platform's own runner because a bundle can only
+# be made by the operating system it is for.
+#
+# The PWA installs from any HTTPS origin; the build is relative, so an origin's
+# root and a subdirectory are the same artifact (see pages.yml, which proves it by
+# serving under a path before deploying).
 name: release
 
 on:
@@ -32,9 +36,13 @@ permissions:
   contents: write
 
 jobs:
-  release:
-    name: build, check, publish
+  pwa:
+    name: build, check, publish the PWA
     runs-on: ubuntu-latest
+    # The desktop job needs the version, and needs the release to exist before it
+    # can add anything to it.
+    outputs:
+      version: ${{ steps.version.outputs.value }}
     steps:
       - uses: actions/checkout@v4
 
@@ -147,3 +155,124 @@ jobs:
             --title "Panorama ${version}" \
             --notes-file notes.md \
             "${name}.zip" "${name}.zip.sha256"
+
+  # One job per operating system, because a bundle is made by the platform it is
+  # for: an `.app` and a `.dmg` need macOS, an installer needs Windows, and a
+  # `.deb` needs the distribution's own libraries.
+  #
+  # `needs: pwa` is doing two things. It carries the version across, and it means
+  # the release already exists by the time anything here tries to add a file to it
+  # — which also makes the gate (`verify`, and the probe) a gate on these bundles
+  # as well, without running it three more times.
+  desktop:
+    name: desktop application (${{ matrix.label }})
+    needs: pwa
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One platform failing to bundle should not withdraw the others: a release
+      # with two of three desktop artifacts and a known gap beats no release.
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            label: macOS
+            # One bundle for both architectures. The runner is Apple silicon, so
+            # the Intel half has to be asked for explicitly.
+            args: --target universal-apple-darwin
+            targets: aarch64-apple-darwin x86_64-apple-darwin
+          # `latest` rather than a pinned image: the pinned ones are retired on a
+          # schedule, and the only thing that follows from the choice is the glibc
+          # a `.deb` and an AppImage are built against. Pin it the day that
+          # matters, not before.
+          - os: ubuntu-latest
+            label: Linux
+            args: ''
+            targets: ''
+          - os: windows-latest
+            label: Windows
+            args: ''
+            targets: ''
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # WebKitGTK is the webview on Linux, and the rest are what the bundler
+      # needs to write a `.deb` and an AppImage.
+      - name: Linux webview and bundler libraries
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev patchelf file
+
+      # rustup is already on every runner, so there is no third-party action here
+      # to trust with a toolchain.
+      # `shell: bash` because the Windows runner would otherwise use PowerShell,
+      # and rustup is the one step here written as a shell script.
+      - name: Rust
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          # Only where the matrix asks for one: `rustup target add` with no
+          # argument is an error, and most rows want the host's own target.
+          if [ -n "${{ matrix.targets }}" ]; then rustup target add ${{ matrix.targets }}; fi
+
+      - name: Cache the Rust build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            apps/desktop/src-tauri/target
+          key: cargo-${{ matrix.os }}-${{ hashFiles('apps/desktop/src-tauri/Cargo.lock') }}
+          restore-keys: cargo-${{ matrix.os }}-
+
+      - run: npm ci
+
+      # The same web build the PWA ships, made again here rather than passed
+      # between jobs: it is deterministic from the source, and an artifact
+      # download is one more thing to get wrong.
+      - name: Build the web application
+        run: npm run build
+
+      - name: Bundle the desktop application
+        run: npm run build --workspace @panorama/desktop -- ${{ matrix.args }}
+
+      # Collected by searching rather than by naming paths, which differ per
+      # platform and per target triple. Installers only: the unpacked `.app` and
+      # the raw executable are inside them. Spaces out of the names on the way —
+      # the application is called "Exasol Panorama" and a downloaded file should
+      # not be.
+      - name: Collect the bundles
+        shell: bash
+        run: |
+          mkdir -p desktop-artifacts
+          find apps/desktop/src-tauri/target -path '*/release/bundle/*' \
+            \( -name '*.dmg' -o -name '*.deb' -o -name '*.AppImage' -o -name '*.msi' -o -name '*.exe' \) \
+            -print0 |
+            while IFS= read -r -d '' bundle; do
+              cp "$bundle" "desktop-artifacts/$(basename "$bundle" | tr ' ' '-')"
+            done
+          ls -lh desktop-artifacts
+
+      - name: Keep the artifact whatever happens next
+        uses: actions/upload-artifact@v4
+        with:
+          name: exasol-panorama-desktop-${{ needs.pwa.outputs.version }}-${{ matrix.label }}
+          path: desktop-artifacts/*
+          retention-days: 90
+
+      # Added to the release the PWA job created. Unsigned, and the notes say so:
+      # signing and notarisation need certificates this repository does not hold.
+      - name: Add them to the release
+        if: github.ref_type == 'tag' && inputs.dry-run != true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${GITHUB_REF_NAME}" desktop-artifacts/* --clobber
