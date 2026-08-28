@@ -27,6 +27,22 @@ class TestResizeObserver {
 /** The size `getBoundingClientRect` reports, which a resize test changes. */
 let laidOutAs = { width: 1_000, height: 800 };
 
+/**
+ * The listeners a density media query is holding, so a test can move the window
+ * onto another display.
+ *
+ * jsdom has no `matchMedia` at all, so without this the canvas never hears about
+ * a change of display and the code that answers one is never run.
+ */
+let densityListeners: Array<() => void> = [];
+
+/** Moves the window to a display of a different density, and says so. */
+const moveToDisplay = (ratio: number): void => {
+  Object.defineProperty(globalThis, 'devicePixelRatio', { value: ratio, configurable: true });
+  // A copy, because each listener re-arms by replacing itself.
+  for (const listener of [...densityListeners]) listener();
+};
+
 /** jsdom has no 2D context; the glyph atlas only needs a permissive stub. */
 const stubContext = (): unknown => {
   const state: Record<string, unknown> = {
@@ -72,6 +88,18 @@ const withCanvasEnvironment = (): void => {
       y: 0,
     }) as DOMRect;
   prototype['getBoundingClientRect'] = rect;
+  densityListeners = [];
+  Object.defineProperty(globalThis, 'devicePixelRatio', { value: 1, configurable: true });
+  (globalThis as unknown as Record<string, unknown>)['matchMedia'] = (query: string) => ({
+    media: query,
+    matches: true,
+    addEventListener: (_: string, listener: () => void): void => {
+      densityListeners.push(listener);
+    },
+    removeEventListener: (_: string, listener: () => void): void => {
+      densityListeners = densityListeners.filter((one) => one !== listener);
+    },
+  });
   (globalThis.HTMLDivElement.prototype as unknown as Record<string, unknown>)[
     'getBoundingClientRect'
   ] = rect;
@@ -178,6 +206,62 @@ describe('PanoramaCanvas', () => {
     expect(statsRef.current?.frames).toBe(drawn);
 
     view.unmount();
+  });
+
+  /**
+   * A window dragged from a laptop screen to an external monitor changes how many
+   * device pixels a CSS pixel is worth without changing the window's size in CSS
+   * pixels at all — so no resize observer fires, and nothing else would notice.
+   * Left alone, the canvas keeps the old display's resolution: sharp on one
+   * monitor and soft on the other.
+   */
+  it('follows the window onto a display of a different density', async () => {
+    withCanvasEnvironment();
+    const harness = createAppHarness();
+    const statsRef: { current: FrameStats | null } = { current: null };
+    let ready: PanoramaRenderer | null = null;
+    const view = render(
+      <PanoramaCanvas
+        workspace={harness.workspace}
+        statsRef={statsRef}
+        onReady={(renderer) => {
+          ready = renderer;
+        }}
+        engineOptions={{ headless: true }}
+      />,
+    );
+    await waitFor(() => expect(ready).not.toBeNull());
+    const renderer = ready as unknown as PanoramaRenderer;
+    // Watched rather than read back: the headless engine reports a hardware
+    // scaling level of 1 whatever it is told, so what it was *asked* for is the
+    // only evidence there is.
+    const engine = renderer.scene.scene.getEngine();
+    const sized = vi.spyOn(engine, 'setSize');
+    const scaled = vi.spyOn(engine, 'setHardwareScalingLevel');
+    const drawn = statsRef.current?.frames ?? 0;
+
+    act(() => moveToDisplay(2));
+
+    // Two device pixels per CSS pixel: half a CSS pixel each, and a buffer twice
+    // the size of the 1000x800 the window still is. A frame is drawn into it
+    // here rather than left to the loop.
+    expect(scaled).toHaveBeenCalledWith(0.5);
+    expect(sized).toHaveBeenCalledWith(2_000, 1_600);
+    expect(statsRef.current?.frames).toBe(drawn + 1);
+    // The window has not changed size, so what the camera projects and what it
+    // shows are both exactly what they were.
+    expect(renderer.camera.viewport).toEqual({ width: 1_000, height: 800 });
+    expect(renderer.camera.visible).toEqual({ width: 1_000, height: 800 });
+
+    // And back again, re-armed: the query asks about one specific density, so
+    // hearing about a second change means having replaced it after the first.
+    act(() => moveToDisplay(1));
+    expect(scaled).toHaveBeenLastCalledWith(1);
+    expect(sized).toHaveBeenLastCalledWith(1_000, 800);
+
+    view.unmount();
+    // Nothing left listening on a display that is no longer being drawn to.
+    expect(densityListeners).toHaveLength(0);
   });
 
   it('renders frames and reports stats without React state', async () => {
