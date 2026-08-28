@@ -115,6 +115,18 @@ pub struct Local {
     pub deployments: Vec<Deployment>,
 }
 
+impl Local {
+    /// What a machine with no Exasol Personal on it looks like, and so also what
+    /// is said when the question could not be put at all: the dialog is built to
+    /// show this, and showing it is better than showing nothing.
+    pub fn nothing_found() -> Self {
+        Self {
+            installed: false,
+            deployments: Vec::new(),
+        }
+    }
+}
+
 /// How much to find out, because the three answers cost three different amounts.
 ///
 /// - `Names` — the list, and nothing else. Instant, and nothing in it is offered as
@@ -322,11 +334,27 @@ pub fn deployments(detail: Detail) -> Vec<Deployment> {
     flag_conflicts(asked, &live)
 }
 
-/// Whether something accepts a connection at an address.
+/// Whether a *database* answers at an address.
 ///
-/// The whole of Panorama's readiness test, and the only one that answers the
-/// question a person is about to ask by clicking. It says nothing about *whose*
-/// database answered — that is what `flag_conflicts` is for.
+/// Panorama's readiness test, and the only one that answers the question a person
+/// is about to ask by clicking. It says nothing about *whose* database answered —
+/// that is what `flag_conflicts` is for.
+///
+/// It completes a TLS handshake rather than only opening a socket, and the
+/// difference is not theoretical. Exasol Personal's local deployments are a
+/// database inside a VM and a forwarder on loopback in front of it, and the two
+/// fail apart: a forwarder that has lost its route to the guest goes on accepting
+/// connections on `127.0.0.1:8563` and then resets every one of them. A socket
+/// test passes that, so the dialog offered a deployment that could not be opened,
+/// which is the one outcome a readiness test exists to prevent. A handshake does
+/// not pass it — nothing completes TLS but something serving TLS.
+///
+/// The certificate is deliberately not checked, and that is not a hole: nothing is
+/// sent over this connection and nothing is read from it. It exists to find out
+/// whether a database is there, and a local deployment's certificate is
+/// self-signed, so verifying here would report every healthy one as unreachable.
+/// Whether the certificate is *acceptable* is a different question, asked at the
+/// moment of connecting, by `database`, of the person.
 pub fn accepts(url: &str) -> bool {
     let Some((host, port)) = address_of(url) else {
         return false;
@@ -336,7 +364,32 @@ pub fn accepts(url: &str) -> bool {
     let Ok(mut candidates) = (host.as_str(), port).to_socket_addrs() else {
         return false;
     };
-    candidates.any(|address| std::net::TcpStream::connect_timeout(&address, PROBE_LIMIT).is_ok())
+    let Some(stream) = candidates
+        .find_map(|address| std::net::TcpStream::connect_timeout(&address, PROBE_LIMIT).ok())
+    else {
+        return false;
+    };
+    // A handshake with nobody on the other end would otherwise wait for as long as
+    // the socket is willing to, which is minutes.
+    if stream.set_read_timeout(Some(PROBE_LIMIT)).is_err()
+        || stream.set_write_timeout(Some(PROBE_LIMIT)).is_err()
+    {
+        return false;
+    }
+    // `ws://` is not a shape any deployment reports — `address_in` only ever builds
+    // `wss://` — but it is a shape this function can be handed, and an unencrypted
+    // address is answered by the question it can actually answer.
+    if url.starts_with("ws://") {
+        return true;
+    }
+    let Ok(connector) = native_tls::TlsConnector::builder()
+        .danger_accept_invalid_certs(true)
+        .danger_accept_invalid_hostnames(true)
+        .build()
+    else {
+        return false;
+    };
+    connector.connect(&host, stream).is_ok()
 }
 
 /// `wss://host:port` back to the two things a socket needs.
@@ -433,13 +486,22 @@ pub fn live_dirs() -> HashSet<String> {
     found
 }
 
-/// Works out the answer before anybody asks for it.
+/// Works out the answers before anybody asks for them.
 ///
 /// Called as the application starts, in a thread of its own: the page asks about
 /// deployments a few hundred milliseconds later, and an answer already in hand is
 /// the difference between a list that fills in and a list that waits.
-pub fn warm_live_dirs() {
+///
+/// Where the `exasol` command is comes first, and matters most on the launch this
+/// is written for. A window opened from the Dock has a `PATH` with nothing of the
+/// person's own on it, so the search falls through to asking their login shell —
+/// which reads their profile, which is the slowest thing this application does
+/// before it is asked anything. Done here, once, it is done before it is wanted.
+pub fn warm() {
     std::thread::spawn(|| {
+        if let Some(exasol) = find_exasol() {
+            eprintln!("[panorama] exasol command at {}", exasol.to_string_lossy());
+        }
         let found = live_dirs();
         if !found.is_empty() {
             eprintln!(
@@ -793,6 +855,26 @@ mod tests {
         // Port 1 on loopback, which nothing is allowed to bind without privileges
         // and nothing here does.
         assert!(!accepts("wss://127.0.0.1:1"));
+    }
+
+    /// The failure this test exists for was a real morning: a deployment's
+    /// forwarder lost its route to the VM it forwards to, went on accepting every
+    /// connection on `127.0.0.1:8563`, and reset each one the moment TLS started.
+    /// The database behind it was healthy the whole time. A socket test called
+    /// that ready, so the dialog offered a deployment that could not be opened.
+    #[test]
+    fn a_socket_that_accepts_and_says_nothing_is_not_a_database() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback port");
+        let port = listener.local_addr().expect("an address").port();
+        // Exactly what a forwarder with nowhere to forward to does: take the
+        // connection, then drop it without a word.
+        let accepting = std::thread::spawn(move || {
+            for connection in listener.incoming().take(1) {
+                drop(connection);
+            }
+        });
+        assert!(!accepts(&format!("wss://127.0.0.1:{port}")));
+        let _ = accepting.join();
     }
 
     #[test]

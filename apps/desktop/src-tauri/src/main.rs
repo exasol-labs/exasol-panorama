@@ -50,23 +50,75 @@ An agent is pointed at the second form; nothing else has to be installed, and
 there is no port to agree on — a running window writes where it is to
 ~/.panorama/sessions.";
 
+/// Runs work that waits, somewhere that is not the main thread.
+///
+/// A synchronous `#[tauri::command]` runs on the main thread, and the main thread
+/// is the one drawing the window: anything it waits for is an application that has
+/// stopped responding and, after a moment, a spinning cursor. Every command below
+/// waits for something — a process to start and answer, a login shell to read a
+/// person's profile, a socket to accept or refuse a connection — so none of them
+/// runs there.
+///
+/// `spawn_blocking` rather than `spawn`, because the async runtime's worker
+/// threads also carry the database socket and the agent endpoint. An `exasol
+/// status` against an unreachable database has been measured taking minutes; that
+/// belongs on a thread whose only job is to wait, not on one somebody's query is
+/// sharing.
+///
+/// `None` only if the work panicked, which is a bug rather than a condition — but
+/// a bug that used to take the window with it, and now costs one answer. Each
+/// caller says what it says when it could not find out.
+///
+/// The commands that stay synchronous do so because they wait for nothing:
+/// `report_timing` and `database_proxy`, and the agent's four, take a lock or a
+/// counter and return. Moving those to another thread would buy a scheduling hop
+/// and nothing else.
+async fn off_main<T: Send + 'static>(
+    what: &str,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Option<T> {
+    match tauri::async_runtime::spawn_blocking(work).await {
+        Ok(answer) => Some(answer),
+        Err(problem) => {
+            eprintln!("[panorama] {what} did not finish: {problem}");
+            None
+        }
+    }
+}
+
 /// What Claude there is on this machine, and whether it knows about us.
 #[tauri::command]
-fn claude_status(state: tauri::State<'_, Arc<agent::AgentState>>) -> claude::Status {
-    claude::status(state.status().mcp_url())
+async fn claude_status(app: tauri::AppHandle) -> claude::Status {
+    // Read here, where it is a lock and a string, rather than sent to the thread:
+    // `State` borrows from the handle, and nothing borrowed may cross an await.
+    let url = {
+        let state = app.state::<Arc<agent::AgentState>>();
+        state.status().mcp_url()
+    };
+    let asked = url.clone();
+    off_main("reading Claude's status", move || claude::status(asked))
+        .await
+        .unwrap_or_else(|| claude::Status::nothing_found(url))
 }
 
 /// Tells Claude about this application — the executable, not a port, so the
 /// pairing does not go stale when the application moves or the port changes.
 #[tauri::command]
-fn claude_pair() -> Vec<claude::PairOutcome> {
-    claude::pair()
+async fn claude_pair() -> Vec<claude::PairOutcome> {
+    off_main("pairing with Claude", claude::pair)
+        .await
+        .unwrap_or_default()
 }
 
 /// Opens Claude: the application where there is one, the command line otherwise.
 #[tauri::command]
-fn claude_open(prefer: Option<String>) -> claude::OpenOutcome {
-    claude::open(prefer.as_deref())
+async fn claude_open(prefer: Option<String>) -> claude::OpenOutcome {
+    off_main("opening Claude", move || claude::open(prefer.as_deref()))
+        .await
+        .unwrap_or_else(|| claude::OpenOutcome {
+            opened: None,
+            detail: "Panorama could not finish opening Claude.".to_string(),
+        })
 }
 
 /// The databases Exasol Personal manages, from the `exasol` command.
@@ -76,7 +128,14 @@ fn claude_open(prefer: Option<String>) -> claude::OpenOutcome {
 /// which is the slow and truthful form; without it this answers instantly with the
 /// names and nothing offered as connectable.
 #[tauri::command]
-fn exasol_deployments(detail: Option<String>) -> exasol::Local {
+async fn exasol_deployments(detail: Option<String>) -> exasol::Local {
+    off_main("listing deployments", move || deployments_now(detail))
+        .await
+        .unwrap_or_else(exasol::Local::nothing_found)
+}
+
+/// The body of the command above, on whichever thread it was given.
+fn deployments_now(detail: Option<String>) -> exasol::Local {
     let asked = exasol::Detail::from_name(detail.as_deref());
     let here = exasol::local(asked);
     // Said out loud, because the alternative is a section that is silently absent:
@@ -105,8 +164,13 @@ fn exasol_deployments(detail: Option<String>) -> exasol::Local {
 /// read now rather than when the list was drawn, and goes straight into a
 /// connection.
 #[tauri::command]
-fn exasol_deployment_credentials(name: String) -> Result<exasol::Credentials, String> {
-    exasol::credentials(&name)
+async fn exasol_deployment_credentials(name: String) -> Result<exasol::Credentials, String> {
+    let asked = name.clone();
+    off_main("reading a deployment's password", move || {
+        exasol::credentials(&asked)
+    })
+    .await
+    .unwrap_or_else(|| Err(format!("Panorama could not read the password for {name}.")))
 }
 
 /// How long something in the page took, measured from when this process started.
@@ -210,8 +274,9 @@ fn window() {
             // is what a browser can do, so the failure is a lost capability rather
             // than a broken application.
             // Worked out before the page asks, because the answer takes about a
-            // second and the page asks a few hundred milliseconds from now.
-            exasol::warm_live_dirs();
+            // second and the page asks a few hundred milliseconds from now. In a
+            // thread of its own — see `exasol::warm`.
+            exasol::warm();
             match database::start(&app.handle().clone(), socket_token) {
                 Ok(proxy) => {
                     eprintln!(

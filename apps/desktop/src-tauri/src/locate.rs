@@ -13,9 +13,19 @@
 //! Three steps, cheapest first: the path we have, the places these things are
 //! usually put, and then the login shell, which is the only one that is
 //! authoritative and the only one that costs a process.
+//!
+//! That third step is the expensive one, and on a Dock launch it is the step that
+//! answers — which is why the answer is remembered. A login shell reads the files
+//! that configure it, and on a machine with a well-furnished profile that is not a
+//! few milliseconds; asking three times because the connection dialog asks three
+//! questions is three times too many. Remembered briefly rather than for good, so
+//! that installing the tool while Panorama is open is noticed.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 /// Whether a path is something this machine would run.
 #[cfg(unix)]
@@ -120,8 +130,54 @@ fn from_login_shell(program: &str) -> Option<PathBuf> {
     executable(&path).then_some(path)
 }
 
+/// How long a lookup is remembered.
+///
+/// Long enough that a burst of questions costs one answer, short enough that
+/// somebody who installs the tool and comes back to the dialog is not told for
+/// the rest of the session that they have not.
+const MEMORY: Duration = Duration::from_secs(60);
+
+type Remembered = Mutex<HashMap<String, (Instant, Option<PathBuf>)>>;
+
+fn memory() -> &'static Remembered {
+    static MEMORY: OnceLock<Remembered> = OnceLock::new();
+    MEMORY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// The answer already given, if it is young enough to give again.
+///
+/// A *fruitless* search is remembered too, and that is the point rather than an
+/// oversight: not finding a tool is what costs the login shell, because it is the
+/// only outcome that has to try all three steps.
+fn recall(
+    seen: &HashMap<String, (Instant, Option<PathBuf>)>,
+    program: &str,
+    now: Instant,
+) -> Option<Option<PathBuf>> {
+    seen.get(program)
+        .filter(|(asked, _)| now.duration_since(*asked) < MEMORY)
+        .map(|(_, found)| found.clone())
+}
+
 /// The program, wherever it is: `PATH`, then the places named, then the shell.
+///
+/// Remembered for `MEMORY`, because the last of those three costs a login shell.
 pub fn find(program: &str, likely: &[PathBuf]) -> Option<PathBuf> {
+    if let Some(found) = memory()
+        .lock()
+        .ok()
+        .and_then(|seen| recall(&seen, program, Instant::now()))
+    {
+        return found;
+    }
+    let found = look(program, likely);
+    if let Ok(mut seen) = memory().lock() {
+        seen.insert(program.to_string(), (Instant::now(), found.clone()));
+    }
+    found
+}
+
+fn look(program: &str, likely: &[PathBuf]) -> Option<PathBuf> {
     if let Some(found) = on_path(program) {
         return Some(found);
     }
@@ -197,5 +253,45 @@ mod tests {
     #[test]
     fn a_directory_is_not_a_program() {
         assert!(!executable(&home()));
+    }
+
+    /// The connection dialog asks three questions in a row and each one needs to
+    /// know where the tool is. Asking the login shell three times is three times a
+    /// person's profile is read, which on a Dock launch is the slowest thing this
+    /// application does — and the fruitless answer is the expensive one, because
+    /// it is the only one that had to try every step.
+    #[test]
+    fn remembers_an_answer_rather_than_asking_the_shell_again() {
+        let now = Instant::now();
+        let mut seen = HashMap::new();
+        seen.insert(
+            "exasol".to_string(),
+            (now, Some(PathBuf::from("/opt/homebrew/bin/exasol"))),
+        );
+        seen.insert("claude".to_string(), (now, None));
+
+        assert_eq!(
+            recall(&seen, "exasol", now),
+            Some(Some(PathBuf::from("/opt/homebrew/bin/exasol")))
+        );
+        // Remembered as "not here", rather than asked about again.
+        assert_eq!(recall(&seen, "claude", now), Some(None));
+        // Never asked about at all is not the same as known to be absent.
+        assert_eq!(recall(&seen, "psql", now), None);
+    }
+
+    /// Briefly, though: somebody who installs the tool and comes back to the
+    /// dialog must not be told for the rest of the session that they have not.
+    #[test]
+    fn forgets_an_answer_old_enough_to_be_wrong() {
+        let now = Instant::now();
+        let stale = now.checked_sub(MEMORY).expect("a machine that has been up");
+        let mut seen = HashMap::new();
+        seen.insert("exasol".to_string(), (stale, None));
+        assert_eq!(recall(&seen, "exasol", now), None);
+
+        let fresh = stale.checked_add(Duration::from_secs(1)).expect("later");
+        seen.insert("exasol".to_string(), (fresh, None));
+        assert_eq!(recall(&seen, "exasol", now), Some(None));
     }
 }

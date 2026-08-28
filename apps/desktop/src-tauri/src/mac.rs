@@ -27,23 +27,35 @@
 //! its own schedule, so the walk was both overwritten and running at the one
 //! moment the web process most needed the main thread. It is gone.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use objc2::rc::Retained;
 use objc2_app_kit::{NSView, NSViewLayerContentsPlacement};
 use tauri::WebviewWindow;
 
 /// Stops the window's contents being approximated during a live resize.
 ///
+/// Called when the window opens and again when the page reports a frame, because
+/// the view above the webview is not necessarily in place at the first of those.
+/// Said out loud only the first time: a property that did not take is a warp that
+/// comes back, and one line is enough to tell that from a view that was never
+/// found. The rest would be noise in a log somebody is reading for timings.
+///
 /// Asynchronous, like everything that has to run on the main thread with the
 /// webview in hand; a failure is logged rather than returned, because a window
 /// that resizes badly is still a window.
 pub fn hold_contents_still(window: &WebviewWindow) {
-    let asked = window.with_webview(|platform| {
+    static SAID: AtomicBool = AtomicBool::new(false);
+    let announce = !SAID.swap(true, Ordering::Relaxed);
+    let asked = window.with_webview(move |platform| {
         // SAFETY: `inner()` is the window's WKWebView, which is an NSView, and
         // Tauri runs this closure on the main thread with the webview alive.
         let webview: Option<Retained<NSView>> =
             unsafe { Retained::retain(platform.inner().cast::<NSView>()) };
         let Some(webview) = webview else {
-            eprintln!("[panorama] no webview to hold still");
+            if announce {
+                eprintln!("[panorama] no webview to hold still");
+            }
             return;
         };
 
@@ -56,21 +68,26 @@ pub fn hold_contents_still(window: &WebviewWindow) {
         }
 
         let Some(pane) = webview.window() else {
-            eprintln!("[panorama] anchored {views} view(s), but found no window");
+            if announce {
+                eprintln!("[panorama] anchored {views} view(s), but found no window");
+            }
             return;
         };
         pane.setPreservesContentDuringLiveResize(false);
 
-        // Read back rather than assume: a property that did not take is a warp
-        // that comes back, and this is the only evidence there is until somebody
-        // drags the window.
-        eprintln!(
-            "[panorama] live resize: {views} view(s) anchored top-left ({}), content preserved {}",
-            webview.layerContentsPlacement().0,
-            pane.preservesContentDuringLiveResize()
-        );
+        // Read back rather than assume: this is the only evidence there is until
+        // somebody drags the window.
+        if announce {
+            eprintln!(
+                "[panorama] live resize: {views} view(s) anchored top-left ({}), content preserved {}",
+                webview.layerContentsPlacement().0,
+                pane.preservesContentDuringLiveResize()
+            );
+        }
     });
     if let Err(problem) = asked {
-        eprintln!("[panorama] could not reach the webview: {problem}");
+        if announce {
+            eprintln!("[panorama] could not reach the webview: {problem}");
+        }
     }
 }

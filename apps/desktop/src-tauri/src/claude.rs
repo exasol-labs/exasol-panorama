@@ -68,6 +68,30 @@ pub struct OpenOutcome {
     pub detail: String,
 }
 
+impl Status {
+    /// What a machine with no Claude on it looks like, and so also what is said
+    /// when the question could not be put at all. The two things known without
+    /// asking anything — which platform this is, and where the agent endpoint is —
+    /// are still true and still said.
+    pub fn nothing_found(mcp_url: String) -> Self {
+        Self {
+            platform: std::env::consts::OS.to_string(),
+            cli: CliStatus {
+                found: false,
+                path: None,
+                paired: false,
+            },
+            desktop: DesktopStatus {
+                found: false,
+                config_path: String::new(),
+                paired: false,
+            },
+            can_open_terminal: cfg!(target_os = "macos"),
+            mcp_url,
+        }
+    }
+}
+
 /// Where Claude Code might be, beyond the usual places: its own installer puts it
 /// here.
 fn likely_paths() -> Vec<PathBuf> {
