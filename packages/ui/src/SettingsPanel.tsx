@@ -44,6 +44,14 @@ export interface SettingsPanelProps {
   readonly act: <TValue>(path: string, body: unknown) => Promise<TValue | null>;
   /** For the clipboard, which the shell owns because a page may not have one. */
   readonly onCopy?: (text: string) => void;
+  /**
+   * What this build calls itself.
+   *
+   * Shown whether or not the agent interface is there, because "which Panorama
+   * am I running" is a question in a build as much as in development — and it is
+   * the question somebody asks first when told a newer one is ready.
+   */
+  readonly version?: string | undefined;
 }
 
 const GEAR = (
@@ -77,6 +85,7 @@ export const SettingsPanel = ({
   load,
   act,
   onCopy,
+  version,
 }: SettingsPanelProps): React.JSX.Element => {
   const [health, setHealth] = useState<AgentHealth | null>(null);
   const [claude, setClaude] = useState<ClaudeStatusView | null>(null);
@@ -143,6 +152,13 @@ export const SettingsPanel = ({
           {GEAR}
         </button>
       </div>
+
+      {!open || version === undefined || version === '' ? null : (
+        <div className="pn-settings__row">
+          <span className="pn-settings__label">Version</span>
+          <code className="pn-settings__value">{version}</code>
+        </div>
+      )}
 
       {!open ? null : !available ? (
         <p className="pn-hint">

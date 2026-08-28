@@ -6,3 +6,9 @@ declare module '*.css';
  * A production build is given `null`, so no secret can reach a built artifact.
  */
 declare const __PANORAMA_STARTUP__: unknown;
+
+/**
+ * What this build calls itself, replaced at build time from the workspace root's
+ * manifest. See `panorama/version.ts`.
+ */
+declare const __PANORAMA_VERSION__: string;

@@ -144,6 +144,36 @@ body {
  * Closed it costs one line, which is what a settings panel should cost when
  * nobody is looking at it.
  */
+/*
+ * A new version is ready. Deliberately the quietest thing in the sidebar: an
+ * update that installs itself when the application closes is not news anybody
+ * has to act on, and a notice that shouts about it would be a worse interruption
+ * than the update it is describing. See `UpdateNotice`.
+ */
+.pn-update {
+  display: flex;
+  gap: 7px;
+  align-items: baseline;
+  margin: 0;
+  padding: 7px 9px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--pn-muted);
+  background: var(--pn-panel);
+  border: 1px solid var(--pn-border);
+  border-radius: 5px;
+}
+
+/* Something to catch the eye once, at a size that cannot compete with the data. */
+.pn-update__dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  background: var(--pn-accent);
+  border-radius: 50%;
+  transform: translateY(-1px);
+}
+
 .pn-settings__gear {
   display: flex;
   padding: 2px;

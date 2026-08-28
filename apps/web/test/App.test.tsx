@@ -66,6 +66,121 @@ const connect = async (): Promise<void> => {
   );
 };
 
+/**
+ * A service worker holding a newly installed build, waiting for the windows to
+ * close. jsdom has none, so it is stood up here: without it the path from "a new
+ * version is waiting" to the line that says so is never run.
+ */
+const withWaitingWorker = (
+  parts: { controller?: unknown; waiting?: unknown; version?: string | null } = {},
+): void => {
+  const registration = {
+    waiting: 'waiting' in parts ? parts.waiting : { state: 'installed', addEventListener() {} },
+    installing: null,
+    addEventListener: () => undefined,
+    update: async () => undefined,
+  };
+  vi.stubGlobal('navigator', {
+    ...navigator,
+    serviceWorker: {
+      controller: 'controller' in parts ? parts.controller : {},
+      ready: Promise.resolve(registration),
+    },
+  });
+  // `version: null` stands for a deployment that answers without naming itself,
+  // which is different from one not being asked for — hence `in` rather than `??`.
+  const named = 'version' in parts ? parts.version : '9.9.9';
+  vi.stubGlobal(
+    'fetch',
+    async () => new Response(JSON.stringify({ version: named }), { status: 200 }),
+  );
+};
+
+describe('a new version waiting to be used', () => {
+  /**
+   * The update installs itself when the application is closed, so the only thing
+   * on screen is a sentence — no dialog, no button, nothing that could take the
+   * canvas away mid-query. See `plans/panorama-live-updates-plan.md`.
+   */
+  it('is mentioned, by name, and asks for nothing', async () => {
+    withWaitingWorker({ version: '0.2.0' });
+    const harness = createAppHarness();
+    render(<App workspace={harness.workspace} />);
+
+    const notice = await screen.findByRole('status');
+    expect(notice.textContent).toContain('Panorama 0.2.0 is ready');
+    expect(notice.textContent).toContain('close and reopen');
+    expect(within(notice).queryByRole('button')).toBeNull();
+  });
+
+  it('says nothing when there is nothing waiting', async () => {
+    withWaitingWorker({ waiting: null });
+    const harness = createAppHarness();
+    render(<App workspace={harness.workspace} />);
+    await waitFor(() => expect(screen.getByLabelText('Database URL')).toBeDefined());
+    expect(screen.queryByRole('status')).toBeNull();
+  });
+
+  /**
+   * A first install has a worker reaching `installed` too, and nothing is in
+   * charge of the page yet. Telling somebody who has just opened Panorama that a
+   * new version is ready would be nonsense.
+   */
+  it('says nothing on a first install', async () => {
+    withWaitingWorker({ controller: null });
+    const harness = createAppHarness();
+    render(<App workspace={harness.workspace} />);
+    await waitFor(() => expect(screen.getByLabelText('Database URL')).toBeDefined());
+    expect(screen.queryByRole('status')).toBeNull();
+  });
+
+  it('says something useful when the deployment will not say what it is called', async () => {
+    withWaitingWorker({ version: null });
+    const harness = createAppHarness();
+    render(<App workspace={harness.workspace} />);
+    const notice = await screen.findByRole('status');
+    expect(notice.textContent).toContain('A new version is ready');
+  });
+
+  /**
+   * A page that never registers a worker — development, or a browser that
+   * refused one — waits for an active worker that is never going to arrive, and
+   * that is the right thing to do rather than a leak worth avoiding.
+   */
+  it('says nothing where no worker ever becomes active', async () => {
+    vi.stubGlobal('navigator', {
+      ...navigator,
+      serviceWorker: { controller: null, ready: new Promise(() => undefined) },
+    });
+    const harness = createAppHarness();
+    render(<App workspace={harness.workspace} />);
+    await waitFor(() => expect(screen.getByLabelText('Database URL')).toBeDefined());
+    expect(screen.queryByRole('status')).toBeNull();
+  });
+
+  /**
+   * Asking the browser for its registration is a promise, and a page can be gone
+   * before it settles — a StrictMode remount does exactly that. Nothing should be
+   * left watching on behalf of a page that no longer exists.
+   */
+  it('starts nothing for a page that has already gone', async () => {
+    withWaitingWorker();
+    const harness = createAppHarness();
+    const view = render(<App workspace={harness.workspace} />);
+    view.unmount();
+    await waitFor(() => expect(screen.queryByRole('status')).toBeNull());
+  });
+
+  /** A browser with no service workers at all is not a browser with a problem. */
+  it('says nothing where the browser has no service workers', async () => {
+    vi.stubGlobal('navigator', { ...navigator, serviceWorker: undefined });
+    const harness = createAppHarness();
+    render(<App workspace={harness.workspace} />);
+    await waitFor(() => expect(screen.getByLabelText('Database URL')).toBeDefined());
+    expect(screen.queryByRole('status')).toBeNull();
+  });
+});
+
 describe('App', () => {
   it('connects and reveals the explorer', async () => {
     const harness = createAppHarness();

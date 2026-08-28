@@ -198,7 +198,41 @@ headset is actually on offer, so it stays hidden on the desktop — if it is mis
 in the headset, the page is not secure or the session was refused, and the notice
 says which.
 
-## 7. Releasing
+## 7. The updater's signing key
+
+Panorama's desktop application updates itself, and `tauri-plugin-updater` verifies
+every update with a **minisign** signature. That check cannot be turned off, which
+makes one keypair the most consequential secret in this repository.
+
+- The **public** half is committed, in `tauri.conf.json` under
+  `plugins.updater.pubkey`. It is shipped inside every installed application and
+  is what each of them checks an update against.
+- The **private** half and its password are not in the repository and never can
+  be — `.gitignore` refuses `*.key` — and live in two places only: escrow, and the
+  repository's secrets, as `TAURI_SIGNING_PRIVATE_KEY` and
+  `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
+
+**Losing the private key cannot be recovered from.** Not "until we rotate it":
+every already-installed copy verifies against the public key compiled into it, and
+no new key can produce a signature those copies will accept. The only remedy would
+be asking every user to download a new application by hand. The password is a
+second factor rather than a second copy of the same risk — it means the repository
+secret leaking is not on its own enough to sign an update — and it has to be
+escrowed alongside the key, because either without the other is useless.
+
+This is separate from Apple code signing. The six `APPLE_*` secrets in
+`release.yml` are about Gatekeeper trusting the application; this is about an
+installed Panorama trusting the bytes of its own update. Neither substitutes for
+the other.
+
+To generate a replacement — which is only ever right before anything has been
+released with the current one:
+
+```bash
+npx tauri signer generate --write-keys ~/panorama-updater.key
+```
+
+## 8. Releasing
 
 [`.github/workflows/release.yml`](../.github/workflows/release.yml) builds the web
 application, drives **that build** in a browser — worker registered, manifest and
@@ -228,7 +262,7 @@ repository's GitHub Pages site on every change to the application: it builds,
 drives the built files **mounted under a path** to prove the relative build
 survives one, then pushes them to `gh-pages`.
 
-## 8. The shape of it
+## 9. The shape of it
 
 ```
                    Panorama Core  (world model, commands, history DAG)

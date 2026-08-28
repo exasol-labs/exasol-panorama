@@ -8,6 +8,7 @@ import {
   PerformanceOverlay,
   SampleDataPanel,
   SchemaExplorer,
+  UpdateNotice,
 } from '@panorama/ui';
 import type { ConnectionRequest, ConnectionStatus, SchemaListing } from '@panorama/ui';
 import type { ForeignKeyFollow, FrameStats, PanoramaRenderer } from '@panorama/renderer';
@@ -29,6 +30,8 @@ import { describeFormat } from '@panorama/export';
 import type { ExportJob } from './panorama/export-jobs.js';
 import type { Workspace } from './panorama/workspace.js';
 import type { StartupConnection } from './panorama/startup.js';
+import { watchForUpdate } from './panorama/updates.js';
+import { appVersion, fetchVersion } from './panorama/version.js';
 
 /**
  * The application shell.
@@ -110,6 +113,59 @@ export const App = ({
   const [notice, setNotice] = useState<string | null>(null);
   const [exports, setExports] = useState<readonly ExportJob[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  /**
+   * The version waiting to be used, or `null` while this is the newest there is.
+   * A string rather than a flag because the notice names it, and `''` is the
+   * honest answer when a new worker is waiting but the deployment would not say
+   * what to call it.
+   */
+  const [updateReady, setUpdateReady] = useState<string | null>(null);
+
+  /**
+   * Watches for a service worker that has installed a new build and is waiting
+   * for every window to close before it takes over — which is Panorama's whole
+   * update policy on the web, and is silent without this. See
+   * `panorama/updates.ts`.
+   *
+   * Only where there is a worker at all: a development page registers none, and
+   * the desktop application has the bundle on disk and updates itself another
+   * way.
+   */
+  useEffect(() => {
+    const workers = navigator.serviceWorker;
+    if (workers === undefined) return;
+    let stop: (() => void) | null = null;
+    let live = true;
+    // `ready` rather than `getRegistration()`, and the difference is a race that
+    // cost an evening: registration is started by `main.tsx` and is asynchronous,
+    // so on a first visit `getRegistration()` resolves to nothing, this effect
+    // gives up, and nobody is listening when a worker does appear. `ready`
+    // resolves once there is an active one, whenever that turns out to be.
+    void workers.ready.then((registration) => {
+      // Gone already, if the page was unmounted before this resolved: there is
+      // nothing to stop, because nothing was started.
+      if (!live) return;
+      stop = watchForUpdate({
+        registration,
+        // Asked at the moment an update is noticed, not now: on a first visit
+        // `controller` is still null when `ready` resolves — `clients.claim()`
+        // sets it a beat later — so a snapshot taken here says "first install"
+        // forever, and no update is ever reported.
+        controlled: () => workers.controller !== null,
+        onWaiting: () => {
+          // Asked for only once something is actually waiting, so an ordinary
+          // session never makes the request at all.
+          void fetchVersion(import.meta.env.BASE_URL, globalThis.location.href).then((version) => {
+            if (live) setUpdateReady(version ?? '');
+          });
+        },
+      });
+    });
+    return (): void => {
+      live = false;
+      stop?.();
+    };
+  }, []);
 
   const engine = useMemo<CreateEngineOptions>(() => {
     if (engineOptions !== undefined) return engineOptions;
@@ -543,7 +599,11 @@ export const App = ({
           load={loadSetting}
           act={actSetting}
           onCopy={copyText}
+          version={appVersion()}
         />
+        {updateReady === null ? null : (
+          <UpdateNotice version={updateReady === '' ? null : updateReady} applies="on-reopen" />
+        )}
         {xrAvailable ? (
           <button type="button" className="pn-xr" onClick={enterXR}>
             Enter XR
@@ -573,6 +633,7 @@ export const App = ({
       xrAvailable,
       enterXR,
       notice,
+      updateReady,
       samples,
       openSample,
       exportListings,

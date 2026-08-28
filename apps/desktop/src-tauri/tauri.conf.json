@@ -47,5 +47,16 @@
         "depends": []
       }
     }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEJBNDkxNkMzRUEwN0M1QTYKUldTbXhRZnF3eFpKdXN5aUNuMXUrdlpsVk1FbDIrYUpqRmxiMjFuNjJjQWl4QVJZeTNmUmE5NFgK",
+      "endpoints": [
+        "https://github.com/exasol-labs/exasol-panorama/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

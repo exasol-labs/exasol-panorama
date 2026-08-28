@@ -27,6 +27,7 @@ const panel = (
     readonly claude?: unknown;
     readonly answer?: unknown;
     readonly open?: boolean;
+    readonly version?: string;
   } = {},
 ): {
   load: ReturnType<typeof vi.fn>;
@@ -59,6 +60,7 @@ const panel = (
       load={load as never}
       act={doIt as never}
       onCopy={(text) => copied.push(text)}
+      {...(options.version === undefined ? {} : { version: options.version })}
     />,
   );
   return {
@@ -230,6 +232,24 @@ describe('SettingsPanel', () => {
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'Open Claude app' })).toBeDefined(),
     );
+  });
+
+  /**
+   * Which Panorama am I running — the question somebody asks the moment they are
+   * told a newer one is ready. Shown whether or not the agent interface is there,
+   * because it is as true in a build as in development.
+   */
+  it('says which version this is', async () => {
+    panel({ version: '0.1.0' });
+    await waitFor(() => expect(screen.getByText('Version')).toBeDefined());
+    expect(screen.getByText('0.1.0')).toBeDefined();
+  });
+
+  /** Nothing said is a missing row, not a row saying nothing. */
+  it('says nothing about a version it was not given', async () => {
+    panel({});
+    await waitFor(() => expect(screen.getByText('Agent endpoint')).toBeDefined());
+    expect(screen.queryByText('Version')).toBeNull();
   });
 
   it('reports a pairing that is already done', async () => {

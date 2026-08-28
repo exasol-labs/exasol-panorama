@@ -49,16 +49,26 @@ const handlers = shellCacheHandlers({
 });
 
 /**
- * Take over immediately, in both directions.
+ * Installed, and then it waits.
  *
- * The alternative — waiting for every tab to close — is the right default for an
- * application whose pages hold state a new version might not understand. Here the
- * worker only decides where bytes come from, the pages hold their state in the
- * document itself, and an install that does nothing until the next launch is an
- * install that looks broken.
+ * `skipWaiting()` is deliberately not called, and that omission is the whole of
+ * Panorama's update policy on the web. A worker that skips waiting takes control
+ * of pages that are already open, which means a new version arrives in the middle
+ * of somebody's work — at a moment chosen by whoever deployed it rather than by
+ * the person reading a query. Left to wait, it activates when the last window of
+ * the application closes, so the new version is what opens next time and never
+ * what interrupts this time.
+ *
+ * The page notices the waiting worker and says so, quietly, rather than leaving
+ * an update to be discovered by accident — see `panorama/updates.ts`.
+ *
+ * A *first* install still activates at once, because there is no worker to wait
+ * behind. That is what `clients.claim()` below is for, and it is the case where
+ * taking over immediately is right: without it an installed application would not
+ * work offline until its second launch.
  */
 scope.addEventListener('install', (event) => {
-  event.waitUntil(handlers.install().then(() => scope.skipWaiting()));
+  event.waitUntil(handlers.install());
 });
 
 scope.addEventListener('activate', (event) => {

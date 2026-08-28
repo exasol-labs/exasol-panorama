@@ -5,5 +5,6 @@ export * from './PerformanceOverlay.js';
 export * from './SampleDataPanel.js';
 export * from './SchemaExplorer.js';
 export * from './SettingsPanel.js';
+export * from './UpdateNotice.js';
 export * from './format.js';
 export * from './types.js';

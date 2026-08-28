@@ -1,10 +1,20 @@
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import react from '@vitejs/plugin-react';
 import { type Plugin, defineConfig } from 'vite';
 import { panoramaAgent } from '../../packages/mcp/src/vite-plugin.js';
+import { SERVICE_WORKER_FILE } from './src/panorama/install.js';
 import { readStartupConnection } from './src/panorama/startup.js';
+/*
+ * The workspace root's manifest, which is where the version lives — the release
+ * workflow reads that one to check the tag agrees with it, so it is the number
+ * the application has to call itself. Imported rather than read off disk: this
+ * file is evaluated by a test as well as by Vite, and `import.meta.url` is not a
+ * `file:` URL there.
+ */
+import workspaceManifest from '../../package.json' with { type: 'json' };
 
 const workspacePackage = (name: string): string =>
   fileURLToPath(new URL(`../../packages/${name}/src/index.ts`, import.meta.url));
@@ -71,8 +81,34 @@ const BASE = process.env['PANORAMA_BASE'] ?? './';
  * are five times the size of the application and are for a debugger with a
  * network.
  */
-const shellAssets = (): Plugin => ({
-  name: 'panorama-shell-assets',
+/**
+ * The three things a build has to tell the shell about itself.
+ *
+ * One plugin because they are one fact — what this build *is* — expressed three
+ * ways, and because two of them are derived from the third.
+ *
+ * 1. `shell-assets.json`, the list the service worker precaches at install time.
+ *    Emitted from the bundle rather than by walking the output directory, so it
+ *    can only ever name files this build actually made. Source maps are left out:
+ *    they are five times the size of the application and are for a debugger with
+ *    a network.
+ * 2. `version.json`, so a running page can ask what a *newer* deployment calls
+ *    itself. The number is compiled in as well, but a page cannot learn that from
+ *    a constant baked into the older build. Kept out of the precache list on
+ *    purpose: a cached answer to "what is the new version" is the one answer that
+ *    is always wrong.
+ * 3. A build stamp appended to `service-worker.js`, and this one is load-bearing
+ *    in a way that is easy to miss. **A browser only notices a new worker when
+ *    the worker file's bytes change.** This one lists nothing and hashes nothing
+ *    — it fetches the asset list at install time — so it was byte-identical
+ *    across deployments, and a browser therefore saw no update, never installed
+ *    one, never left one waiting, and never gave the page anything to report.
+ *    Panorama's whole update story on the web rests on that file changing, so it
+ *    is made to change exactly when there is something new to install: when the
+ *    set of built assets differs, or when the version does.
+ */
+const shellFiles = (version: string): Plugin => ({
+  name: 'panorama-shell-files',
   apply: 'build',
   generateBundle(_options, bundle) {
     const files = Object.keys(bundle)
@@ -85,6 +121,21 @@ const shellAssets = (): Plugin => ({
       fileName: 'shell-assets.json',
       source: `${JSON.stringify(files, null, 2)}\n`,
     });
+    this.emitFile({
+      type: 'asset',
+      fileName: 'version.json',
+      source: `${JSON.stringify({ version }, null, 2)}\n`,
+    });
+
+    const worker = bundle[`${SERVICE_WORKER_FILE}`];
+    if (worker !== undefined && worker.type === 'chunk') {
+      const stamp = createHash('sha256')
+        .update(version)
+        .update(files.join('\n'))
+        .digest('hex')
+        .slice(0, 12);
+      worker.code += `\n// panorama build ${stamp}\n`;
+    }
   },
 });
 
@@ -103,7 +154,7 @@ export default defineConfig(({ command }) => ({
   plugins: [
     react(),
     panoramaAgent({ port: DEV_PORT, onLog: (message) => console.info(`[agent] ${message}`) }),
-    shellAssets(),
+    shellFiles(workspaceManifest.version),
   ],
   resolve: {
     alias: {
@@ -134,6 +185,10 @@ export default defineConfig(({ command }) => ({
    */
   define: {
     __PANORAMA_STARTUP__: JSON.stringify(command === 'serve' ? startupForServing() : null),
+    // What this build calls itself, from the one place the version is declared.
+    // Inlined rather than imported so that asking costs nothing at runtime and
+    // a development page and a build answer the same way.
+    __PANORAMA_VERSION__: JSON.stringify(workspaceManifest.version),
   },
   /**
    * Two entry points, because a service worker has to be reachable at a fixed
