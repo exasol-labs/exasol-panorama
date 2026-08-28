@@ -30,6 +30,7 @@
  * and a table's worth of text is a hundred times that.
  */
 import { chromium } from 'playwright';
+import { openSample as openTable } from './lib/open-sample.mjs';
 
 const URL_UNDER_TEST = process.env.PANORAMA_SMOKE_URL ?? 'http://localhost:5199/';
 
@@ -56,7 +57,7 @@ await page.goto(URL_UNDER_TEST, { waitUntil: 'networkidle' });
 await page.waitForSelector('canvas');
 await page.waitForTimeout(1200);
 // Something on the canvas, so there is something that could move.
-await page.locator('[aria-label="Sample tables"] button').first().click();
+await openTable(page, 'SAMPLE_100');
 await page.waitForTimeout(1500);
 
 const box = await page.locator('canvas').boundingBox();

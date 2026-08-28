@@ -11,6 +11,7 @@ import { haloCorner, sweepHalo } from './lib/halo-sweep.mjs';
 import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { openSample as openTable } from './lib/open-sample.mjs';
 
 const URL_UNDER_TEST = process.env.PANORAMA_SMOKE_URL ?? 'http://localhost:5199/';
 const EXPORT_DIR = await mkdtemp(join(tmpdir(), 'panorama-chart-'));
@@ -27,7 +28,7 @@ page.on('console', (message) => {
 
 await page.goto(URL_UNDER_TEST, { waitUntil: 'networkidle' });
 await page.waitForTimeout(1500);
-await page.locator('[aria-label="Sample tables"] button:has-text("SAMPLE_100")').first().click();
+await openTable(page, 'SAMPLE_100');
 await page.waitForTimeout(1000);
 
 const canvas = await page.locator('.pn-canvas-host').boundingBox();

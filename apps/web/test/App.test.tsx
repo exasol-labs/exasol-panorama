@@ -792,31 +792,26 @@ describe('App', () => {
     vi.restoreAllMocks();
   });
 
-  it('opens a built-in sample table with no connection', async () => {
+  /**
+   * The sidebar used to offer a list of invented relations, and it was the first
+   * thing anybody saw. Somebody opening Panorama has come to look at their own
+   * data; the relations are still there for the probes and for an agent, and
+   * nothing in the interface points at them.
+   */
+  it('offers nobody a table of invented data', () => {
     const harness = createAppHarness();
     render(<App workspace={harness.workspace} />);
-
-    fireEvent.click(
-      within(screen.getByRole('list', { name: 'Sample tables' })).getByText('SAMPLE_100'),
-    );
-    await waitFor(() => expect(harness.workspace.openTableCount).toBe(1));
-    expect(screen.queryByRole('alert')).toBeNull();
-  });
-
-  it('reports a sample table that cannot be opened', async () => {
-    const harness = createAppHarness({ failOpen: true });
-    render(<App workspace={harness.workspace} />);
-    fireEvent.click(within(screen.getByRole('list', { name: 'Sample tables' })).getByText('SALES'));
-    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('Simulated'));
+    expect(screen.queryByRole('list', { name: 'Sample tables' })).toBeNull();
+    expect(screen.queryByText('SAMPLE_100')).toBeNull();
   });
 
   it('performs a halo action reported by the canvas', async () => {
     const harness = createAppHarness();
     render(<App workspace={harness.workspace} />);
 
-    fireEvent.click(
-      within(screen.getByRole('list', { name: 'Sample tables' })).getByText('SAMPLE_100'),
-    );
+    await act(async () => {
+      await harness.workspace.openTable({ schema: 'PANORAMA_DEMO', table: 'SAMPLE_100' });
+    });
     await waitFor(() => expect(harness.workspace.openTableCount).toBe(1));
 
     const id = harness.workspace.core.world.order[0];
@@ -846,9 +841,9 @@ describe('App', () => {
       }),
     });
     render(<App workspace={harness.workspace} />);
-    fireEvent.click(
-      within(screen.getByRole('list', { name: 'Sample tables' })).getByText('SAMPLE_100'),
-    );
+    await act(async () => {
+      await harness.workspace.openTable({ schema: 'PANORAMA_DEMO', table: 'SAMPLE_100' });
+    });
     await waitFor(() => expect(harness.workspace.openTableCount).toBe(1));
     const id = harness.workspace.core.world.order[0];
     if (id === undefined || lastAction === null) throw new Error('expected an open table');
@@ -893,9 +888,9 @@ describe('App', () => {
     const harness = createAppHarness();
     render(<App workspace={harness.workspace} />);
 
-    fireEvent.click(
-      within(screen.getByRole('list', { name: 'Sample tables' })).getByText('SAMPLE_100'),
-    );
+    await act(async () => {
+      await harness.workspace.openTable({ schema: 'PANORAMA_DEMO', table: 'SAMPLE_100' });
+    });
     await waitFor(() => expect(harness.workspace.openTableCount).toBe(1));
 
     const source = harness.workspace.core.world.order[0];

@@ -30,6 +30,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { resolve as resolvePath } from 'node:path';
 import { existsSync } from 'node:fs';
 import { chromium } from 'playwright';
+import { openSample as openTable } from './lib/open-sample.mjs';
 
 const PORT = Number(process.env.PANORAMA_PREVIEW_PORT ?? 4180);
 /**
@@ -257,7 +258,7 @@ try {
   await page.waitForSelector('.pn-canvas', { timeout: 15_000 });
   const booted = await page.evaluate(() => globalThis.__panorama !== undefined);
   expect(booted, 'the application did not boot offline');
-  await page.locator('[aria-label="Sample tables"] button:has-text("SAMPLE_100")').first().click();
+  await openTable(page, 'SAMPLE_100');
   await page.waitForTimeout(900);
   const opened = await page.evaluate(
     () => [...(globalThis.__panorama?.core?.world?.entities?.values() ?? [])].length,

@@ -5,6 +5,7 @@
  * entity the session considers activated.
  */
 import { chromium } from 'playwright';
+import { openSample as openTable } from './lib/open-sample.mjs';
 
 /** The same variable every other probe reads; see docs/TESTING.md §8.2. */
 const URL_UNDER_TEST = process.env.PANORAMA_SMOKE_URL ?? 'http://localhost:5199/';
@@ -23,7 +24,7 @@ await page.goto(URL_UNDER_TEST, { waitUntil: 'networkidle' });
 await page.waitForTimeout(1200);
 
 const open = async (name) => {
-  await page.locator(`[aria-label="Sample tables"] button:has-text("${name}")`).first().click();
+  await openTable(page, name);
   await page.waitForTimeout(700);
 };
 await open('SAMPLE_100');

@@ -11,6 +11,7 @@
  * is the thing most likely to drift.
  */
 import { chromium } from 'playwright';
+import { openSample as openTable } from './lib/open-sample.mjs';
 
 const URL_UNDER_TEST = process.env.PANORAMA_SMOKE_URL ?? 'http://localhost:5199/';
 
@@ -27,7 +28,7 @@ page.on('console', (message) => {
 await page.goto(URL_UNDER_TEST, { waitUntil: 'networkidle' });
 await page.waitForTimeout(1200);
 for (const name of ['SAMPLE_100', 'LARGE_STRINGS', 'COUNTRIES']) {
-  await page.locator(`[aria-label="Sample tables"] button:has-text("${name}")`).first().click();
+  await openTable(page, name);
   await page.waitForTimeout(800);
 }
 

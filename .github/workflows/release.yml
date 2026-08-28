@@ -324,7 +324,7 @@ jobs:
           mkdir -p desktop-artifacts
           find apps/desktop/src-tauri/target -path '*/release/bundle/*' \
             \( -name '*.dmg' -o -name '*.deb' -o -name '*.AppImage' -o -name '*.msi' -o -name '*.exe' \
-               -o -name '*.tar.gz' -o -name '*.sig' \) \
+               -o -name '*.app.tar.gz' -o -name '*.sig' \) \
             -print0 |
             while IFS= read -r -d '' bundle; do
               cp "$bundle" "desktop-artifacts/$(basename "$bundle" | tr ' ' '-')"

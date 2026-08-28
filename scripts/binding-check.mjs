@@ -11,6 +11,7 @@ import { chromium } from 'playwright';
 /** The same variable every other probe reads; see docs/TESTING.md §8.2. */
 const URL_UNDER_TEST = process.env.PANORAMA_SMOKE_URL ?? 'http://localhost:5199/';
 import { connectorMidpoint } from './lib/connector-midpoint.mjs';
+import { openSample as openTable } from './lib/open-sample.mjs';
 
 mkdirSync('scripts/shots', { recursive: true });
 const browser = await chromium.launch({
@@ -25,7 +26,7 @@ page.on('console', (m) => {
 
 await page.goto(URL_UNDER_TEST, { waitUntil: 'networkidle' });
 await page.waitForTimeout(1200);
-await page.locator('[aria-label="Sample tables"] button:has-text("SAMPLE_100")').first().click();
+await openTable(page, 'SAMPLE_100');
 await page.waitForTimeout(900);
 
 const box = await page.locator('.pn-canvas-host').boundingBox();

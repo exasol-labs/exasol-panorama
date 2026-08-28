@@ -57,9 +57,8 @@ destroy: the line of inquiry you walked away from is still there to return to.
 
 ## What you can do
 
-- **Open anything.** Browse schemas and tables in the explorer tree, or use the
-  generated sample relations that need no database at all — including a
-  ten-billion-row table, a 5 000-column one, and one covering every Exasol type.
+- **Open anything.** Browse schemas and tables in the explorer tree and click one
+  to put it on the canvas.
 - **Scroll, fling, resize.** Row and column virtualisation with smooth
   wheel and trackpad scrolling; resize tables and columns, reorder and hide them.
 - **Read a column.** Click a header for nulls, distinct counts, top values or a
@@ -113,9 +112,7 @@ npm install
 npm run dev            # http://localhost:5173
 ```
 
-It opens on a **Sample data** panel that needs no database at all, so there is
-something to fly around within a second of starting. Building the application
-yourself, and everything else about working on it, is
+Building the application yourself, and everything else about working on it, is
 [DEVELOPING.md](docs/DEVELOPING.md).
 
 ## Connecting to your data

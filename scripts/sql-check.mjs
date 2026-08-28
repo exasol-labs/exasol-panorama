@@ -1,6 +1,7 @@
 import { chromium } from 'playwright';
 import { haloCorner, sweepHalo } from './lib/halo-sweep.mjs';
 import { connectorMidpoint } from './lib/connector-midpoint.mjs';
+import { openSample as openTable } from './lib/open-sample.mjs';
 
 /**
  * Verifies the SQL halo button and the query editor in a real browser.
@@ -25,7 +26,7 @@ page.on('console', (m) => {
 const URL_UNDER_TEST = process.env.PANORAMA_SMOKE_URL ?? 'http://localhost:5199/';
 await page.goto(URL_UNDER_TEST, { waitUntil: 'networkidle' });
 await page.waitForTimeout(1200);
-await page.locator('[aria-label="Sample tables"] button:has-text("SAMPLE_100")').first().click();
+await openTable(page, 'SAMPLE_100');
 await page.waitForTimeout(900);
 
 const box = await page.locator('.pn-canvas-host').boundingBox();

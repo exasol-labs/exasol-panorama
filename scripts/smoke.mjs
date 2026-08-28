@@ -6,6 +6,7 @@
  */
 import { mkdirSync } from 'node:fs';
 import { chromium } from 'playwright';
+import { openSample as openTable } from './lib/open-sample.mjs';
 
 const url = process.env.PANORAMA_SMOKE_URL ?? 'http://localhost:5199/';
 /** Set to 2 to reproduce a Retina display. */
@@ -48,10 +49,7 @@ const overlay = async () => {
   return rows;
 };
 
-const openSample = async (name) => {
-  await page.locator(`[aria-label="Sample tables"] button:has-text("${name}")`).first().click();
-  await page.waitForTimeout(900);
-};
+const openSample = (name) => openTable(page, name);
 
 const canvasBox = await page.locator('.pn-canvas-host').boundingBox();
 const centre = { x: canvasBox.x + canvasBox.width / 2, y: canvasBox.y + canvasBox.height / 2 };

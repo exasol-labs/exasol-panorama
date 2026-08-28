@@ -1,12 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { cellValue } from '@panorama/table';
-import {
-  DEMO_SCHEMA,
-  DEMO_RELATIONS,
-  demoRelation,
-  demoSchema,
-  demoTables,
-} from '../src/panorama/demo.js';
+import { DEMO_SCHEMA, DEMO_RELATIONS, demoRelation, demoSchema } from '../src/panorama/demo.js';
 import { createWorkerEndpoint } from '../src/bootstrap.js';
 import { DataWorkerClient } from '@panorama/worker';
 import type { EntityId } from '@panorama/core';
@@ -25,11 +19,11 @@ describe('demo relations', () => {
   });
 
   it('describes every relation without a database', () => {
-    for (const table of demoTables()) {
-      const schema = demoSchema(table.name);
+    for (const [name, shape] of Object.entries(DEMO_RELATIONS)) {
+      const schema = demoSchema(name);
       expect(schema?.schema).toBe(DEMO_SCHEMA);
-      expect(schema?.table).toBe(table.name);
-      expect(schema?.columns).toHaveLength(table.columnCount);
+      expect(schema?.table).toBe(name);
+      expect(schema?.columns).toHaveLength(shape.columns.length);
     }
     expect(demoSchema('NOPE')).toBeUndefined();
   });

@@ -6,7 +6,6 @@ import {
   ExportPanel,
   SettingsPanel,
   PerformanceOverlay,
-  SampleDataPanel,
   SchemaExplorer,
   UpdateNotice,
 } from '@panorama/ui';
@@ -27,7 +26,6 @@ import { PanoramaCanvas } from './panorama/PanoramaCanvas.js';
 import { ChartEditors } from './panorama/ChartEditors.js';
 import { SqlEditors } from './panorama/SqlEditors.js';
 import { backendOverride } from './bootstrap.js';
-import { DEMO_SCHEMA, demoTables } from './panorama/demo.js';
 import { describeFormat } from '@panorama/export';
 import type { ExportJob } from './panorama/export-jobs.js';
 import type { Workspace } from './panorama/workspace.js';
@@ -364,23 +362,6 @@ export const App = ({
     [workspace],
   );
 
-  const openSample = useCallback(
-    (name: string) => {
-      setNotice(null);
-      void (async (): Promise<void> => {
-        try {
-          const id = await workspace.openTable({ schema: DEMO_SCHEMA, table: name });
-          rendererRef.current?.revealEntity(id);
-        } catch (error) {
-          setNotice(describeError(error));
-        }
-      })();
-    },
-    [workspace],
-  );
-
-  const samples = useMemo(() => demoTables(), []);
-
   /**
    * The databases Exasol Personal manages for whoever is at this machine — which
    * may be running here or in a cloud it deployed to.
@@ -602,7 +583,6 @@ export const App = ({
                 })}
           />
         )}
-        <SampleDataPanel tables={samples} onOpen={openSample} />
         <ExportPanel exports={exportListings} onCancel={cancelExport} onDismiss={dismissExport} />
         <SettingsPanel
           open={settingsOpen}
@@ -649,8 +629,6 @@ export const App = ({
       enterXR,
       notice,
       updateReady,
-      samples,
-      openSample,
       exportListings,
       cancelExport,
       dismissExport,

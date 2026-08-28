@@ -2,7 +2,6 @@ export * from './ConnectionDialog.js';
 export * from './ExportPanel.js';
 export * from './LinkedText.js';
 export * from './PerformanceOverlay.js';
-export * from './SampleDataPanel.js';
 export * from './SchemaExplorer.js';
 export * from './SettingsPanel.js';
 export * from './UpdateNotice.js';

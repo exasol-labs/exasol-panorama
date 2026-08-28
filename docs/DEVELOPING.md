@@ -18,11 +18,22 @@ npm install
 npm run dev            # http://localhost:5173
 ```
 
-The app opens with a **Sample data** panel that needs no database. It serves
-locally generated relations through the same data worker, cache and scheduler a
-real connection uses — including a ten-billion-row table, a 5 000-column one, a
-null-heavy one, and one covering every Exasol type. Connecting to a real database
-is [CONNECTING.md](CONNECTING.md).
+Connecting it to a database is [CONNECTING.md](CONNECTING.md).
+
+There is a set of synthetic relations for driving it without one — a
+ten-billion-row table, a 5 000-column one, a null-heavy one, and one covering
+every Exasol type — served through the same data worker, cache and scheduler a
+real connection uses. **Nothing in the interface offers them**, because somebody
+opening Panorama has come to look at their own data. They live in
+`apps/web/src/panorama/demo.ts` under the schema `PANORAMA_DEMO`, and the two
+things that use them reach them by name:
+
+```js
+// In a browser probe — see scripts/lib/open-sample.mjs
+await openSample(page, 'VERY_WIDE');
+// As an agent would
+{ "name": "open_table", "arguments": { "schema": "PANORAMA_DEMO", "table": "SALES" } }
+```
 
 ## 2. The commands
 
@@ -140,7 +151,7 @@ Then use the install control in the address bar (Chrome and Edge: the icon at th
 right; Safari: **Share → Add to Dock**; Android and the Quest Browser: **Install**
 in the menu). It launches without browser chrome, keeps its own window, and — the
 part worth checking — **starts with no network at all**, because the build is on
-the device. The sample tables work offline; a database, of course, does not.
+the device. A database, of course, does not follow it there.
 
 Nothing is cached but the application itself. No query result, no schema, no row
 ever goes into that cache: a stale row shown as current is a worse failure than
