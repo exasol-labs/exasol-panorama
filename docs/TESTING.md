@@ -587,8 +587,9 @@ npm test
 The schema and table are optional; the tests that need them skip individually
 without them. `NODE_TLS_REJECT_UNAUTHORIZED=0` is for a development instance's
 self-signed certificate, and is what Node needs — a _browser_ connecting to the
-same instance needs the manual trust step the [README](../README.md#quick-start)
-describes, which no test can perform for you.
+same instance needs the manual trust step
+[CONNECTING.md](CONNECTING.md#2-a-certificate-the-machine-signed-itself) describes,
+which no test can perform for you.
 
 What this proves that `FakeSocket` cannot: the login handshake and RSA password
 encryption against a real server, the actual shape of result-set responses

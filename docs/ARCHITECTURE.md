@@ -8,7 +8,8 @@ This document is for somebody who has to change the system. It states the
 constraint the design answers to, the model everything else is a projection of,
 the rules about what may depend on what, and — at length, in §9 — the decisions
 that are not obvious from the code, with the reasoning that produced them. The
-[README](../README.md) covers running it; this covers why it is shaped as it is.
+[README](../README.md) says what it is and [DEVELOPING.md](DEVELOPING.md) covers
+running it; this covers why it is shaped as it is.
 
 1. [The constraint](#1-the-constraint) — the one sentence the rest follows from
 2. [System context](#2-system-context) — participants and trust boundaries
