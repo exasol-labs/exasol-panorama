@@ -27,6 +27,7 @@
  *     npm run build && npm run install-check
  */
 import { spawn, spawnSync } from 'node:child_process';
+import { resolve as resolvePath } from 'node:path';
 import { existsSync } from 'node:fs';
 import { chromium } from 'playwright';
 
@@ -71,10 +72,20 @@ const expect = (claim, message) => {
   if (!claim) note(message);
 };
 
-/** The preview server: the built files, served the way a host would serve them. */
+/**
+ * The preview server: the built files, served the way a host would serve them.
+ *
+ * Started as `vite` itself rather than through `npx`, and that is not tidiness.
+ * `npx` is a wrapper that spawns the real thing, so `kill()` reaches the wrapper
+ * and leaves the server behind — still holding the write end of the pipe below.
+ * Node then has a readable stream that will never end, and a script that has
+ * finished its work and printed its verdict sits there for as long as anything
+ * lets it. On this project that was every CI run of this check: six hours, and
+ * then the job limit.
+ */
 const preview = spawn(
-  'npx',
-  ['vite', 'preview', '--port', String(PORT), '--strictPort', '--base', BASE, 'apps/web'],
+  resolvePath('node_modules/.bin/vite'),
+  ['preview', '--port', String(PORT), '--strictPort', '--base', BASE, 'apps/web'],
   { stdio: ['ignore', 'pipe', 'inherit'] },
 );
 const ready = new Promise((resolve, reject) => {
@@ -269,6 +280,10 @@ try {
 } finally {
   await browser.close();
   preview.kill('SIGTERM');
+  // Our end of the pipe, closed by us. Whether the server died when it was asked
+  // to is its business; a stream nobody is going to write to again must not be
+  // the reason this process stays alive.
+  preview.stdout?.destroy();
 }
 
 console.info(JSON.stringify(report, null, 2));
@@ -280,3 +295,7 @@ if (problems.length > 0) {
 console.info(
   '\ninstallable: worker active, manifest and icons sound, launches offline, shell only',
 );
+// Said and done. Leaving the exit to whenever the event loop happens to drain is
+// what turned a five-second check into a six-hour job, and a check that has
+// printed its verdict has nothing left to wait for.
+process.exit(0);

@@ -157,7 +157,7 @@ pub fn live() -> Vec<Session> {
             let _ = fs::remove_file(&path);
         }
     }
-    found.sort_by(|a, b| b.started.cmp(&a.started));
+    found.sort_by_key(|session| std::cmp::Reverse(session.started));
     found
 }
 

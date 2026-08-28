@@ -288,6 +288,11 @@ async fn serve(app: AppHandle, stream: TcpStream, token: String, connections: Ar
 
     let accepted = tokio_tungstenite::accept_hdr_async(
         stream,
+        // The `Err` type is large and cannot be otherwise: this closure's shape is
+        // `tungstenite`'s, and its error is a whole HTTP response by design —
+        // refusing a handshake means saying so in one. Boxing it is not on offer
+        // when the signature is somebody else's.
+        #[allow(clippy::result_large_err)]
         move |request: &Request, response: Response| -> Result<Response, ErrorResponse> {
             let origin = request
                 .headers()
