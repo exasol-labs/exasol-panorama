@@ -20,7 +20,9 @@ import {
   shellDeploymentCredentials,
   shellDeployments,
   shellSetting,
+  shellStagedVersion,
 } from './panorama/shell-agent.js';
+import { inDesktopShell } from './panorama/shell.js';
 import { PanoramaCanvas } from './panorama/PanoramaCanvas.js';
 import { ChartEditors } from './panorama/ChartEditors.js';
 import { SqlEditors } from './panorama/SqlEditors.js';
@@ -30,7 +32,7 @@ import { describeFormat } from '@panorama/export';
 import type { ExportJob } from './panorama/export-jobs.js';
 import type { Workspace } from './panorama/workspace.js';
 import type { StartupConnection } from './panorama/startup.js';
-import { watchForUpdate } from './panorama/updates.js';
+import { watchForUpdate, watchShellUpdate } from './panorama/updates.js';
 import { appVersion, fetchVersion } from './panorama/version.js';
 
 /**
@@ -132,6 +134,15 @@ export const App = ({
    * way.
    */
   useEffect(() => {
+    // The desktop application has no service worker — it has the bundle on disk —
+    // and updates itself another way: the shell downloads one in the background
+    // and installs it while the window closes. Same notice, different detector.
+    if (inDesktopShell()) {
+      return watchShellUpdate({
+        ask: () => shellStagedVersion(),
+        onStaged: setUpdateReady,
+      });
+    }
     const workers = navigator.serviceWorker;
     if (workers === undefined) return;
     let stop: (() => void) | null = null;
@@ -602,7 +613,11 @@ export const App = ({
           version={appVersion()}
         />
         {updateReady === null ? null : (
-          <UpdateNotice version={updateReady === '' ? null : updateReady} applies="on-reopen" />
+          <UpdateNotice
+            version={updateReady === '' ? null : updateReady}
+            // The shell installs it for you; a browser cannot, so it asks.
+            applies={inDesktopShell() ? 'on-quit' : 'on-reopen'}
+          />
         )}
         {xrAvailable ? (
           <button type="button" className="pn-xr" onClick={enterXR}>

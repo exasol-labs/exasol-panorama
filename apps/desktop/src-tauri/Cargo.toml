@@ -57,6 +57,7 @@ tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"
 # A window that comes back where it was left. Expected of anything with a window.
 tauri-plugin-window-state = "2"
+tauri-plugin-updater = "2"
 
 # A release bundle is something a person downloads over a network and keeps on a
 # laptop, so it is built for size rather than for compile time.

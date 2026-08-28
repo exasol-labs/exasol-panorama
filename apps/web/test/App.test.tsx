@@ -171,6 +171,37 @@ describe('a new version waiting to be used', () => {
     await waitFor(() => expect(screen.queryByRole('status')).toBeNull());
   });
 
+  /**
+   * The desktop application has no service worker — it has the bundle on disk —
+   * so the same notice is fed by a different detector: the shell has already
+   * downloaded the update and is holding it. What differs is the sentence, because
+   * here something *will* be installed rather than merely being available.
+   */
+  it('says the shell will install it, when there is a shell', async () => {
+    vi.stubGlobal('__TAURI_INTERNALS__', { invoke: async () => undefined });
+    // `shellBridge()` needs both halves before it will hand anything back.
+    vi.stubGlobal('__TAURI__', {
+      event: { listen: async () => (): void => {} },
+      core: { invoke: async (command: string) => (command === 'update_status' ? '0.3.0' : null) },
+    });
+    const harness = createAppHarness();
+    vi.useFakeTimers();
+    try {
+      render(<App workspace={harness.workspace} />);
+      // The shell is not asked at launch, on purpose — the first minute belongs
+      // to whoever just opened it. So the minute has to pass.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(61_000);
+      });
+      const notice = screen.getByRole('status');
+      expect(notice.textContent).toContain('Panorama 0.3.0 is ready');
+      expect(notice.textContent).toContain('installed when you quit');
+      expect(notice.textContent).not.toContain('close and reopen');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   /** A browser with no service workers at all is not a browser with a problem. */
   it('says nothing where the browser has no service workers', async () => {
     vi.stubGlobal('navigator', { ...navigator, serviceWorker: undefined });

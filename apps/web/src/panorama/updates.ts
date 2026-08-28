@@ -34,6 +34,73 @@ export const FIRST_CHECK_MS = 60_000;
 /** And how often after that. Rare: this is a courtesy, not a heartbeat. */
 export const CHECK_EVERY_MS = 4 * 60 * 60 * 1_000;
 
+/**
+ * How often the page asks the shell what it is holding.
+ *
+ * Much more often than the shell itself looks for an update, and that is not a
+ * contradiction: this is a lock and a string over a local pipe, not a network
+ * round trip, and the cost of asking is nothing next to a note that appears four
+ * hours after the thing it describes.
+ *
+ * Polled rather than pushed. An event from the shell would be tidier by a hair
+ * and would need a second channel, its own lifecycle and its own failure mode,
+ * for a fact that changes once in a working day.
+ */
+export const ASK_SHELL_EVERY_MS = 5 * 60 * 1_000;
+
+export interface WatchShellOptions {
+  /** Asks the shell what it has staged; `null` while there is nothing. */
+  readonly ask: () => Promise<string | null>;
+  /** Called once, with the version that will be installed on the next quit. */
+  readonly onStaged: (version: string) => void;
+  readonly firstCheckMs?: number | undefined;
+  readonly checkEveryMs?: number | undefined;
+  readonly setTimer?: ((run: () => void, ms: number) => unknown) | undefined;
+  readonly clearTimer?: ((timer: unknown) => void) | undefined;
+}
+
+/**
+ * Watches the desktop shell for an update it has downloaded and is holding.
+ *
+ * The shell does the looking, the downloading and — when the window closes — the
+ * installing; all this does is find out, so the page can say so. It stops asking
+ * once there is an answer: a second staged version cannot arrive before the first
+ * one is installed, and the first one is installed by quitting.
+ */
+export const watchShellUpdate = (options: WatchShellOptions): (() => void) => {
+  const setTimer = options.setTimer ?? ((run, ms) => globalThis.setTimeout(run, ms));
+  const clearTimer =
+    options.clearTimer ??
+    ((timer) => globalThis.clearTimeout(timer as ReturnType<typeof setTimeout>));
+
+  let timer: unknown = null;
+  let stopped = false;
+  const ask = (): void => {
+    void options.ask().then(
+      (version) => {
+        if (stopped) return;
+        if (version !== null) {
+          options.onStaged(version);
+          return;
+        }
+        timer = setTimer(ask, options.checkEveryMs ?? ASK_SHELL_EVERY_MS);
+      },
+      // A shell that will not answer is not a thing to report: there is nothing
+      // the person could do about it and nothing to show.
+      () => {
+        if (!stopped) timer = setTimer(ask, options.checkEveryMs ?? ASK_SHELL_EVERY_MS);
+      },
+    );
+  };
+  timer = setTimer(ask, options.firstCheckMs ?? FIRST_CHECK_MS);
+
+  return (): void => {
+    stopped = true;
+    if (timer !== null) clearTimer(timer);
+    timer = null;
+  };
+};
+
 /** The part of a `ServiceWorker` this needs, so a test needs no browser. */
 export interface WatchedWorker {
   readonly state: string;

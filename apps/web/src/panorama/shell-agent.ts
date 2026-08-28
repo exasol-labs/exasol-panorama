@@ -237,6 +237,20 @@ export const shellDeploymentCredentials = async (
 };
 
 /**
+ * The version the shell has downloaded and is holding for the next quit.
+ *
+ * `null` in a browser, where there is no shell, and `null` in the desktop
+ * application until something is actually staged — which is most of the time.
+ */
+export const shellStagedVersion = async (
+  bridge: ShellBridge | null = shellBridge(),
+): Promise<string | null> => {
+  if (bridge === null) return null;
+  const answer = await bridge.invoke('update_status');
+  return typeof answer === 'string' && answer !== '' ? answer : null;
+};
+
+/**
  * Tells the shell how long something took, for the log.
  *
  * Instantness is a requirement, and this is how it is held to: the two moments a

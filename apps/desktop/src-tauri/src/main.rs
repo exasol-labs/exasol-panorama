@@ -12,6 +12,7 @@ mod mac;
 mod pipe;
 mod session;
 mod trust;
+mod update;
 
 use std::sync::Arc;
 
@@ -173,6 +174,15 @@ async fn exasol_deployment_credentials(name: String) -> Result<exasol::Credentia
     .unwrap_or_else(|| Err(format!("Panorama could not read the password for {name}.")))
 }
 
+/// The version waiting to be installed, or nothing.
+///
+/// A lock and a string, so it stays on the main thread: the work this reports on
+/// was done hours ago on another one — see `update`.
+#[tauri::command]
+fn update_status(updates: tauri::State<'_, Arc<update::Updates>>) -> Option<String> {
+    updates.staged_version()
+}
+
 /// How long something in the page took, measured from when this process started.
 ///
 /// Instantness is a requirement of this application, and a requirement nobody
@@ -245,6 +255,12 @@ fn window() {
         // most of what "it behaves like an application" means.
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
+        // Registered because `app.updater()` reads this plugin's state and panics
+        // without it — the check would blow up a minute after launch rather than
+        // failing to compile. Nothing of the plugin's JavaScript side is used:
+        // checking, downloading and installing all happen in `update`, on this
+        // side, because the install runs while the page is being torn down.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Arc::clone(&state))
         .invoke_handler(tauri::generate_handler![
             agent::agent_attach,
@@ -257,7 +273,8 @@ fn window() {
             exasol_deployments,
             exasol_deployment_credentials,
             report_timing,
-            database_proxy
+            database_proxy,
+            update_status
         ])
         .setup(move |app| {
             // Not fatal, deliberately: a window with no agent is a worse Panorama,
@@ -315,11 +332,29 @@ fn window() {
                     );
                 }
             }
+            // Looked for well after launch and downloaded in the background, so
+            // that closing the window later costs an unpack rather than a
+            // download. See `update`.
+            let updates: Arc<update::Updates> = Arc::default();
+            app.handle().manage(Arc::clone(&updates));
+            update::watch(&app.handle().clone(), updates);
             eprintln!(
                 "[panorama] shell ready {}ms after launch",
                 owned.started.elapsed().as_millis()
             );
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            // The one moment an update may be installed: the user has asked to
+            // stop, so there is nothing left to interrupt. Nothing staged means
+            // nothing to do, and the window closes the ordinary way.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if let Some(updates) = window.try_state::<Arc<update::Updates>>() {
+                    if update::install_on_close(window, &updates) {
+                        api.prevent_close();
+                    }
+                }
+            }
         })
         .build(tauri::generate_context!())
         .expect("Panorama could not open a window");

@@ -6,6 +6,7 @@ import {
   reportTiming,
   shellDeploymentCredentials,
   shellDeployments,
+  shellStagedVersion,
   shellSetting,
   shellSkill,
   startShellAgent,
@@ -359,6 +360,18 @@ describe('the databases already on this machine', () => {
       shellDeploymentCredentials('default', bridgeAnswering({ exasol_deployment_credentials: {} })),
     ).rejects.toThrow('did not say how to connect');
     await expect(shellDeploymentCredentials('default', null)).rejects.toThrow('no desktop shell');
+  });
+
+  /**
+   * What the shell has downloaded and is holding until the window closes. `null`
+   * is the ordinary answer — most of the time there is nothing waiting — and it
+   * is also what a browser gets, where there is no shell to ask.
+   */
+  it('reads the version the shell is holding for the next quit', async () => {
+    expect(await shellStagedVersion(bridgeAnswering({ update_status: '0.3.0' }))).toBe('0.3.0');
+    expect(await shellStagedVersion(bridgeAnswering({ update_status: null }))).toBeNull();
+    expect(await shellStagedVersion(bridgeAnswering({ update_status: '' }))).toBeNull();
+    expect(await shellStagedVersion(null)).toBeNull();
   });
 });
 

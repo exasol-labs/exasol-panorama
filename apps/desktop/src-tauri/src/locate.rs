@@ -224,19 +224,25 @@ pub fn usual_places(program: &str) -> Vec<PathBuf> {
 mod tests {
     use super::*;
 
+    /// The directories, not the spelling of them: a path is compared as a path
+    /// rather than as a string, because Windows writes the same place with
+    /// backslashes and hangs an extension off the end of the program.
     #[test]
     fn looks_where_people_actually_install_things() {
         let places = usual_places("exasol");
-        let printed: Vec<String> = places
-            .iter()
-            .map(|path| path.to_string_lossy().to_string())
-            .collect();
-        assert!(printed
-            .iter()
-            .any(|path| path.ends_with(".local/bin/exasol")));
-        assert!(printed
-            .iter()
-            .any(|path| path == "/opt/homebrew/bin/exasol"));
+        let directories: Vec<&Path> = places.iter().filter_map(|path| path.parent()).collect();
+        let looks_in = |directory: PathBuf| directories.iter().any(|found| *found == directory);
+
+        // Everywhere: what a person installs for themselves, which is the whole
+        // reason this exists — a Dock launch inherits none of it on the path.
+        assert!(looks_in(home().join(".local/bin")));
+        if cfg!(windows) {
+            assert!(looks_in(home().join("scoop/shims")));
+            assert!(looks_in(PathBuf::from("C:/ProgramData/chocolatey/bin")));
+        } else {
+            assert!(looks_in(PathBuf::from("/opt/homebrew/bin")));
+            assert!(looks_in(PathBuf::from("/usr/local/bin")));
+        }
     }
 
     #[test]

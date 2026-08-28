@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { WatchedRegistration, WatchedWorker } from '../src/panorama/updates.js';
-import { CHECK_EVERY_MS, FIRST_CHECK_MS, watchForUpdate } from '../src/panorama/updates.js';
+import {
+  ASK_SHELL_EVERY_MS,
+  CHECK_EVERY_MS,
+  FIRST_CHECK_MS,
+  watchForUpdate,
+  watchShellUpdate,
+} from '../src/panorama/updates.js';
 import { VERSION_PATH, fetchVersion, versionIn, versionUrl } from '../src/panorama/version.js';
 
 /**
@@ -210,6 +216,125 @@ describe('asking whether there is one', () => {
       controlled: () => true,
       onWaiting: () => undefined,
       firstCheckMs: 0,
+    });
+    expect(() => stop()).not.toThrow();
+  });
+});
+
+describe('an update the desktop shell is holding', () => {
+  const shellWatch = (
+    answers: Array<string | null | 'refuse'>,
+    every?: number,
+  ): { staged: string[]; clock: ReturnType<typeof timers>; asked: number; stop: () => void } => {
+    const clock = timers();
+    const staged: string[] = [];
+    const state = { asked: 0 };
+    const stop = watchShellUpdate({
+      ask: () => {
+        const answer = answers[state.asked] ?? null;
+        state.asked += 1;
+        return answer === 'refuse'
+          ? Promise.reject(new Error('no shell'))
+          : Promise.resolve(answer);
+      },
+      onStaged: (version) => staged.push(version),
+      setTimer: clock.setTimer,
+      clearTimer: clock.clearTimer,
+      ...(every === undefined ? {} : { checkEveryMs: every, firstCheckMs: every }),
+    });
+    return {
+      staged,
+      clock,
+      get asked() {
+        return state.asked;
+      },
+      stop,
+    };
+  };
+
+  it('says nothing while the shell is holding nothing', async () => {
+    const watch = shellWatch([null, null]);
+    expect(watch.asked).toBe(0);
+    watch.clock.fire();
+    await Promise.resolve();
+    expect(watch.staged).toEqual([]);
+    // And it asks again, because a version can be staged at any time.
+    expect(watch.clock.pending[0]?.ms).toBe(ASK_SHELL_EVERY_MS);
+    watch.stop();
+  });
+
+  it('names the version once the shell has one', async () => {
+    const watch = shellWatch([null, '0.3.0']);
+    watch.clock.fire();
+    await Promise.resolve();
+    watch.clock.fire();
+    await Promise.resolve();
+    expect(watch.staged).toEqual(['0.3.0']);
+  });
+
+  /**
+   * A second staged version cannot arrive before the first is installed, and the
+   * first is installed by quitting — so once there is an answer there is nothing
+   * left to ask about.
+   */
+  it('stops asking once it has an answer', async () => {
+    const watch = shellWatch(['0.3.0']);
+    watch.clock.fire();
+    await Promise.resolve();
+    expect(watch.staged).toEqual(['0.3.0']);
+    expect(watch.clock.pending).toHaveLength(0);
+  });
+
+  /** A shell that will not answer is not a thing anybody can act on. */
+  it('keeps asking, and says nothing, when the shell refuses', async () => {
+    const watch = shellWatch(['refuse', '0.3.0'], 1_000);
+    watch.clock.fire();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(watch.staged).toEqual([]);
+    // Asked again on the cadence it was given, rather than giving up.
+    expect(watch.clock.pending[0]?.ms).toBe(1_000);
+    watch.stop();
+  });
+
+  it('asks again on the cadence it was given', async () => {
+    const watch = shellWatch([null, null], 2_000);
+    expect(watch.clock.pending[0]?.ms).toBe(2_000);
+    watch.clock.fire();
+    await Promise.resolve();
+    expect(watch.clock.pending[0]?.ms).toBe(2_000);
+    watch.stop();
+  });
+
+  it('stops when the page goes away, mid-question', async () => {
+    const watch = shellWatch(['0.3.0']);
+    watch.stop();
+    watch.clock.fire();
+    await Promise.resolve();
+    // Asked, but the answer arrives for a page that is no longer there.
+    expect(watch.staged).toEqual([]);
+    // And is safe to stop twice, which a React effect does under StrictMode.
+    expect(() => watch.stop()).not.toThrow();
+  });
+
+  /**
+   * The same, for a question that was refused rather than answered: a page that
+   * has gone must not leave a timer behind asking on its behalf.
+   */
+  it('does not ask again after a refusal, once the page has gone', async () => {
+    const watch = shellWatch(['refuse']);
+    watch.stop();
+    watch.clock.fire();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(watch.clock.pending).toHaveLength(0);
+  });
+
+  it('uses real timers when none are handed to it', () => {
+    const stop = watchShellUpdate({
+      ask: () => Promise.resolve(null),
+      onStaged: () => undefined,
+      firstCheckMs: 60_000,
     });
     expect(() => stop()).not.toThrow();
   });

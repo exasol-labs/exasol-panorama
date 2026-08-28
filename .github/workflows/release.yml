@@ -265,6 +265,13 @@ jobs:
       #   APPLE_TEAM_ID               for notarisation
       # Windows needs a certificate thumbprint in tauri.conf.json instead; there is
       # no environment-only route for it, so it is a separate decision.
+      # Two different signatures, for two different questions. The `APPLE_*` ones
+      # are about Gatekeeper trusting the application; `TAURI_SIGNING_*` is about
+      # an installed Panorama trusting the bytes of its own update, and without it
+      # `createUpdaterArtifacts` fails the build rather than producing unsigned
+      # ones — the updater cannot be told to skip the check. So the flag is passed
+      # only when the key is here, and a repository without it still releases,
+      # minus the ability to update what it released.
       - name: Bundle the desktop application
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -273,7 +280,25 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: npm run build --workspace @panorama/desktop -- ${{ matrix.args }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          # An absent secret is not an absent variable: it arrives as an empty
+          # string, and the bundler reads "set" as "sign with this" — then fails
+          # importing a certificate that is not there. Unset rather than empty is
+          # the difference between an unsigned build and no build at all.
+          if [ -z "${APPLE_CERTIFICATE}" ]; then
+            unset APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY
+            unset APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID
+          fi
+          if [ -n "${TAURI_SIGNING_PRIVATE_KEY}" ]; then
+            npm run build --workspace @panorama/desktop -- ${{ matrix.args }} \
+              --config '{"bundle":{"createUpdaterArtifacts":true}}'
+          else
+            echo "::warning::No TAURI_SIGNING_PRIVATE_KEY: this build ships, but nothing can update to it."
+            npm run build --workspace @panorama/desktop -- ${{ matrix.args }}
+          fi
 
       # Said out loud, because "unsigned" is the difference between an application
       # somebody can open and one macOS refuses until they know the trick.
@@ -298,7 +323,8 @@ jobs:
         run: |
           mkdir -p desktop-artifacts
           find apps/desktop/src-tauri/target -path '*/release/bundle/*' \
-            \( -name '*.dmg' -o -name '*.deb' -o -name '*.AppImage' -o -name '*.msi' -o -name '*.exe' \) \
+            \( -name '*.dmg' -o -name '*.deb' -o -name '*.AppImage' -o -name '*.msi' -o -name '*.exe' \
+               -o -name '*.tar.gz' -o -name '*.sig' \) \
             -print0 |
             while IFS= read -r -d '' bundle; do
               cp "$bundle" "desktop-artifacts/$(basename "$bundle" | tr ' ' '-')"
@@ -320,3 +346,50 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "${GITHUB_REF_NAME}" desktop-artifacts/* --clobber
+
+  # The file an installed Panorama asks whether it is out of date. Last, because
+  # it names every platform's bundle and their signatures, and those do not exist
+  # until each platform has finished building its own.
+  #
+  # `if: always()` on purpose: one platform failing to bundle should publish a
+  # manifest for the two that did rather than none for anybody. A platform missing
+  # from it means "no update for you yet", which is true and harmless; a platform
+  # in it without a signature would fail on the user's machine after the download.
+  manifest:
+    name: publish the update manifest
+    needs: [pwa, desktop]
+    if: always() && github.ref_type == 'tag' && inputs.dry-run != true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # From the release rather than from the build jobs' artifacts: what the
+      # manifest points at is what was published, so it is built from that.
+      - name: Collect what was published
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p published
+          gh release download "${GITHUB_REF_NAME}" --dir published --pattern '*' || true
+          ls -l published
+
+      - name: Write it
+        id: write
+        shell: bash
+        run: |
+          if node scripts/update-manifest.mjs \
+            --version "${{ needs.pwa.outputs.version }}" \
+            --dir published --out latest.json; then
+            echo "written=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::No signed bundles, so no update manifest: this release ships, but nothing can update to it."
+            echo "written=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Add it to the release
+        if: steps.write.outputs.written == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${GITHUB_REF_NAME}" latest.json --clobber
