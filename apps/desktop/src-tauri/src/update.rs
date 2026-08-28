@@ -34,7 +34,16 @@ use tauri::{AppHandle, Manager};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
 /// How long after launch before the first look. Late, deliberately.
-const FIRST_LOOK: Duration = Duration::from_secs(60);
+///
+/// Overridable only so that a probe need not sit through it: driving the whole
+/// mechanism — stage, close, install, relaunch — is slow enough without waiting a
+/// minute to start. Nothing but `scripts/update-check.mjs` sets it.
+fn first_look() -> Duration {
+    std::env::var("PANORAMA_UPDATE_FIRST_LOOK_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map_or(Duration::from_secs(60), Duration::from_millis)
+}
 
 /// And how often after that. Rare: this is a courtesy, not a heartbeat.
 const LOOK_EVERY: Duration = Duration::from_secs(4 * 60 * 60);
@@ -91,7 +100,7 @@ impl Updates {
 pub fn watch(app: &AppHandle, updates: Arc<Updates>) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(FIRST_LOOK).await;
+        tokio::time::sleep(first_look()).await;
         loop {
             if updates.staged_version().is_none() {
                 look_once(&app, &updates).await;
@@ -139,12 +148,20 @@ fn grumble(updates: &Updates, what: &str) {
     }
 }
 
-/// Installs a staged update while the window closes, and then exits.
+/// Installs a staged update as the application goes, and then exits.
 ///
-/// Returns whether it took the close over. `false` means there was nothing to
-/// install and the window should shut the ordinary way.
+/// Returns whether it took the closing over. `false` means there was nothing
+/// staged and everything should shut the ordinary way.
 ///
-/// The window is hidden first, and that is the point rather than a detail: the
+/// Called from **both** ways out, which is not belt and braces: closing the last
+/// window and quitting outright are different events, and on macOS — where Cmd-Q
+/// is how most people leave an application — only the second one happens. Hooking
+/// the window alone would have meant the update installed for people who click
+/// the red button and never for anybody else. `take` hands the staged update over
+/// exactly once, so whichever event arrives first does the work and the other
+/// finds nothing to do.
+///
+/// Every window is hidden first, and that is the point rather than a detail: the
 /// application *looks* closed the instant it was asked to be, and the unpacking
 /// happens behind something nobody is looking at. What would otherwise be a hang
 /// becomes invisible.
@@ -152,31 +169,61 @@ fn grumble(updates: &Updates, what: &str) {
 /// On Windows the installer terminates the application itself as part of running
 /// — a documented limitation rather than a choice — so there the exit below may
 /// never be reached. The sequence is the same either way.
-pub fn install_on_close(window: &tauri::Window, updates: &Arc<Updates>) -> bool {
+pub fn install_while_closing(app: &AppHandle, updates: &Arc<Updates>) -> bool {
     let Some(staged) = updates.take() else {
         return false;
     };
-    let _ = window.hide();
-    let app = window.app_handle().clone();
-
+    for window in app.webview_windows().values() {
+        let _ = window.hide();
+    }
+    let app = app.clone();
     std::thread::spawn(move || {
-        let version = staged.version.clone();
-        let (done, finished) = std::sync::mpsc::channel();
-        // On a thread of its own so the deadline below is ours rather than the
-        // installer's: an install that wedges must not wedge the quit.
-        std::thread::spawn(move || {
-            let _ = done.send(staged.update.install(&staged.bytes));
-        });
-        match finished.recv_timeout(INSTALL_LIMIT) {
-            Ok(Ok(())) => eprintln!("[panorama] {version} installed; it starts next time"),
-            Ok(Err(problem)) => eprintln!("[panorama] {version} did not install: {problem}"),
-            Err(_) => eprintln!(
-                "[panorama] {version} was still installing after {INSTALL_LIMIT:?}; closing anyway"
-            ),
-        }
+        unpack(staged);
         app.exit(0);
     });
     true
+}
+
+/// The last chance to install, taken on the way out rather than instead of going.
+///
+/// `Exit` is not a request and cannot be refused — the loop has already ended —
+/// so this blocks the thread that is leaving rather than returning and hoping.
+/// It is bounded by the same deadline as everything else, because a quit that
+/// hangs is worse than an update that waits.
+///
+/// It exists because the two events above do not fire for the way most people
+/// leave a macOS application. Cmd-Q, the Dock's Quit and an Apple Event all reach
+/// `applicationShouldTerminate`, which produces exactly one Tauri event, and it is
+/// this one: no `CloseRequested`, no `ExitRequested`. Hooking only those two meant
+/// the update installed for somebody who clicks the red button and for nobody
+/// else — which `scripts/update-check.mjs` found by quitting the way a person
+/// does, and which nothing smaller than that would have noticed.
+pub fn install_before_exit(app: &AppHandle, updates: &Arc<Updates>) {
+    let Some(staged) = updates.take() else {
+        return;
+    };
+    for window in app.webview_windows().values() {
+        let _ = window.hide();
+    }
+    unpack(staged);
+}
+
+/// Unpacks a staged update, says what happened, and gives up in time.
+fn unpack(staged: Staged) {
+    let version = staged.version.clone();
+    let (done, finished) = std::sync::mpsc::channel();
+    // On a thread of its own so the deadline is ours rather than the installer's:
+    // an install that wedges must not wedge the quit.
+    std::thread::spawn(move || {
+        let _ = done.send(staged.update.install(&staged.bytes));
+    });
+    match finished.recv_timeout(INSTALL_LIMIT) {
+        Ok(Ok(())) => eprintln!("[panorama] {version} installed; it starts next time"),
+        Ok(Err(problem)) => eprintln!("[panorama] {version} did not install: {problem}"),
+        Err(_) => eprintln!(
+            "[panorama] {version} was still installing after {INSTALL_LIMIT:?}; closing anyway"
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -208,12 +255,30 @@ mod tests {
     /// The schedule is the policy: nothing at launch, and rarely after that.
     #[test]
     fn looks_late_and_seldom() {
-        assert!(FIRST_LOOK >= Duration::from_secs(30), "not during startup");
+        assert!(
+            first_look() >= Duration::from_secs(30),
+            "not during startup"
+        );
         assert!(
             LOOK_EVERY >= Duration::from_secs(60 * 60),
             "a courtesy, not a poll"
         );
         // And a quit gives up long before anybody would call it broken.
         assert!(INSTALL_LIMIT <= Duration::from_secs(30));
+    }
+
+    /// The probe drives the whole mechanism — stage, quit, install, relaunch —
+    /// and cannot spend a minute of that waiting to start.
+    #[test]
+    fn lets_a_probe_shorten_the_wait() {
+        // Not run in parallel with the test above: both read the same variable,
+        // and Rust's test harness threads share an environment. Hence one test.
+        assert_eq!(first_look(), Duration::from_secs(60));
+        // SAFETY: single-threaded within this test, and unset before it returns.
+        unsafe { std::env::set_var("PANORAMA_UPDATE_FIRST_LOOK_MS", "250") };
+        assert_eq!(first_look(), Duration::from_millis(250));
+        unsafe { std::env::set_var("PANORAMA_UPDATE_FIRST_LOOK_MS", "not a number") };
+        assert_eq!(first_look(), Duration::from_secs(60), "nonsense is ignored");
+        unsafe { std::env::remove_var("PANORAMA_UPDATE_FIRST_LOOK_MS") };
     }
 }

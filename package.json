@@ -41,6 +41,7 @@
     "agent": "node packages/mcp/bin/panorama-agent.mjs",
     "export-check": "node scripts/export-check.mjs",
     "resize-check": "node scripts/resize-check.mjs",
+    "update-check": "node scripts/update-check.mjs",
     "dev:vr": "node scripts/dev-vr.mjs",
     "dev:quest": "node scripts/dev-vr.mjs --usb",
     "halo-reach": "node scripts/halo-reach.mjs",

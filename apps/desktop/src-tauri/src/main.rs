@@ -339,6 +339,10 @@ fn window() {
             app.handle().manage(Arc::clone(&updates));
             update::watch(&app.handle().clone(), updates);
             eprintln!(
+                "[panorama] Exasol Panorama {} running",
+                app.package_info().version
+            );
+            eprintln!(
                 "[panorama] shell ready {}ms after launch",
                 owned.started.elapsed().as_millis()
             );
@@ -350,7 +354,7 @@ fn window() {
             // nothing to do, and the window closes the ordinary way.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if let Some(updates) = window.try_state::<Arc<update::Updates>>() {
-                    if update::install_on_close(window, &updates) {
+                    if update::install_while_closing(window.app_handle(), &updates) {
                         api.prevent_close();
                     }
                 }
@@ -359,11 +363,28 @@ fn window() {
         .build(tauri::generate_context!())
         .expect("Panorama could not open a window");
 
-    application.run(|_handle, event| {
+    application.run(|handle, event| {
+        // Quitting outright rather than closing the window — Cmd-Q, the Dock, an
+        // agent asking the application to go. It is a different event from a
+        // window closing and on macOS it is the usual one, so an update that only
+        // installed on the other would rarely install at all.
+        if let tauri::RunEvent::ExitRequested { ref api, .. } = event {
+            if let Some(updates) = handle.try_state::<Arc<update::Updates>>() {
+                if update::install_while_closing(handle, &updates) {
+                    api.prevent_exit();
+                }
+            }
+        }
         // The session file is how a pipe finds this window; leaving one behind
         // after the window has gone would send the next call somewhere that is not
         // listening. A crash still leaves one, which is why a reader checks the pid.
         if matches!(event, tauri::RunEvent::Exit) {
+            // The last chance, and for the usual way out of a macOS application —
+            // Cmd-Q, the Dock, an Apple Event — the *only* chance: those produce
+            // this event and neither of the two above. See `update`.
+            if let Some(updates) = handle.try_state::<Arc<update::Updates>>() {
+                update::install_before_exit(handle, &updates);
+            }
             session::remove(std::process::id());
         }
     });
