@@ -69,6 +69,8 @@ export interface TableRenderInput {
   readonly expandedAction?: EntityActionId | null;
   /** Column-view ids picked out by clicking their headers. */
   readonly selectedColumns?: readonly EntityId[];
+  /** Column-view id whose header is under the pointer, hinted as clickable. */
+  readonly hoveredColumn?: EntityId | null;
   /**
    * The other tables, in this table's coordinates, so a statistics panel is not
    * dropped onto one of them. Supplied by the host because a table knows nothing
@@ -854,6 +856,22 @@ export const buildTableDrawList = (input: TableRenderInput): TableDrawList => {
     if (x + placement.width <= gutterWidth || x >= cellRight) continue;
     const visibleX = Math.max(x, gutterWidth);
     const visibleWidth = Math.min(x + placement.width, cellRight) - visibleX;
+    // The hint that this label is a button. Skipped where the column is already
+    // picked out: the selection is drawn further down in the same hue and a
+    // stronger one, and two washes of it stacked would make the column somebody
+    // happens to be pointing at look like a different kind of selected.
+    if (
+      input.hoveredColumn === placement.id &&
+      input.selectedColumns?.includes(placement.id) !== true
+    ) {
+      quad(
+        visibleX,
+        titleHeight,
+        visibleWidth,
+        headerHeight - titleHeight,
+        theme.columnHoverHeaderBackground,
+      );
+    }
     const headerClip = {
       x: gutterWidth,
       y: titleHeight,

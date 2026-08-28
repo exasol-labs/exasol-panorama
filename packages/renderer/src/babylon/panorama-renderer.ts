@@ -505,6 +505,7 @@ export class PanoramaRenderer {
           session.pressedAction?.entityId === entity.id ? session.pressedAction.action : null,
         expandedAction: expandedActionOf(session, entity.id),
         selectedColumns: session.selectedColumns,
+        hoveredColumn: session.hoveredColumn,
         ...this.#columnSummaries(entity),
         ...this.#chart(entity),
         ...(panelMargin === 0 ? {} : { panelObstacles: this.#neighbours(entity) }),

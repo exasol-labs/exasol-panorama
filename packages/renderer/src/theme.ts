@@ -31,6 +31,18 @@ export interface TableTheme {
   readonly columnSelectedBackground: Rgba;
   readonly columnSelectedHeaderBackground: Rgba;
   readonly columnSelectedBorder: Rgba;
+  /**
+   * The header under the pointer, which is a hint rather than a state: a column
+   * header is clickable and looks like a label, so something has to say so
+   * before it is clicked.
+   *
+   * The same hue as the selection it is hinting at, at a fraction of its
+   * strength — a third. Being the same colour is what makes it read as "this is
+   * what clicking does" rather than as a second, unrelated thing; being much
+   * weaker is what keeps a pointer moving across a table from looking like a
+   * selection following it around.
+   */
+  readonly columnHoverHeaderBackground: Rgba;
   readonly placeholderFill: Rgba;
   readonly gridLine: Rgba;
   readonly border: Rgba;
@@ -157,6 +169,7 @@ export const DEFAULT_TABLE_THEME: TableTheme = Object.freeze({
   rowHoverBackground: rgb(0xe8_f1_fb),
   columnSelectedBackground: rgb(0x2f_6f_ed, 0.1),
   columnSelectedHeaderBackground: rgb(0x2f_6f_ed, 0.22),
+  columnHoverHeaderBackground: rgb(0x2f_6f_ed, 0.08),
   columnSelectedBorder: rgb(0x2f_6f_ed, 0.55),
   placeholderFill: rgb(0xdf_e3_e8, 0.75),
   gridLine: rgb(0xe3_e6_ea),

@@ -44,11 +44,12 @@ const HISTOGRAM_HEIGHT = 46;
 /**
  * A bound on how far below a table a panel can reach.
  *
- * Used only for culling — the tallest panel is a complete set of named values
- * with a range and a sampling note — so it is deliberately generous. Getting it
- * wrong makes a panel vanish at the edge of the view, not draw wrongly.
+ * Used only for culling — the tallest panel is a numeric one: a histogram, its
+ * axis, five figures and a sampling note — so it is deliberately generous.
+ * Getting it wrong makes a panel vanish at the edge of the view, not draw
+ * wrongly.
  */
-export const SUMMARY_PANEL_MAX_HEIGHT = 280;
+export const SUMMARY_PANEL_MAX_HEIGHT = 360;
 
 /** What the panel knows about its column. */
 export interface SummaryPanelColumn {
@@ -428,6 +429,45 @@ const extremes = (min: CellValue, max: CellValue, type: ColumnDataType): string 
   return low === high ? low : `${low} … ${high}`;
 };
 
+/**
+ * The numbers only a number column has: its ends, its total, its middle and its
+ * spread.
+ *
+ * Named one to a line rather than folded into a range, which is what a text or
+ * date column gets. Two reasons. Which end is which stops being obvious the
+ * moment the values are negative — `-40 … -3` is read twice before it is read
+ * right — and these five sit together as one block that can be compared down a
+ * row of panels, which is the thing a person picks four columns out to do.
+ *
+ * All five are formatted as statistics rather than as cells, including the two
+ * that *are* readings from the column. Formatting a min the way the column
+ * formats its cells was the first instinct and it is wrong here: the min sits
+ * directly under a histogram axis labelled with the same number, and one of them
+ * printing `32,547.09` while the other prints `32547.09` reads as a bug rather
+ * than as a distinction worth drawing.
+ *
+ * The exception is a number too wide for a double, which arrives as text and
+ * keeps it: turning that into a `number` to format it would drop the digits the
+ * source went out of its way to preserve.
+ */
+const numericSections = (summary: ColumnSummary, type: ColumnDataType): readonly PanelSection[] => {
+  const sections: PanelSection[] = [];
+  const figure = (value: CellValue): string =>
+    typeof value === 'number'
+      ? formatStatistic(value)
+      : formatCell(value, type, { locale: 'en-US' });
+  if (summary.min !== undefined) sections.push(factSection('min', figure(summary.min)));
+  if (summary.max !== undefined) sections.push(factSection('max', figure(summary.max)));
+  if (summary.sum !== undefined) sections.push(factSection('sum', formatStatistic(summary.sum)));
+  if (summary.mean !== undefined) sections.push(factSection('mean', formatStatistic(summary.mean)));
+  // Absent rather than zero below two values, and absent is not a thing to draw
+  // a row about: a column of one number has no spread to report.
+  if (summary.stdDev !== undefined) {
+    sections.push(factSection('std dev', formatStatistic(summary.stdDev)));
+  }
+  return sections;
+};
+
 /** Everything one panel has to say, top to bottom. */
 export const summaryPanelSections = (column: SummaryPanelColumn): readonly PanelSection[] => {
   const sections = [...nameSections(column)];
@@ -445,20 +485,21 @@ export const summaryPanelSections = (column: SummaryPanelColumn): readonly Panel
     sections.push(...histogramSections(chart.bins));
   }
 
-  // The extremes, where the chart above has not already drawn them: a complete
-  // set of bars names them, and a histogram is labelled with them.
-  const min = summary.min;
-  const max = summary.max;
-  if (
-    chart.kind !== 'histogram' &&
-    summary.frequenciesComplete !== true &&
-    min !== undefined &&
-    max !== undefined
-  ) {
-    sections.push(factSection('range', extremes(min, max, column.type)));
-  }
-  if (isNumericType(column.type) && summary.mean !== undefined) {
-    sections.push(factSection('mean', formatStatistic(summary.mean)));
+  if (isNumericType(column.type)) {
+    // Stated even where the histogram above is labelled with the same two
+    // numbers: those labels are the ends of an axis, and these are the column's
+    // figures, sitting with the three that go with them.
+    sections.push(...numericSections(summary, column.type));
+  } else {
+    // A text or date column gets one line for both ends. There is no sum of
+    // country names and no deviation from an average date, and `Denmark …
+    // Poland` says what two rows would say in half the space — except where the
+    // bars above have already named every value there is, which says it better.
+    const min = summary.min;
+    const max = summary.max;
+    if (summary.frequenciesComplete !== true && min !== undefined && max !== undefined) {
+      sections.push(factSection('range', extremes(min, max, column.type)));
+    }
   }
   if (summary.basis === 'sampled') {
     // The one thing that must never be left implied: these numbers describe a

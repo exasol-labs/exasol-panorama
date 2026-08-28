@@ -78,6 +78,7 @@ describe('session state', () => {
       expandedAction: null,
       hoveredBinding: null,
       pressedBinding: null,
+      hoveredColumn: null,
     });
     expect(isDragging(state)).toBe(false);
     expect(isSelected(state, a)).toBe(false);

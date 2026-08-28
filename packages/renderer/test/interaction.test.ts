@@ -208,6 +208,57 @@ describe('picking columns out by their headers', () => {
     harness.controller.onPointerUp(headerOf(harness, index));
   };
 
+  /**
+   * A column header is a label that happens to be a button, so something has to
+   * say so before it is clicked. What makes the hint trustworthy is that it is
+   * driven by the same hit test as the click: wherever it lights up, clicking
+   * picks that column out, and wherever it does not, clicking does not.
+   *
+   * The places it must stay dark are the interesting ones. The strip of row
+   * numbers is part of the header band but names no column. The few pixels at a
+   * column's edge look like header and are a resize handle.
+   */
+  it('lights up exactly where a click would pick a column out', () => {
+    const harness = setup();
+    const entity = harness.core.world.entities.get(harness.table.id) as TableEntity;
+    const layout = computeColumnLayout(entity.columns);
+    const gutter = rowNumberGutterWidth(1_000_000, DEFAULT_TABLE_THEME);
+    const first = layout.placements[0] as (typeof layout.placements)[number];
+    const second = layout.placements[1] as (typeof layout.placements)[number];
+
+    const places = [
+      { what: 'the row numbers', at: harness.screenOf(gutter / 2, HEADER_Y) },
+      { what: 'the first header', at: headerOf(harness, 0) },
+      { what: 'the second header', at: headerOf(harness, 1) },
+      {
+        what: "a column's resize edge",
+        at: harness.screenOf(gutter + first.x + first.width, HEADER_Y),
+      },
+      { what: 'the body below', at: harness.screenOf(gutter + second.x + 4, HEADER_Y + 120) },
+    ];
+
+    for (const { what, at } of places) {
+      harness.controller.onPointerMove(at);
+      const lit = harness.core.session.hoveredColumn;
+      // The two halves of the affordance say the same thing: where a header
+      // lights up, the cursor is a hand. (The reverse is not a rule — a
+      // followable cell in the body is a hand too, and picks out no column.)
+      if (lit !== null) expect(harness.controller.cursor, what).toBe('pointer');
+      // What clicking there actually does, from a clean selection each time so
+      // that a second click on a lit column does not read as taking it out.
+      harness.core.dispatchSession({ type: 'SetSelectedColumns', ids: [] });
+      harness.controller.onPointerDown(at);
+      harness.controller.onPointerUp(at);
+      expect(harness.core.session.selectedColumns, what).toEqual(lit === null ? [] : [lit]);
+    }
+
+    // And nothing stays lit once the pointer has gone.
+    harness.controller.onPointerMove(headerOf(harness, 0));
+    expect(harness.core.session.hoveredColumn).toBe(columnId(harness, 0));
+    harness.controller.onPointerLeave();
+    expect(harness.core.session.hoveredColumn).toBeNull();
+  });
+
   it('picks a column out when its header is clicked', () => {
     const harness = setup();
     click(harness, 1);

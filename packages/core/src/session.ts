@@ -139,6 +139,14 @@ export interface SessionState {
   /** Binding whose marker is under the pointer; its detail is revealed. */
   readonly hoveredBinding: BindingId | null;
   readonly pressedBinding: BindingId | null;
+  /**
+   * Column header under the pointer, so it can be shown as the clickable thing
+   * it is. Set from the same hit test that decides what a click would do, which
+   * is what keeps the hint honest: it lights up over the header and nowhere
+   * else — not over the row numbers beside it, which name no column, and not
+   * over the few pixels at a column's edge, where the gesture is a resize.
+   */
+  readonly hoveredColumn: EntityId | null;
 }
 
 export const emptySession = (): SessionState => ({
@@ -155,6 +163,7 @@ export const emptySession = (): SessionState => ({
   expandedAction: null,
   hoveredBinding: null,
   pressedBinding: null,
+  hoveredColumn: null,
 });
 
 export interface SetSelectionCommand {
@@ -221,6 +230,11 @@ export interface SetHoveredBindingCommand {
   readonly id: BindingId | null;
 }
 
+export interface SetHoveredColumnCommand {
+  readonly type: 'SetHoveredColumn';
+  readonly id: EntityId | null;
+}
+
 export interface SetPressedBindingCommand {
   readonly type: 'SetPressedBinding';
   readonly id: BindingId | null;
@@ -232,6 +246,7 @@ export type SessionCommand =
   | SetSelectedMarksCommand
   | SetExpandedActionCommand
   | SetHoveredBindingCommand
+  | SetHoveredColumnCommand
   | SetPressedBindingCommand
   | SetHoveredActionCommand
   | SetPressedActionCommand
@@ -316,6 +331,8 @@ export const applySessionCommand = (state: SessionState, command: SessionCommand
         : { ...state, expandedAction: command.target };
     case 'SetHoveredBinding':
       return state.hoveredBinding === command.id ? state : { ...state, hoveredBinding: command.id };
+    case 'SetHoveredColumn':
+      return state.hoveredColumn === command.id ? state : { ...state, hoveredColumn: command.id };
     case 'SetPressedBinding':
       return state.pressedBinding === command.id ? state : { ...state, pressedBinding: command.id };
   }

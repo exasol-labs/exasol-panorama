@@ -77,10 +77,17 @@ describe('hitTestTable', () => {
   it('finds column headers and the gutter header', () => {
     const first = layout.placements[0];
     if (first === undefined) throw new Error('expected columns');
+    // A column's header is a button, and says so under the pointer.
     expect(hitTestTable(input(), GUTTER + first.width / 2, TITLE + 4)).toMatchObject({
       kind: 'header',
+      cursor: 'pointer',
     });
-    expect(hitTestTable(input(), 20, TITLE + 4)).toMatchObject({ kind: 'header', column: null });
+    // The row numbers beside it name no column, so nothing is promised there.
+    expect(hitTestTable(input(), 20, TITLE + 4)).toMatchObject({
+      kind: 'header',
+      column: null,
+      cursor: 'default',
+    });
   });
 
   it('prefers the column separator over the header', () => {

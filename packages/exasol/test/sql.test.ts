@@ -110,17 +110,32 @@ describe('summarising one column', () => {
   it('reads one column and no others', () => {
     const query = summaryAggregateQuery('SELECT * FROM "S"."T"', 'C', true);
     expect(query).toBe(
-      'SELECT COUNT(*), COUNT("C"), COUNT(DISTINCT "C"), MIN("C"), MAX("C"), AVG("C")' +
+      'SELECT COUNT(*), COUNT("C"), COUNT(DISTINCT "C"), MIN("C"), MAX("C")' +
+        ', AVG("C"), SUM("C"), STDDEV("C")' +
         ' FROM (SELECT * FROM "S"."T") AS "panorama_source"',
     );
   });
 
-  it('keeps the shape of the result the same for a column with no mean', () => {
+  /**
+   * `STDDEV` is the sample deviation in Exasol, and the sample deviation is what
+   * `ColumnSummaryBuilder` computes for the sources that read their own rows.
+   * A database saying one thing and the demo relations another would make the
+   * same panel mean two things depending on where the column came from.
+   */
+  it('asks for the sample deviation, not the population one', () => {
+    const query = summaryAggregateQuery('SELECT 1', 'C', true);
+    expect(query).toContain('STDDEV("C")');
+    expect(query).not.toContain('STDDEV_POP');
+  });
+
+  it('keeps the shape of the result the same for a column with no statistics', () => {
     // The columns come back by position, so a text column still has to answer
-    // six of them.
-    expect(summaryAggregateQuery('SELECT 1', 'C', false)).toContain(
-      'MIN("C"), MAX("C"), CAST(NULL AS DOUBLE)',
+    // all eight of them.
+    const query = summaryAggregateQuery('SELECT 1', 'C', false);
+    expect(query).toContain(
+      'MIN("C"), MAX("C"), CAST(NULL AS DOUBLE), CAST(NULL AS DOUBLE), CAST(NULL AS DOUBLE)',
     );
+    expect(query.split(',')).toHaveLength(8);
   });
 
   it('quotes the awkward column names real schemas contain', () => {

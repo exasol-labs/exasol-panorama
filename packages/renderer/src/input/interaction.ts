@@ -618,6 +618,15 @@ export class InteractionController {
           ? { entityId: target.entity.id, action: target.hit.action }
           : null,
     });
+    // From the same hit test that decides what a click would do, rather than
+    // from the pointer's position worked out again: a header lights up exactly
+    // where clicking it would pick the column out, so the hint cannot promise
+    // something the click does not do. A resize edge is a `column-resize` hit
+    // and the row numbers are a header hit naming no column, so neither lights.
+    this.#core.dispatchSession({
+      type: 'SetHoveredColumn',
+      id: target !== null && target.hit.kind === 'header' ? (target.hit.column?.id ?? null) : null,
+    });
   }
 
   #selectColumns(ids: readonly EntityId[]): void {
@@ -797,6 +806,7 @@ export class InteractionController {
     this.#core.dispatchSession({ type: 'SetHoveredMark', target: null });
     this.#core.dispatchSession({ type: 'SetHoveredAction', target: null });
     this.#core.dispatchSession({ type: 'SetPressedAction', target: null });
+    this.#core.dispatchSession({ type: 'SetHoveredColumn', id: null });
     this.#cursor = 'default';
   }
 

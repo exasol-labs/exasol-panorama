@@ -222,11 +222,16 @@ export const hitTestTable = (
         return { kind: 'column-resize', column: edge, tableId, cursor: 'col-resize' };
       }
     }
+    const column = localX < gutterWidth ? null : columnAtOffset(layout, contentX);
     return {
       kind: 'header',
-      column: localX < gutterWidth ? null : columnAtOffset(layout, contentX),
+      column,
       tableId,
-      cursor: 'default',
+      // A pointer where there is a column to pick out, and only there: the strip
+      // of row numbers is part of the header band but names nothing, so a hand
+      // over it would promise a click that does nothing. The same rule the hover
+      // highlight follows, from the same fact.
+      cursor: column === null ? 'default' : 'pointer',
     };
   }
 

@@ -159,6 +159,10 @@ class ExasolTableDataSession implements TableDataSession {
     const min = toCell(aggregate[3]?.[0]);
     const max = toCell(aggregate[4]?.[0]);
     const mean = numeric ? toCell(aggregate[5]?.[0]) : null;
+    const sum = numeric ? toCell(aggregate[6]?.[0]) : null;
+    // Null from the database rather than absent: `STDDEV` of a single row has no
+    // answer and says so, which is the same thing the in-memory builder says.
+    const deviation = numeric ? toCell(aggregate[7]?.[0]) : null;
 
     const base: ColumnSummary = {
       column,
@@ -169,6 +173,8 @@ class ExasolTableDataSession implements TableDataSession {
       ...(min === null ? {} : { min }),
       ...(max === null ? {} : { max }),
       ...(mean === null ? {} : { mean: Number(mean) }),
+      ...(sum === null ? {} : { sum: Number(sum) }),
+      ...(deviation === null ? {} : { stdDev: Number(deviation) }),
     };
     if (present === 0) return base;
 

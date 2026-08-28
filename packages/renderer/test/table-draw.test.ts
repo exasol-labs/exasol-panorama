@@ -195,6 +195,58 @@ describe('buildTableDrawList', () => {
   });
 });
 
+describe('a column header under the pointer', () => {
+  const drawWith = (
+    hoveredColumn: string | null,
+    selectedColumns: readonly string[] = [],
+  ): ReturnType<typeof buildTableDrawList> =>
+    buildTableDrawList({
+      entity: table,
+      layout,
+      theme: DEFAULT_TABLE_THEME,
+      lod: 'full',
+      scrollTop: 0,
+      scrollLeft: 0,
+      rowCount: 1_000,
+      data: dataView(),
+      hoveredColumn: hoveredColumn as never,
+      selectedColumns: selectedColumns as never,
+    });
+
+  const hints = (list: ReturnType<typeof buildTableDrawList>): number =>
+    list.quads.filter((q) => q.color === DEFAULT_TABLE_THEME.columnHoverHeaderBackground).length;
+
+  it('is hinted, on the header only', () => {
+    const first = layout.placements[0]?.id as string;
+    const list = drawWith(first);
+    expect(hints(list)).toBe(1);
+    const hint = list.quads.find(
+      (q) => q.color === DEFAULT_TABLE_THEME.columnHoverHeaderBackground,
+    );
+    // The header band, between the title bar and the first row — not the column
+    // below it, which is what being *selected* washes over.
+    expect(hint?.y).toBe(DEFAULT_TABLE_THEME.titleHeight);
+    expect((hint?.y ?? 0) + (hint?.height ?? 0)).toBe(table.view.headerHeight);
+  });
+
+  it('is not hinted when nothing is under the pointer', () => {
+    expect(hints(drawWith(null))).toBe(0);
+  });
+
+  /**
+   * The selection is the same hue and a stronger one, so a column that is both
+   * pointed at and picked out would otherwise be washed twice and read as a
+   * third state that does not exist.
+   */
+  it('gives way to the selection on a column that is already picked out', () => {
+    const first = layout.placements[0]?.id as string;
+    const second = layout.placements[1]?.id as string;
+    expect(hints(drawWith(first, [first]))).toBe(0);
+    // But a neighbour being selected is no reason not to hint this one.
+    expect(hints(drawWith(first, [second]))).toBe(1);
+  });
+});
+
 describe('a column picked out by its header', () => {
   const drawWith = (selectedColumns: readonly string[]): ReturnType<typeof buildTableDrawList> =>
     buildTableDrawList({

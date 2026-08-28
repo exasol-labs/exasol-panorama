@@ -66,6 +66,18 @@ export interface ColumnSummary {
   readonly max?: CellValue;
   /** Numbers only; the others have no mean worth taking. */
   readonly mean?: number;
+  /** Numbers only. Absent rather than zero where there was nothing to add up. */
+  readonly sum?: number;
+  /**
+   * Numbers only: how far the values sit from their mean, in their own units.
+   *
+   * The *sample* deviation, dividing by one less than the count, which is what
+   * `STDDEV` means in Exasol and in every other database worth matching. It
+   * needs two values to mean anything — one value deviates from itself by
+   * nothing, which is a statement about arithmetic rather than about the data —
+   * so below that it is absent rather than zero.
+   */
+  readonly stdDev?: number;
   /**
    * A bar per value, most frequent first — or, when they are all here, in the
    * column's own order so that dates and numbers read as a series.
@@ -133,6 +145,25 @@ export const summaryChart = (summary: ColumnSummary): SummaryChart => {
  * cannot be known until the last value has been seen, and a second pass over a
  * result set is a second pass over a network.
  */
+/**
+ * How far a set of numbers sits from its own mean, in their units.
+ *
+ * Two passes rather than one, and deliberately: the one-pass form accumulates a
+ * sum of squares, and for values that are large and close together — a column of
+ * timestamps as epoch milliseconds, say — that subtracts two nearly equal huge
+ * numbers and keeps the rounding error. The values are already in hand here for
+ * binning, so the stable form costs nothing but a second walk.
+ *
+ * `undefined` below two values: one number deviates from itself by nothing,
+ * which says something about arithmetic rather than about the data.
+ */
+export const sampleStdDev = (values: readonly number[]): number | undefined => {
+  if (values.length < 2) return undefined;
+  const mean = values.reduce((total, value) => total + value, 0) / values.length;
+  const squares = values.reduce((total, value) => total + (value - mean) ** 2, 0);
+  return Math.sqrt(squares / (values.length - 1));
+};
+
 export class ColumnSummaryBuilder {
   readonly #column: string;
   readonly #type: ColumnDataType;
@@ -182,6 +213,7 @@ export class ColumnSummaryBuilder {
   finish(basis: SummaryBasis): ColumnSummary {
     const present = this.#rows - this.#nulls;
     const distinct = this.#overflowed ? null : this.#counts.size;
+    const deviation = isNumericType(this.#type) ? sampleStdDev(this.#numbers) : undefined;
     const base: ColumnSummary = {
       column: this.#column,
       rows: this.#rows,
@@ -191,8 +223,9 @@ export class ColumnSummaryBuilder {
       ...(this.#min === null ? {} : { min: this.#min }),
       ...(this.#max === null ? {} : { max: this.#max }),
       ...(isNumericType(this.#type) && this.#numbers.length > 0
-        ? { mean: this.#total / this.#numbers.length }
+        ? { mean: this.#total / this.#numbers.length, sum: this.#total }
         : {}),
+      ...(deviation === undefined ? {} : { stdDev: deviation }),
     };
     if (present === 0) return base;
 

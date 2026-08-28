@@ -359,6 +359,86 @@ describe('a panel drawing a distribution', () => {
   });
 });
 
+describe('a panel of numbers', () => {
+  const revenue = summary({
+    column: 'REVENUE',
+    distinct: 900,
+    min: -40,
+    max: 120,
+    mean: 41.5,
+    sum: 4_150,
+    stdDev: 12.25,
+    bins: [{ from: -40, to: 120, count: 100 }],
+  });
+
+  /**
+   * One line each, rather than the single `range` a column of words gets. Which
+   * end is which stops being obvious as soon as the values are negative, and
+   * these figures are read down a row of panels as a block.
+   */
+  it('names every figure it has', () => {
+    const { labels } = draw([
+      request({ column: column({ name: 'REVENUE', type: DOUBLE, summary: revenue }) }),
+    ]);
+    expect(labels).toEqual(
+      expect.arrayContaining(['min', 'max', 'sum', 'mean', 'std dev', '-40', '120', '12.25']),
+    );
+    expect(labels).not.toContain('range');
+  });
+
+  /**
+   * The min sits directly under a histogram axis labelled with the same number.
+   * Two renderings of one figure, one above the other, reads as a bug.
+   */
+  it('writes its ends the same way the axis above them does', () => {
+    const wide = summary({
+      column: 'REVENUE',
+      distinct: 900,
+      min: 32_547.09,
+      max: 32_682.72,
+      sum: 3_261_490.5,
+      bins: [{ from: 32_547.09, to: 32_682.72, count: 100 }],
+    });
+    const { labels } = draw([
+      request({ column: column({ name: 'REVENUE', type: DOUBLE, summary: wide }) }),
+    ]);
+    // Once for the axis and once for the figure, and the same both times.
+    expect(labels.filter((text) => text === '32,547.09')).toHaveLength(2);
+    expect(labels).not.toContain('32547.09');
+  });
+
+  it('says nothing about a deviation it does not have', () => {
+    const { labels } = draw([
+      request({
+        column: column({
+          name: 'REVENUE',
+          type: DOUBLE,
+          // One row: a sum and a mean, but nothing to deviate from.
+          summary: summary({ rows: 1, distinct: 1, min: 7, max: 7, mean: 7, sum: 7 }),
+        }),
+      }),
+    ]);
+    expect(labels).toContain('sum');
+    expect(labels).not.toContain('std dev');
+  });
+
+  it('gives a column of words a range and no arithmetic', () => {
+    const { labels } = draw([
+      request({
+        column: column({
+          type: VARCHAR,
+          summary: summary({ distinct: 40, min: 'Denmark', max: 'Poland' }),
+        }),
+      }),
+    ]);
+    expect(labels).toContain('range');
+    expect(labels).toContain('Denmark … Poland');
+    for (const figure of ['min', 'max', 'sum', 'mean', 'std dev']) {
+      expect(labels).not.toContain(figure);
+    }
+  });
+});
+
 describe('a panel that knows it is not looking at everything', () => {
   it('says so, in the colour reserved for what must not be skimmed past', () => {
     const { labels, texts } = draw([

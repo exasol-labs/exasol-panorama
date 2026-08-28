@@ -185,6 +185,37 @@ describe('summarising a column value by value', () => {
     expect(summarise(['a']).mean).toBeUndefined();
   });
 
+  it('adds the numbers up and says how far they spread', () => {
+    const summary = summarise([2, 4, 4, 4, 5, 5, 7, 9], DOUBLE);
+    expect(summary.sum).toBe(40);
+    expect(summary.mean).toBe(5);
+    // The *sample* deviation. These eight numbers are the textbook set whose
+    // population deviation is exactly 2; dividing the same squares by seven
+    // rather than eight is what makes this 2.14, and it is what `STDDEV` means
+    // to the database answering the same question about a column too big to
+    // read. The two must not drift apart.
+    expect(summary.stdDev).toBeCloseTo(2.1381, 4);
+  });
+
+  it('adds up and spreads out nothing that is not a number', () => {
+    expect(summarise(['pear', 'apple', 'fig']).sum).toBeUndefined();
+    expect(summarise(['pear', 'apple', 'fig']).stdDev).toBeUndefined();
+    // Ordered, though, so both ends are still known — which is all a column of
+    // words has to say about its shape.
+    expect(summarise(['pear', 'apple', 'fig']).min).toBe('apple');
+  });
+
+  it('reports no deviation from a single number, and none from no numbers', () => {
+    // One value deviates from itself by nothing, which is a fact about
+    // arithmetic rather than about the column; zero would claim the column is
+    // uniform, and one row cannot say that.
+    expect(summarise([7], DOUBLE).stdDev).toBeUndefined();
+    expect(summarise([7], DOUBLE).sum).toBe(7);
+    expect(summarise([null], DOUBLE).stdDev).toBeUndefined();
+    // Two the same, on the other hand, genuinely do not vary.
+    expect(summarise([7, 7], DOUBLE).stdDev).toBe(0);
+  });
+
   it('gives up the distinct count rather than reporting the part that fit', () => {
     const builder = new ColumnSummaryBuilder('C', VARCHAR);
     for (let index = 0; index < MAX_TRACKED_DISTINCT + 5; index += 1) {

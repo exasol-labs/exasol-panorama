@@ -137,16 +137,31 @@ export const numberLiteral = (value: number): string => {
 
 const subquery = (statement: string): string => `(${statement}) AS "panorama_source"`;
 
+/**
+ * The counts, the extremes and the numeric statistics, in one pass.
+ *
+ * `STDDEV` rather than `STDDEV_POP`, because these rows are a population only in
+ * the trivial sense: what somebody comparing two columns wants is the sample
+ * deviation, and it is what `ColumnSummaryBuilder` computes for the sources that
+ * have to read the rows themselves. The two paths must not disagree about what
+ * the same word means.
+ *
+ * The non-numeric columns are still selected, as nulls of the right type, so the
+ * result has one shape and the reader has one set of indices rather than a layout
+ * that depends on the column.
+ */
 export const summaryAggregateQuery = (
   statement: string,
   column: string,
   numeric: boolean,
 ): string => {
   const quoted = quoteIdentifier(column);
-  const mean = numeric ? `, AVG(${quoted})` : ', CAST(NULL AS DOUBLE)';
+  const numbers = numeric
+    ? `, AVG(${quoted}), SUM(${quoted}), STDDEV(${quoted})`
+    : ', CAST(NULL AS DOUBLE), CAST(NULL AS DOUBLE), CAST(NULL AS DOUBLE)';
   return (
     `SELECT COUNT(*), COUNT(${quoted}), COUNT(DISTINCT ${quoted})` +
-    `, MIN(${quoted}), MAX(${quoted})${mean}` +
+    `, MIN(${quoted}), MAX(${quoted})${numbers}` +
     ` FROM ${subquery(statement)}`
   );
 };
