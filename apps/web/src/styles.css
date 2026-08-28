@@ -555,12 +555,35 @@ button:disabled {
 .pn-canvas-host {
   width: 100%;
   height: 100%;
+  /*
+   * The window onto the canvas rather than the canvas itself. The canvas is drawn
+   * as large as the display could ever ask for and pinned to this corner, and
+   * this is what cuts it down to the size the window currently is — so resizing
+   * the window changes this rectangle and nothing about the picture inside it.
+   * See `PanoramaCanvas`.
+   */
+  position: relative;
+  overflow: hidden;
+  /*
+   * What shows through the canvas when its drawing buffer has been allocated and
+   * not yet drawn into — which now happens once, before the canvas is in the
+   * document. The same grey the scene clears to, so the two are indistinguishable
+   * either way. See `createPanoramaEngine`.
+   */
+  background: var(--pn-bg);
 }
 
 .pn-canvas {
   display: block;
-  width: 100%;
-  height: 100%;
+  /*
+   * Pinned to the host's top-left, and sized in pixels by `PanoramaCanvas` rather
+   * than by CSS: it is deliberately bigger than the box that clips it, which
+   * `100%` could not express. Screen coordinates are measured from this corner,
+   * and it is the one corner a window resize never moves.
+   */
+  position: absolute;
+  top: 0;
+  left: 0;
   outline: none;
   touch-action: none;
 }

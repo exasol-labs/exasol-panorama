@@ -7,6 +7,8 @@ mod claude;
 mod database;
 mod exasol;
 mod locate;
+#[cfg(target_os = "macos")]
+mod mac;
 mod pipe;
 mod session;
 mod trust;
@@ -115,7 +117,17 @@ fn exasol_deployment_credentials(name: String) -> Result<exasol::Credentials, St
 /// they end up in the same log as the endpoint and the socket, next to the launch
 /// they belong to.
 #[tauri::command]
-fn report_timing(state: tauri::State<'_, Arc<agent::AgentState>>, stage: String) {
+fn report_timing(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, Arc<agent::AgentState>>,
+    stage: String,
+) {
+    // The page has drawn, so WebKit has made the layers it draws into, so there is
+    // something to anchor that did not exist when the window opened — see `mac`.
+    #[cfg(target_os = "macos")]
+    mac::hold_contents_still(&window);
+    #[cfg(not(target_os = "macos"))]
+    let _ = window;
     // The stage is text from the page, on its way into a log line: one line, and a
     // length nobody has to scroll.
     let stage: String = stage
@@ -215,6 +227,18 @@ fn window() {
             // window restored four times too large is a slow first frame that
             // looks like a slow application.
             if let Some(window) = app.get_webview_window("main") {
+                // The *webview's* own background, not only the window's. During a
+                // live resize the window server resizes the layer before the page
+                // can repaint it, and whatever the layer's background is is what
+                // shows in the meantime. Both are set to the colour the canvas
+                // clears to, so there is nothing for a resize to flash to.
+                let canvas_grey = tauri::window::Color(0xf1, 0xf3, 0xf5, 0xff);
+                let _ = window.set_background_color(Some(canvas_grey));
+                let _ = window.as_ref().window().set_background_color(Some(canvas_grey));
+                // And the layers themselves must not be scaled to fill a window
+                // that has changed size — see `mac`.
+                #[cfg(target_os = "macos")]
+                mac::hold_contents_still(&window);
                 let scale = window.scale_factor().unwrap_or(1.0);
                 if let Ok(size) = window.inner_size() {
                     eprintln!(

@@ -31,7 +31,7 @@ const open = async (name) => {
 await open('SAMPLE_100');
 await open('COUNTRIES');
 
-const box = await page.locator('.pn-canvas').boundingBox();
+const box = await page.locator('.pn-canvas-host').boundingBox();
 const centre = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
 const probe = async (x, y) => {
   await page.mouse.move(x, y);

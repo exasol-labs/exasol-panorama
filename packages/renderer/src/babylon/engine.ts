@@ -30,6 +30,15 @@ export interface CreateEngineOptions {
   readonly headless?: boolean;
 }
 
+/**
+ * Device pixels per CSS pixel, capped.
+ *
+ * Everything that has to agree about resolution reads it here: the drawing
+ * buffer's size and the glyph atlas it is drawn with. Past 2x the extra pixels
+ * cost a real amount of fill rate and show nobody anything.
+ */
+export const drawingScale = (): number => Math.min(2, globalThis.devicePixelRatio || 1);
+
 export const isWebGPUSupported = async (): Promise<boolean> => {
   try {
     return await WebGPUEngine.IsSupportedAsync;
@@ -57,8 +66,20 @@ export const createPanoramaEngine = async (
     engine: new Engine(canvas, options.antialias ?? true, {
       preserveDrawingBuffer: false,
       stencil: false,
-      // Table text must stay crisp; the browser must not resample the canvas.
-      alpha: false,
+      /**
+       * With an alpha channel, deliberately.
+       *
+       * A drawing buffer is emptied whenever it is allocated. Without alpha,
+       * "empty" composites as opaque black; with it, the page shows through —
+       * and the page behind the canvas is painted the same grey the scene clears
+       * to (`canvasBackground` here, `--pn-bg` there). So the one state the
+       * canvas can be in that nothing drew is indistinguishable from a drawn
+       * frame, which is the difference between a flicker and no flicker.
+       *
+       * It costs nothing in sharpness: what keeps text crisp is the drawing
+       * buffer being sized in device pixels, which `PanoramaCanvas` does.
+       */
+      alpha: true,
     }),
     backend: 'webgl',
   };

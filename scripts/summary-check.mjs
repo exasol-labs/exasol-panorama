@@ -26,7 +26,7 @@ await page.waitForTimeout(1200);
 await page.locator('[aria-label="Sample tables"] button:has-text("SAMPLE_100")').first().click();
 await page.waitForTimeout(900);
 
-const box = await page.locator('.pn-canvas').boundingBox();
+const box = await page.locator('.pn-canvas-host').boundingBox();
 const centre = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
 
 /** Screen-to-world mapping, read from the live pointer rather than assumed. */

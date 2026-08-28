@@ -53,7 +53,7 @@ const openSample = async (name) => {
   await page.waitForTimeout(900);
 };
 
-const canvasBox = await page.locator('.pn-canvas').boundingBox();
+const canvasBox = await page.locator('.pn-canvas-host').boundingBox();
 const centre = { x: canvasBox.x + canvasBox.width / 2, y: canvasBox.y + canvasBox.height / 2 };
 
 const report = {};

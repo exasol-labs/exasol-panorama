@@ -42,6 +42,18 @@ export class CameraController {
   readonly #maxScale: number;
   #state: CameraState;
   #viewport: Viewport = { width: 1, height: 1 };
+  /** Whether the viewport above is a real measurement or the placeholder. */
+  #measured = false;
+  /**
+   * The part of the viewport the user can actually see, or `null` for all of it.
+   *
+   * These differ because the canvas is drawn larger than the window shows and
+   * clipped to it — see `PanoramaCanvas`. Everything geometric works in the
+   * drawn viewport, because that is what the projection covers and what screen
+   * coordinates are measured in. Everything about *where to put things* works in
+   * this one, because a table placed where nobody can see it has been lost.
+   */
+  #visible: Viewport | null = null;
 
   constructor(options: CameraOptions = {}) {
     this.#minScale = options.minScale ?? DEFAULT_MIN_SCALE;
@@ -65,10 +77,56 @@ export class CameraController {
     return this.#viewport;
   }
 
-  setViewport(viewport: Viewport): void {
-    this.#viewport = {
+  /** The visible part of the viewport, anchored at its top-left corner. */
+  get visible(): Viewport {
+    return this.#visible ?? this.#viewport;
+  }
+
+  /**
+   * Narrows the viewport to the part of it on screen.
+   *
+   * Nothing moves: the projection is unchanged, so every pixel already drawn
+   * stays exactly where it is and the window simply shows more or less of it.
+   * That is the whole point — this is what a window resize does now, and it
+   * cannot disturb the picture because it does not touch it.
+   */
+  setVisible(viewport: Viewport): void {
+    this.#visible = {
       width: Math.max(1, viewport.width),
       height: Math.max(1, viewport.height),
+    };
+  }
+
+  /**
+   * Adopts a new viewport, keeping the world where it is on screen.
+   *
+   * The camera is centre-anchored: `centerX`/`centerY` sit in the middle of the
+   * viewport. So a viewport 200px wider would put everything 100px further right
+   * without the camera having moved — which during a window resize reads as the
+   * whole scene sliding, one step per frame, for as long as the drag lasts.
+   *
+   * Moving the centre by half of whatever the viewport gained holds the top-left
+   * corner still instead: a resize reveals or hides world at the edges that
+   * moved, and leaves everything already on screen exactly where it was.
+   *
+   * The first measurement is adopted rather than compensated for. There is no
+   * previous viewport to hold anything still relative to — only the 1x1
+   * placeholder this starts life with.
+   */
+  setViewport(viewport: Viewport): void {
+    const width = Math.max(1, viewport.width);
+    const height = Math.max(1, viewport.height);
+    const previous = this.#viewport;
+    this.#viewport = { width, height };
+    if (!this.#measured) {
+      this.#measured = true;
+      return;
+    }
+    const { scale } = this.#state;
+    this.#state = {
+      ...this.#state,
+      centerX: this.#state.centerX + (width - previous.width) / (2 * scale),
+      centerY: this.#state.centerY + (height - previous.height) / (2 * scale),
     };
   }
 
@@ -120,8 +178,9 @@ export class CameraController {
 
   /** Frames a world rectangle with a margin, as "zoom to fit" does. */
   fit(rect: { x: number; y: number; width: number; height: number }, margin = 40): void {
-    const availableWidth = Math.max(1, this.#viewport.width - margin * 2);
-    const availableHeight = Math.max(1, this.#viewport.height - margin * 2);
+    const visible = this.visible;
+    const availableWidth = Math.max(1, visible.width - margin * 2);
+    const availableHeight = Math.max(1, visible.height - margin * 2);
     const scale = clamp(
       Math.min(
         availableWidth / Math.max(1, rect.width),
@@ -130,15 +189,34 @@ export class CameraController {
       this.#minScale,
       this.#maxScale,
     );
+    // Centred in the visible part, which is at the top-left of the drawn one: the
+    // offset between the two centres is half of what is drawn but not shown.
     this.#state = {
       scale,
-      centerX: rect.x + rect.width / 2,
-      centerY: rect.y + rect.height / 2,
+      centerX: rect.x + rect.width / 2 + (this.#viewport.width - visible.width) / (2 * scale),
+      centerY: rect.y + rect.height / 2 + (this.#viewport.height - visible.height) / (2 * scale),
     };
   }
 
-  /** The world rectangle currently on screen, used for culling. */
+  /**
+   * The world rectangle the user can see: what "where am I looking" means, and
+   * so what placing a new table and revealing an existing one both work from.
+   */
   visibleWorldRect(): { x: number; y: number; width: number; height: number } {
+    const topLeft = this.screenToWorld(0, 0);
+    const { width, height } = this.visible;
+    const { scale } = this.#state;
+    return { x: topLeft.x, y: topLeft.y, width: width / scale, height: height / scale };
+  }
+
+  /**
+   * The world rectangle the projection covers — everything drawn, seen or not.
+   * Wider than the above when the canvas is drawn larger than the window shows,
+   * and what culling has to use: a table cut from the draw list because it was
+   * outside the window is a table missing from the pixels a window resize is
+   * about to reveal.
+   */
+  drawnWorldRect(): { x: number; y: number; width: number; height: number } {
     const topLeft = this.screenToWorld(0, 0);
     const bottomRight = this.screenToWorld(this.#viewport.width, this.#viewport.height);
     return {

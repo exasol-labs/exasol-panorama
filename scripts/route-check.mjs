@@ -31,7 +31,7 @@ for (const name of ['SAMPLE_100', 'LARGE_STRINGS', 'COUNTRIES']) {
   await page.waitForTimeout(800);
 }
 
-const canvas = await page.locator('.pn-canvas').boundingBox();
+const canvas = await page.locator('.pn-canvas-host').boundingBox();
 const centre = { x: canvas.x + canvas.width / 2, y: canvas.y + canvas.height / 2 };
 const probe = async (x, y) => {
   await page.mouse.move(x, y);

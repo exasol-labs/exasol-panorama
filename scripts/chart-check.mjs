@@ -30,7 +30,7 @@ await page.waitForTimeout(1500);
 await page.locator('[aria-label="Sample tables"] button:has-text("SAMPLE_100")').first().click();
 await page.waitForTimeout(1000);
 
-const canvas = await page.locator('.pn-canvas').boundingBox();
+const canvas = await page.locator('.pn-canvas-host').boundingBox();
 const centre = { x: canvas.x + canvas.width / 2, y: canvas.y + canvas.height / 2 };
 const probe = async (x, y) => {
   await page.mouse.move(x, y);

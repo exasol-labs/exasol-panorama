@@ -42,7 +42,7 @@ await page.evaluate(() => {
   });
   core.dispatchSession({ type: 'SetSelection', ids: [] });
 });
-const box = await page.locator('.pn-canvas').boundingBox();
+const box = await page.locator('.pn-canvas-host').boundingBox();
 const centre = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
 await page.mouse.move(centre.x, centre.y);
 for (let step = 0; step < 3; step += 1) {

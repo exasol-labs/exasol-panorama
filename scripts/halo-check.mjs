@@ -18,7 +18,7 @@ await page.waitForTimeout(1200);
 await page.locator('[aria-label="Sample tables"] button:has-text("SAMPLE_100")').first().click();
 await page.waitForTimeout(900);
 
-const box = await page.locator('.pn-canvas').boundingBox();
+const box = await page.locator('.pn-canvas-host').boundingBox();
 
 /**
  * World position of the halo's close button, from the live world state: it sits

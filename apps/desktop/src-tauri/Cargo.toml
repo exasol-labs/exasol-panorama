@@ -14,6 +14,14 @@ edition = "2021"
 rust-version = "1.82"
 publish = false
 
+# AppKit, for one thing only: telling macOS not to stretch the window's contents
+# while the window is being dragged. See `src/mac.rs`. These are already in the
+# tree behind Tauri; they are named here because this crate calls them directly.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSView", "NSResponder", "objc2-quartz-core"] }
+objc2-quartz-core = { version = "0.3", features = ["CALayer"] }
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

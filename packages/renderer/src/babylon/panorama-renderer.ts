@@ -188,8 +188,14 @@ export class PanoramaRenderer {
     return this.#running;
   }
 
+  /** The size of the picture drawn, in CSS pixels. */
   resize(width: number, height: number): void {
     this.camera.setViewport({ width, height });
+  }
+
+  /** How much of that picture the window is currently showing. */
+  setVisible(width: number, height: number): void {
+    this.camera.setVisible({ width, height });
   }
 
   /** Column layout for a table, memoised on the column array identity. */
@@ -406,7 +412,9 @@ export class PanoramaRenderer {
     this.#solid.begin();
     this.#glyphs.begin();
 
-    const visibleRect = this.camera.visibleWorldRect();
+    // Everything drawn, not everything seen: the canvas is larger than the window
+    // shows, and the part beyond the edge is what a resize reveals.
+    const visibleRect = this.camera.drawnWorldRect();
     const lod = lodForScale(this.camera.scale, this.#lodThresholds);
     const session = this.#core.session;
     const selection = new Set(session.selection);
@@ -587,6 +595,22 @@ export class PanoramaRenderer {
   }
 
   /**
+   * Builds a frame *and puts it on the screen*.
+   *
+   * `renderFrame` only fills the vertex buffers; nothing reaches the drawing
+   * buffer until the scene is rendered. The two belong together everywhere
+   * except in tests, which check the draw list rather than the pixels — so this
+   * is what the render loop calls, and what anyone who needs a frame *now*
+   * calls. Resizing needs exactly that: assigning `canvas.width` empties the
+   * drawing buffer, and an empty buffer that is composited before the next
+   * frame is drawn is a flash of nothing.
+   */
+  draw(deltaMs = 0): void {
+    this.renderFrame(deltaMs);
+    this.scene.scene.render();
+  }
+
+  /**
    * Starts the render loop.
    *
    * A frame that throws is reported once and then stops the loop: a renderer
@@ -599,8 +623,7 @@ export class PanoramaRenderer {
     const engine = this.scene.scene.getEngine();
     engine.runRenderLoop(() => {
       try {
-        this.renderFrame(engine.getDeltaTime());
-        this.scene.scene.render();
+        this.draw(engine.getDeltaTime());
       } catch (error) {
         this.stop();
         onFrameError?.(error);
