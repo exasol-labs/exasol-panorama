@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { answerProtocol } from '@panorama/mcp';
+import { SERVER_VERSION, answerProtocol } from '@panorama/mcp';
 import { FakeHost } from './fixtures.js';
 
 /**
@@ -24,7 +24,13 @@ describe('answering the protocol in the page', () => {
     // The stamp is the tool count and a hash of them, so a client can tell a
     // cached list from a current one — and it is computed from the same
     // catalogue here as in the server.
-    expect(answer.result.serverInfo.version).toMatch(/^0\.1\.0\+16\./u);
+    //
+    // The version is read from the source rather than written out here: a test
+    // that spells it fails on every release, which teaches whoever is releasing
+    // to edit tests until they pass. What is worth asserting is the shape.
+    expect(answer.result.serverInfo.version).toMatch(
+      new RegExp(`^${SERVER_VERSION.replace(/\./gu, '\\.')}\\+16\\.[0-9a-f]+$`, 'u'),
+    );
   });
 
   /**
@@ -39,7 +45,9 @@ describe('answering the protocol in the page', () => {
       method: 'initialize',
       params: {},
     })) as { result: { serverInfo: { version: string } } };
-    expect(answer.result.serverInfo.version).toMatch(/^0\.1\.0\+15\./u);
+    expect(answer.result.serverInfo.version).toMatch(
+      new RegExp(`^${SERVER_VERSION.replace(/\./gu, '\\.')}\\+15\\.[0-9a-f]+$`, 'u'),
+    );
   });
 
   it('lists the tools, with the skill first when there is one', async () => {

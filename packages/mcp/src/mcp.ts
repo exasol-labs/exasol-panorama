@@ -24,7 +24,13 @@ import { isRecord } from './schema.js';
  */
 
 export const SERVER_NAME = 'panorama';
-export const SERVER_VERSION = '0.1.0';
+/**
+ * The application's version, which the handshake stamps alongside the catalogue's
+ * so a client can say what it is talking to. Kept in step with the workspace
+ * manifest by hand — this package is compiled for a browser and cannot read one —
+ * which is a duplicate worth removing the day anything else needs it.
+ */
+export const SERVER_VERSION = '0.1.1';
 
 /**
  * Protocol versions this server knows how to be.
