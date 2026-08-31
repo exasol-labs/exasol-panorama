@@ -284,6 +284,12 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         shell: bash
         run: |
+          # The Rust cache above restores `target`, and `target` contains the
+          # bundles the *last* run made. Left there, the search below finds both
+          # and publishes a release carrying the previous version's installers —
+          # which is what v0.1.1 shipped with until this line existed.
+          rm -rf apps/desktop/src-tauri/target/release/bundle
+          rm -rf apps/desktop/src-tauri/target/*/release/bundle
           # An absent secret is not an absent variable: it arrives as an empty
           # string, and the bundler reads "set" as "sign with this" — then fails
           # importing a certificate that is not there. Unset rather than empty is
