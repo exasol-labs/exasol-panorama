@@ -1,13 +1,15 @@
 import type { JsonRpcRequest, JsonRpcResponse } from './jsonrpc.js';
 import { INVALID_PARAMS, METHOD_NOT_FOUND, failure, result } from './jsonrpc.js';
 import { catalogueStamp, toolDefinitions } from './catalogue.js';
+import type { SkillPage, SkillTexts } from './skill.js';
 import {
-  SKILL_NAME,
-  SKILL_PATH,
-  SKILL_SUMMARY,
-  SKILL_TITLE,
+  DEFAULT_SKILL_PAGE,
+  SKILL_PAGES,
   SKILL_TOOL,
-  SKILL_URI,
+  skillPageById,
+  skillPageByName,
+  skillPageByUri,
+  skillPagesIn,
 } from './skill.js';
 import { isRecord } from './schema.js';
 
@@ -43,6 +45,9 @@ export const PROTOCOL_VERSIONS: readonly string[] = ['2025-06-18', '2025-03-26',
 
 export const LATEST_PROTOCOL = PROTOCOL_VERSIONS[0] as string;
 
+/** The pages, named the way the instructions have room to name them. */
+const SKILL_PAGES_NOTE = SKILL_PAGES.map((page) => `"${page.name}" at ${page.uri}`).join(' and ');
+
 /**
  * What this server is for, and what it is not for.
  *
@@ -62,7 +67,7 @@ export const LATEST_PROTOCOL = PROTOCOL_VERSIONS[0] as string;
  * nobody wrote down.
  */
 export const INSTRUCTIONS = [
-  `Start by calling the "${SKILL_TOOL}" tool. It is one page covering the whole interface — the boxes, the command and history model, charts and their named data sets, what a picked mark means, cross-filtering, and the feedback that says whether a picture is right — and reading it first will save you several calls. The same text is offered as the prompt "${SKILL_NAME}" and the resource "${SKILL_URI}" for a client that shows those, and it is a document in this repository at ${SKILL_PATH}.`,
+  `Start by calling the "${SKILL_TOOL}" tool. It is one page covering the whole interface — the boxes, the command and history model, charts and their named data sets, what a picked mark means, cross-filtering, and the feedback that says whether a picture is right — and reading it first will save you several calls. There is a second page behind the same tool, "${SKILL_TOOL}" with page "charts", for writing an ECharts option: which series draw and which come out inert, how a data set reaches an option, and the settings this canvas silently drops. Read that one before writing an option and not before. Both are offered as prompts and as resources for a client that shows those (${SKILL_PAGES_NOTE}), and both are documents in this repository under docs/.`,
 
   'Panorama is a spatial canvas of database tables, queries and charts, and this server is the way in to a live one. "overview" says what is open and which database is behind it; "entities" and "entity" describe the boxes; "rows" reads cells; "history" is the commit graph, which branches rather than being a stack; "dispatch" applies a document command, which is the same way a pointer changes anything. Answers are terse by default — pass verbose where you need ids, widths and composed statements.',
 
@@ -83,8 +88,8 @@ export const INSTRUCTIONS = [
  * handshake now reports a fingerprint of it, and a fingerprint of a different list
  * from the one served would be worse than none.
  */
-const offeredTools = (skill: string | undefined): readonly Record<string, unknown>[] =>
-  toolDefinitions().filter((tool) => skill !== undefined || tool['name'] !== SKILL_TOOL);
+const offeredTools = (pages: readonly SkillPage[]): readonly Record<string, unknown>[] =>
+  toolDefinitions().filter((tool) => pages.length > 0 || tool['name'] !== SKILL_TOOL);
 
 /**
  * What a client is looking at, said out loud.
@@ -97,36 +102,65 @@ const offeredTools = (skill: string | undefined): readonly Record<string, unknow
 const catalogueNote = (offered: readonly Record<string, unknown>[]): string =>
   `This server is answering with ${offered.length} tools, the first of which is "${String(offered[0]?.['name'] ?? '')}", and its catalogue is stamped ${catalogueStamp(offered)} — the same stamp is in serverInfo.version. If your client lists a different number, it is showing a tool list it fetched earlier and kept; ask it to reconnect to this server, and if it will not, restart it. Nothing you call can be newer than the list you are reading from.`;
 
-/** What is said when the document could not be read; see `SKILL_PATH`. */
-const NO_SKILL = 'This server has no skill to offer: its document could not be read.';
+/** What is said when a document could not be read; see `SkillPage.path`. */
+const NO_SKILL = 'This server has no skill to offer: its documents could not be read.';
 
-/** The skill as a prompt: something a client can offer to invoke. */
-const skillPrompt = (): Record<string, unknown> => ({
-  name: SKILL_NAME,
-  title: SKILL_TITLE,
-  description: SKILL_SUMMARY,
-  // No arguments: it is one text about the whole interface, and a skill that
-  // needed filling in first would be a form.
+/** A page as a prompt: something a client can offer to invoke. */
+const skillPrompt = (page: SkillPage): Record<string, unknown> => ({
+  name: page.name,
+  title: page.title,
+  description: page.summary,
+  // No arguments: each is one text, and a skill that needed filling in first
+  // would be a form. Which page is chosen by which prompt, not by an argument.
   arguments: [],
 });
 
 /** The same, as a resource: something a client can offer to read. */
-const skillResource = (): Record<string, unknown> => ({
-  uri: SKILL_URI,
-  name: SKILL_NAME,
-  title: SKILL_TITLE,
-  description: SKILL_SUMMARY,
+const skillResource = (page: SkillPage): Record<string, unknown> => ({
+  uri: page.uri,
+  name: page.name,
+  title: page.title,
+  description: page.summary,
   mimeType: 'text/markdown',
 });
 
-const promptName = (params: unknown): string => {
-  const asked = isRecord(params) ? params['name'] : undefined;
-  return typeof asked === 'string' ? asked : '';
+/**
+ * A refusal that says what there *is*, which is the whole use of one.
+ *
+ * The two failures read alike and are not: a server with no documents beside it
+ * has nothing to offer at all, and one asked for a page it does not have should
+ * name the pages it does. An agent that cannot tell those apart retries the same
+ * call.
+ */
+const whichever = (skill: SkillTexts | undefined, what: string, field: keyof SkillPage): string => {
+  const pages = skillPagesIn(skill);
+  if (pages.length === 0) return NO_SKILL;
+  return `There is no ${what}; there is ${pages.map((page) => String(page[field])).join(' and ')}.`;
 };
 
-const resourceUri = (params: unknown): string => {
-  const asked = isRecord(params) ? params['uri'] : undefined;
-  return typeof asked === 'string' ? asked : '';
+const asked = (params: unknown, field: string): string => {
+  const value = isRecord(params) ? params[field] : undefined;
+  return typeof value === 'string' ? value : '';
+};
+
+/**
+ * Which page a `skill` call is after.
+ *
+ * Nothing said means the first one, which is what an agent following the
+ * handshake sends and what every client that shows a tool with no arguments
+ * filled in will send. A name nothing answers to is a refusal that lists the
+ * ones there are, rather than the interface page quietly handed over instead —
+ * an agent that asked for the chart page and got the other one would read it,
+ * find no answer, and conclude there is none.
+ */
+const pageAsked = (args: unknown): SkillPage | string => {
+  const wanted = isRecord(args) ? args['page'] : undefined;
+  if (wanted === undefined || wanted === null || wanted === '') return DEFAULT_SKILL_PAGE;
+  const page = skillPageById(wanted);
+  return (
+    page ??
+    `There is no skill page called ${JSON.stringify(wanted)}. There is ${SKILL_PAGES.map((one) => `"${one.id}" (${one.title})`).join(' and ')}.`
+  );
 };
 
 /** What a tool call has to do: reach the application and come back with JSON. */
@@ -166,14 +200,15 @@ export const handleMcpRequest = async (
   request: JsonRpcRequest,
   call: CallTool,
   /**
-   * The skill, as read from its document.
+   * The skill pages, as read from their documents.
    *
-   * Passed in rather than reached for: the text is a file on somebody's computer
-   * and this module is bundled for a browser as well. Absent means there is none
-   * to offer, and then the handshake does not claim prompts or resources —
-   * declaring a capability with nothing under it is worse than not declaring it.
+   * Passed in rather than reached for: the texts are files on somebody's computer
+   * and this module is bundled for a browser as well. None of them means there is
+   * nothing to offer, and then the handshake does not claim prompts or resources
+   * — declaring a capability with nothing under it is worse than not declaring
+   * it.
    */
-  skill?: string,
+  skill?: SkillTexts,
 ): Promise<JsonRpcResponse | null> => {
   const id = request.id;
   if (id === undefined) {
@@ -183,7 +218,8 @@ export const handleMcpRequest = async (
   }
   switch (request.method) {
     case 'initialize': {
-      const offered = offeredTools(skill);
+      const pages = skillPagesIn(skill);
+      const offered = offeredTools(pages);
       return result(id, {
         protocolVersion: requestedVersion(request.params),
         /**
@@ -203,7 +239,7 @@ export const handleMcpRequest = async (
            * stdio pipe sends when it notices the stamp move.
            */
           tools: { listChanged: true },
-          ...(skill === undefined
+          ...(pages.length === 0
             ? {}
             : {
                 prompts: { listChanged: false },
@@ -220,33 +256,35 @@ export const handleMcpRequest = async (
     case 'ping':
       return result(id, {});
     case 'tools/list':
-      return result(id, { tools: offeredTools(skill) });
+      return result(id, { tools: offeredTools(skillPagesIn(skill)) });
     // The skill, by whichever door a client knocks on. Listed so it is found
     // without being told where to look, and answered from one text.
     case 'prompts/list':
-      return result(id, { prompts: skill === undefined ? [] : [skillPrompt()] });
+      return result(id, { prompts: skillPagesIn(skill).map(skillPrompt) });
     case 'prompts/get': {
-      if (skill === undefined) return failure(id, INVALID_PARAMS, NO_SKILL);
-      const asked = promptName(request.params);
-      return asked === SKILL_NAME
-        ? result(id, {
-            description: SKILL_SUMMARY,
-            messages: [{ role: 'user', content: { type: 'text', text: skill } }],
-          })
-        : failure(
-            id,
-            INVALID_PARAMS,
-            `There is no prompt called ${asked}; there is ${SKILL_NAME}.`,
-          );
+      const name = asked(request.params, 'name');
+      const page = skillPageByName(name);
+      const text = page === undefined ? undefined : skill?.[page.id];
+      if (page === undefined || text === undefined) {
+        return failure(id, INVALID_PARAMS, whichever(skill, `prompt called ${name}`, 'name'));
+      }
+      return result(id, {
+        description: page.summary,
+        messages: [{ role: 'user', content: { type: 'text', text } }],
+      });
     }
     case 'resources/list':
-      return result(id, { resources: skill === undefined ? [] : [skillResource()] });
+      return result(id, { resources: skillPagesIn(skill).map(skillResource) });
     case 'resources/read': {
-      if (skill === undefined) return failure(id, INVALID_PARAMS, NO_SKILL);
-      const uri = resourceUri(request.params);
-      return uri === SKILL_URI
-        ? result(id, { contents: [{ uri: SKILL_URI, mimeType: 'text/markdown', text: skill }] })
-        : failure(id, INVALID_PARAMS, `There is no resource at ${uri}; there is ${SKILL_URI}.`);
+      const uri = asked(request.params, 'uri');
+      const page = skillPageByUri(uri);
+      const text = page === undefined ? undefined : skill?.[page.id];
+      if (page === undefined || text === undefined) {
+        return failure(id, INVALID_PARAMS, whichever(skill, `resource at ${uri}`, 'uri'));
+      }
+      return result(id, {
+        contents: [{ uri: page.uri, mimeType: 'text/markdown', text }],
+      });
     }
     case 'tools/call': {
       const params = isRecord(request.params) ? request.params : {};
@@ -257,9 +295,12 @@ export const handleMcpRequest = async (
       // Answered here rather than forwarded: the skill is a file beside the
       // server, and it is the one thing worth reading before a page is open.
       if (name === SKILL_TOOL) {
-        return skill === undefined
+        const page = pageAsked(params['arguments']);
+        if (typeof page === 'string') return result(id, toolFailure(page));
+        const text = skill?.[page.id];
+        return text === undefined
           ? result(id, toolFailure(NO_SKILL))
-          : result(id, { content: [{ type: 'text', text: skill }] });
+          : result(id, { content: [{ type: 'text', text }] });
       }
       try {
         return result(id, toolContent(await call(name, params['arguments'])));

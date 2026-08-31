@@ -6,9 +6,11 @@ and what to do when a client cannot see a tool that is there.
 What the agent should be told once it is connected is
 [AGENT-SKILL.md](AGENT-SKILL.md) — the boxes, the command and history model,
 charts and their named data sets, what a picked mark means, cross-filtering, and
-which feedback to read first. The server serves that very file as its first tool,
-so the documentation you read and the instructions the agent reads cannot drift
-apart.
+which feedback to read first. A second page,
+[AGENT-SKILL-CHARTS.md](AGENT-SKILL-CHARTS.md), covers writing an ECharts option
+through this canvas, and is read only when one is being written. The server
+serves those very files as its first tool, so the documentation you read and the
+instructions the agent reads cannot drift apart.
 
 ---
 
@@ -145,6 +147,17 @@ client that shows those. Same text every way. The tool is answered by the server
 rather than forwarded to the page, so it works before anything is open. There is no
 second copy of it in the code, the handshake says to call it first, and a test
 insists every tool is written down in it.
+
+There is a **second page** behind the same tool —
+`skill(page: "charts")`, the prompt `panorama-charts`, the resource
+`panorama://skill/charts` — which is [AGENT-SKILL-CHARTS.md](AGENT-SKILL-CHARTS.md):
+which ECharts series come out drawable and which come out inert, how a data set
+reaches an option, and the settings this seam silently drops. It is a page of its
+own rather than a section of the first because it is three times the length and
+answers nothing until an option is being written; the handshake says to read it
+then and not before. Its claims are held true by a contract test rather than by
+review — a named CSS colour makes the marks vanish, and the day that stops being
+so the test says which paragraph is now wrong.
 
 ## 5. If an agent cannot see a tool that is there
 

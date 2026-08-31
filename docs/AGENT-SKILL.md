@@ -52,6 +52,11 @@ statements.
 
 ## Charts
 
+**Writing an ECharts option is its own page:** `skill(page: "charts")`. It is
+where the series that draw, the ones that come out inert, and the handful of
+settings this canvas silently drops are written down — read it before writing one
+rather than after. What follows is the shape of the mechanism.
+
 A chart is given **named data sets**. Its own reduction is always there as
 `primary`; name your own in `spec.frames` for anything that shape cannot express:
 

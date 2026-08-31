@@ -155,13 +155,14 @@ Worth knowing before you judge something a bug:
 
 ## Documentation
 
-| Doc                                         | What is in it                                                                                |
-| ------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| **[CONNECTING.md](docs/CONNECTING.md)**     | Exasol Personal, self-signed certificates, connection details at startup                     |
-| **[DEVELOPING.md](docs/DEVELOPING.md)**     | Running from source, the commands, packaging, releasing, headsets                            |
-| **[AGENTS.md](docs/AGENTS.md)**             | Connecting an agent, in the app and in development, and what to do when it cannot see a tool |
-| **[AGENT-SKILL.md](docs/AGENT-SKILL.md)**   | What the agent is told — the page the server itself serves                                   |
-| **[ARCHITECTURE.md](docs/ARCHITECTURE.md)** | How it is built and why: the model, the layering, the flows, a decision record               |
-| **[TESTING.md](docs/TESTING.md)**           | How we know it works: the suite, the doubles, the coverage gate, the probes                  |
+| Doc                                                     | What is in it                                                                                |
+| ------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| **[CONNECTING.md](docs/CONNECTING.md)**                 | Exasol Personal, self-signed certificates, connection details at startup                     |
+| **[DEVELOPING.md](docs/DEVELOPING.md)**                 | Running from source, the commands, packaging, releasing, headsets                            |
+| **[AGENTS.md](docs/AGENTS.md)**                         | Connecting an agent, in the app and in development, and what to do when it cannot see a tool |
+| **[AGENT-SKILL.md](docs/AGENT-SKILL.md)**               | What the agent is told — the page the server itself serves                                   |
+| **[AGENT-SKILL-CHARTS.md](docs/AGENT-SKILL-CHARTS.md)** | The second page it serves — writing an ECharts option through the canvas                     |
+| **[ARCHITECTURE.md](docs/ARCHITECTURE.md)**             | How it is built and why: the model, the layering, the flows, a decision record               |
+| **[TESTING.md](docs/TESTING.md)**                       | How we know it works: the suite, the doubles, the coverage gate, the probes                  |
 
 MIT licensed — see [LICENSE](LICENSE).

@@ -8,10 +8,10 @@ import {
   INSTRUCTIONS,
   catalogueStamp,
   toolDefinitions,
-  SKILL_NAME,
-  SKILL_PATH,
+  DEFAULT_SKILL_PAGE,
+  SKILL_PAGES,
   SKILL_TOOL,
-  SKILL_URI,
+  skillPageById,
   skillText,
   INVALID_REQUEST,
   LATEST_PROTOCOL,
@@ -28,7 +28,7 @@ import {
   parseReply,
   parseRequest,
 } from '@panorama/mcp';
-import type { JsonRpcRequest, JsonRpcResponse } from '@panorama/mcp';
+import type { JsonRpcRequest, JsonRpcResponse, SkillTexts } from '@panorama/mcp';
 
 /** `id: null` makes a notification — a message the protocol expects no reply to. */
 const request = (method: string, params?: unknown, id: number | null = 1): JsonRpcRequest => ({
@@ -172,8 +172,9 @@ describe('the MCP methods', () => {
  */
 describe('saying which catalogue this is', () => {
   const call = vi.fn(async (name: string, args: unknown) => ({ ran: name, with: args }));
+  const pages: SkillTexts = { interface: 'the skill', charts: 'the chart skill' };
   const handshake = async (
-    skill?: string,
+    skill?: SkillTexts,
   ): Promise<{ version: string; instructions: string; tools: number }> => {
     const answer = await handleMcpRequest(request('initialize'), call, skill);
     const result = answer?.result as Record<string, Record<string, unknown>>;
@@ -187,21 +188,21 @@ describe('saying which catalogue this is', () => {
   };
 
   it('stamps the handshake with the catalogue it will answer with', async () => {
-    const { version, tools } = await handshake('the skill');
+    const { version, tools } = await handshake(pages);
     expect(tools).toBe(AGENT_TOOLS.length);
     expect(version).toContain(catalogueStamp(toolDefinitions()));
     expect(version).toMatch(/^\d+\.\d+\.\d+\+\d+\.[0-9a-f]{8}$/u);
   });
 
   it('stamps a server with no skill differently, because it answers differently', async () => {
-    const withSkill = await handshake('the skill');
+    const withSkill = await handshake(pages);
     const without = await handshake();
     expect(without.tools).toBe(withSkill.tools - 1);
     expect(without.version).not.toBe(withSkill.version);
   });
 
   it('says the number and the first name, which is what makes a stale list visible', async () => {
-    const { instructions } = await handshake('the skill');
+    const { instructions } = await handshake(pages);
     expect(instructions).toContain(`${AGENT_TOOLS.length} tools`);
     expect(instructions).toContain(`the first of which is "${SKILL_TOOL}"`);
     expect(instructions).toMatch(/fetched earlier and kept/u);
@@ -223,16 +224,18 @@ describe('saying which catalogue this is', () => {
 describe('the skill, by whichever door a client knocks on', () => {
   const call = vi.fn(async (name: string) => ({ ran: name }));
   /**
-   * The document itself, read the way the server reads it.
+   * The documents themselves, read the way the server reads them.
    *
    * The point of the exercise: there is no copy of this text in the code, so a
    * test that used one would be testing the copy.
    */
-  const document = skillText(
-    readFileSync(new URL(`../../../${SKILL_PATH}`, import.meta.url), 'utf8'),
-  );
+  const read = (path: string): string =>
+    skillText(readFileSync(new URL(`../../../${path}`, import.meta.url), 'utf8'));
+  const document = read(DEFAULT_SKILL_PAGE.path);
+  const charts = read((skillPageById('charts') as { path: string }).path);
+  const pages: SkillTexts = { interface: document, charts };
   const skill = async (method: string, params?: unknown): Promise<JsonRpcResponse | null> =>
-    handleMcpRequest(request(method, params), call, document);
+    handleMcpRequest(request(method, params), call, pages);
   const withoutOne = async (method: string, params?: unknown): Promise<JsonRpcResponse | null> =>
     handleMcpRequest(request(method, params), call);
 
@@ -262,6 +265,36 @@ describe('the skill, by whichever door a client knocks on', () => {
     expect(call).not.toHaveBeenCalled();
   });
 
+  /**
+   * The second page, behind the same door.
+   *
+   * Nothing filled in is the first page, because that is what a client offering
+   * a tool with an optional argument sends and what the handshake tells an agent
+   * to start with. A name nothing answers to is refused rather than quietly
+   * given the other one — an agent that asked for the chart page, got the
+   * interface page and read it would conclude there is no answer.
+   */
+  it('reads out whichever page was asked for, and refuses one that is not there', async () => {
+    const page = async (asked?: string): Promise<{ text: string; failed?: boolean }> => {
+      const answer = (
+        await skill('tools/call', {
+          name: SKILL_TOOL,
+          ...(asked === undefined ? {} : { arguments: { page: asked } }),
+        })
+      )?.result as { content: readonly { text: string }[]; isError?: boolean };
+      return {
+        text: String(answer.content[0]?.text),
+        ...(answer.isError === true ? { failed: true } : {}),
+      };
+    };
+    expect((await page()).text).toBe(document);
+    expect((await page('interface')).text).toBe(document);
+    expect((await page('charts')).text).toBe(charts);
+    const wrong = await page('sankeys');
+    expect(wrong.failed).toBe(true);
+    expect(wrong.text).toContain('"charts"');
+  });
+
   it('is neither listed nor answered where there is no document', async () => {
     const tools = (await withoutOne('tools/list'))?.result as {
       tools: readonly Record<string, unknown>[];
@@ -279,13 +312,16 @@ describe('the skill, by whichever door a client knocks on', () => {
     const prompts = (await skill('prompts/list'))?.result as {
       prompts: readonly Record<string, unknown>[];
     };
-    expect(prompts.prompts).toHaveLength(1);
-    expect(prompts.prompts[0]).toMatchObject({ name: SKILL_NAME, arguments: [] });
+    expect(prompts.prompts.map((prompt) => prompt['name'])).toEqual(
+      SKILL_PAGES.map((one) => one.name),
+    );
+    expect(prompts.prompts[0]).toMatchObject({ name: DEFAULT_SKILL_PAGE.name, arguments: [] });
 
     const resources = (await skill('resources/list'))?.result as {
       resources: readonly Record<string, unknown>[];
     };
-    expect(resources.resources[0]).toMatchObject({ uri: SKILL_URI, mimeType: 'text/markdown' });
+    expect(resources.resources.map((one) => one['uri'])).toEqual(SKILL_PAGES.map((one) => one.uri));
+    expect(resources.resources[0]).toMatchObject({ mimeType: 'text/markdown' });
   });
 
   it('serves the document itself, so an edit to the docs is an edit to the skill', async () => {
@@ -293,7 +329,9 @@ describe('the skill, by whichever door a client knocks on', () => {
     // Without the note that explains the file to whoever opens it, which is for a
     // reader of the repository and noise to a reader of the skill.
     expect(document.startsWith('<!--')).toBe(false);
-    const asPrompt = (await skill('prompts/get', { name: SKILL_NAME }))?.result as {
+    expect(charts).toContain('# Writing charts in Panorama');
+    expect(charts.startsWith('<!--')).toBe(false);
+    const asPrompt = (await skill('prompts/get', { name: DEFAULT_SKILL_PAGE.name }))?.result as {
       messages: readonly { content: { text: string } }[];
     };
     expect(asPrompt.messages[0]?.content.text).toBe(document);
@@ -308,19 +346,34 @@ describe('the skill, by whichever door a client knocks on', () => {
     expect(capabilities['resources']).toBeUndefined();
     expect((await withoutOne('prompts/list'))?.result).toEqual({ prompts: [] });
     expect((await withoutOne('resources/list'))?.result).toEqual({ resources: [] });
-    expect((await withoutOne('prompts/get', { name: SKILL_NAME }))?.error?.message).toContain(
-      'no skill to offer',
-    );
-    expect((await withoutOne('resources/read', { uri: SKILL_URI }))?.error?.message).toContain(
-      'no skill to offer',
-    );
+    expect(
+      (await withoutOne('prompts/get', { name: DEFAULT_SKILL_PAGE.name }))?.error?.message,
+    ).toContain('no skill to offer');
+    expect(
+      (await withoutOne('resources/read', { uri: DEFAULT_SKILL_PAGE.uri }))?.error?.message,
+    ).toContain('no skill to offer');
+    expect(
+      (
+        (await withoutOne('tools/call', { name: SKILL_TOOL, arguments: { page: 'charts' } }))
+          ?.result as { content: readonly { text: string }[] }
+      ).content[0]?.text,
+    ).toContain('no skill to offer');
   });
 
-  it('reads the same text either way', async () => {
-    const asPrompt = (await skill('prompts/get', { name: SKILL_NAME }))?.result as {
+  it('reads the same text either way, for every page', async () => {
+    for (const one of SKILL_PAGES) {
+      const prompt = (await skill('prompts/get', { name: one.name }))?.result as {
+        messages: readonly { content: { text: string } }[];
+      };
+      const resource = (await skill('resources/read', { uri: one.uri }))?.result as {
+        contents: readonly { text: string }[];
+      };
+      expect(prompt.messages[0]?.content.text).toBe(resource.contents[0]?.text);
+    }
+    const asPrompt = (await skill('prompts/get', { name: DEFAULT_SKILL_PAGE.name }))?.result as {
       messages: readonly { content: { text: string } }[];
     };
-    const asResource = (await skill('resources/read', { uri: SKILL_URI }))?.result as {
+    const asResource = (await skill('resources/read', { uri: DEFAULT_SKILL_PAGE.uri }))?.result as {
       contents: readonly { text: string }[];
     };
     // One text: a skill that could drift from the tools it describes would be
@@ -331,7 +384,7 @@ describe('the skill, by whichever door a client knocks on', () => {
   it('is read from the repository, and is nothing where there is nothing to read', () => {
     // What the development server does at startup, and what it does when the
     // document is not beside it.
-    expect(readSkill()).toBe(document);
+    expect(readSkill()).toEqual(pages);
     expect(readSkill(new URL('file:///nowhere-in-particular/'))).toBeNull();
   });
 
@@ -345,9 +398,9 @@ describe('the skill, by whichever door a client knocks on', () => {
 
   it('says what it is asked about and nothing else', async () => {
     const wrongPrompt = await skill('prompts/get', { name: 'something-else' });
-    expect(wrongPrompt?.error?.message).toContain(SKILL_NAME);
+    expect(wrongPrompt?.error?.message).toContain(DEFAULT_SKILL_PAGE.name);
     const wrongUri = await skill('resources/read', { uri: 'panorama://nothing' });
-    expect(wrongUri?.error?.message).toContain(SKILL_URI);
+    expect(wrongUri?.error?.message).toContain(DEFAULT_SKILL_PAGE.uri);
     // And an ask with nothing in it is refused rather than guessed at.
     expect((await skill('prompts/get'))?.error?.code).toBeDefined();
     expect((await skill('resources/read'))?.error?.code).toBeDefined();
@@ -423,12 +476,16 @@ describe('what an agent is told before it chooses a tool', () => {
     expect(INSTRUCTIONS).toMatch(/say which one you used/u);
   });
 
-  it('says there is a skill, and where to find it', () => {
+  it('says there are skills, and where to find each of them', () => {
     // The handshake is what an agent reads first, and a page it never learns
-    // exists is a page nobody reads.
+    // exists is a page nobody reads. Both of them, therefore, by name.
     expect(INSTRUCTIONS).toContain('Start by calling the "skill" tool');
-    expect(INSTRUCTIONS).toContain(SKILL_NAME);
-    expect(INSTRUCTIONS).toContain(SKILL_URI);
+    for (const page of SKILL_PAGES) {
+      expect(INSTRUCTIONS, `${page.name} is not in the handshake`).toContain(page.name);
+      expect(INSTRUCTIONS, `${page.uri} is not in the handshake`).toContain(page.uri);
+    }
+    // And when to read the longer one, which is the half that saves the calls.
+    expect(INSTRUCTIONS).toMatch(/before writing an option and not before/u);
   });
 
   it('says to read the semantic layer before writing SQL', () => {

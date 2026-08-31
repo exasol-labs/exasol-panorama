@@ -72,13 +72,13 @@ const settled = async (): Promise<void> => {
 describe('the agent endpoint inside the desktop application', () => {
   it('announces itself only once it is listening', async () => {
     const { bridge, calls } = fakeBridge();
-    await startShellAgent({ host, bridge, skill: '# skill' });
+    await startShellAgent({ host, bridge, skill: { interface: '# skill' } });
     expect(calls.map((call) => call.command)).toEqual(['agent_attach']);
   });
 
   it('answers a request with the same id the shell asked under', async () => {
     const { bridge, send, calls } = fakeBridge();
-    await startShellAgent({ host, bridge, skill: '# skill' });
+    await startShellAgent({ host, bridge, skill: { interface: '# skill' } });
     send({ id: 7, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize' }) });
     await settled();
     const reply = calls.find((call) => call.command === 'agent_reply');
@@ -89,7 +89,7 @@ describe('the agent endpoint inside the desktop application', () => {
   /** A notification has no reply, and the shell has to be told that explicitly. */
   it('replies with nothing to a notification, so the shell stops waiting', async () => {
     const { bridge, send, calls } = fakeBridge();
-    await startShellAgent({ host, bridge, skill: '# skill' });
+    await startShellAgent({ host, bridge, skill: { interface: '# skill' } });
     send({ id: 8, body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) });
     await settled();
     expect(calls.find((call) => call.command === 'agent_reply')?.args?.['body']).toBe(null);
@@ -98,7 +98,12 @@ describe('the agent endpoint inside the desktop application', () => {
   it('drops a request that is not one, with a note', async () => {
     const notes: string[] = [];
     const { bridge, send, calls } = fakeBridge();
-    await startShellAgent({ host, bridge, skill: '# skill', onLog: (m) => notes.push(m) });
+    await startShellAgent({
+      host,
+      bridge,
+      skill: { interface: '# skill' },
+      onLog: (m) => notes.push(m),
+    });
     send({ id: 'nine', body: 5 });
     await settled();
     expect(calls.some((call) => call.command === 'agent_reply')).toBe(false);
@@ -108,7 +113,12 @@ describe('the agent endpoint inside the desktop application', () => {
   it('says so on the console when the shell cannot be answered', async () => {
     const notes: string[] = [];
     const { bridge, send } = fakeBridge({ rejectReply: true });
-    await startShellAgent({ host, bridge, skill: '# skill', onLog: (m) => notes.push(m) });
+    await startShellAgent({
+      host,
+      bridge,
+      skill: { interface: '# skill' },
+      onLog: (m) => notes.push(m),
+    });
     send({ id: 9, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' }) });
     await settled();
     expect(notes.join(' ')).toContain('could not answer request 9');
@@ -116,7 +126,7 @@ describe('the agent endpoint inside the desktop application', () => {
 
   it('detaches on close, and survives a shell that has already gone', async () => {
     const { bridge, calls, unlistened } = fakeBridge({ rejectDetach: true });
-    const agent = await startShellAgent({ host, bridge, skill: '# skill' });
+    const agent = await startShellAgent({ host, bridge, skill: { interface: '# skill' } });
     await agent.close();
     expect(unlistened()).toBe(1);
     expect(calls.map((call) => call.command)).toContain('agent_detach');
@@ -164,17 +174,23 @@ describe('finding the shell', () => {
   });
 });
 
-describe('the skill in the bundle', () => {
+describe('the skills in the bundle', () => {
   /**
-   * The document is the source and the shell has no file to read, so it is
-   * compiled in — and the note at the top of the file, which is addressed to
-   * whoever opens it in the repository, is not part of what an agent is told.
+   * The documents are the source and the shell has no file to read, so they are
+   * compiled in — and the note at the top of each, which is addressed to whoever
+   * opens it in the repository, is not part of what an agent is told.
+   *
+   * Both of them, because the failure to compile one in looks like nothing at
+   * all: the interface page still answers, and the chart page is simply missing
+   * from a build nobody thought to check.
    */
-  it('is the document, without the note to the reader of the repository', () => {
+  it('are the documents, without the note to the reader of the repository', () => {
     const skill = shellSkill();
-    expect(skill.startsWith('# Driving Panorama')).toBe(true);
-    expect(skill).not.toContain('<!--');
-    expect(skill).toContain('## The tools');
+    expect(skill.interface?.startsWith('# Driving Panorama')).toBe(true);
+    expect(skill.interface).toContain('## The tools');
+    expect(skill.charts?.startsWith('# Writing charts in Panorama')).toBe(true);
+    expect(skill.charts).toContain('## What draws');
+    for (const page of Object.values(skill)) expect(page).not.toContain('<!--');
   });
 });
 

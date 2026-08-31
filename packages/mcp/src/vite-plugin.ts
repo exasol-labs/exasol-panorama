@@ -5,7 +5,8 @@ import type { AgentEndpointOptions } from './http.js';
 import { createAgentEndpoint } from './http.js';
 import { MCP_PATH } from './link.js';
 import { nodeClaudeEnvironment } from './node-environment.js';
-import { SKILL_PATH, skillText } from './skill.js';
+import type { SkillPageId, SkillTexts } from './skill.js';
+import { SKILL_PAGES, skillText } from './skill.js';
 
 /**
  * The agent interface as a development-server plugin.
@@ -37,24 +38,32 @@ export interface AgentPlugin {
 }
 
 /**
- * The skill, read from the document that is its source.
+ * The skill pages, read from the documents that are their source.
  *
  * Read here because this is the file that knows it is running on somebody's
  * computer, and read on demand rather than once: nothing restarts a development
  * server when a document changes, and a skill that went stale on an edit would
  * make "editing the documentation is editing what agents are told" untrue.
  *
- * `null` where it cannot be read — a package installed without its docs beside it
- * — and the endpoint then offers no skill rather than an empty one.
+ * A page that cannot be read is left out rather than offered empty — a package
+ * installed without its docs beside it — and each is left out on its own, so a
+ * missing chart page does not take the interface page with it.
+ *
+ * `null` where none of them could be read, which is what the endpoint takes as
+ * "this server has no skill".
  *
  * Where to look is a parameter, defaulting to the repository as this file sees it.
  */
-export const readSkill = (from = new URL('../../../', import.meta.url)): string | null => {
-  try {
-    return skillText(readFileSync(fileURLToPath(new URL(SKILL_PATH, from)), 'utf8'));
-  } catch {
-    return null;
+export const readSkill = (from = new URL('../../../', import.meta.url)): SkillTexts | null => {
+  const found: Partial<Record<SkillPageId, string>> = {};
+  for (const page of SKILL_PAGES) {
+    try {
+      found[page.id] = skillText(readFileSync(fileURLToPath(new URL(page.path, from)), 'utf8'));
+    } catch {
+      // Left out. Which pages there are is reported by the handshake either way.
+    }
   }
+  return Object.keys(found).length === 0 ? null : found;
 };
 
 /** The stdio pipe, as an absolute path, since a paired client is told where it is. */

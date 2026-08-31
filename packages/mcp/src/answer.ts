@@ -1,6 +1,7 @@
 import type { JsonRpcRequest, JsonRpcResponse } from './jsonrpc.js';
 import { parseRequest } from './jsonrpc.js';
 import type { AgentHost } from './host.js';
+import type { SkillTexts } from './skill.js';
 import { handleMcpRequest } from './mcp.js';
 import { runOperation } from './operations.js';
 
@@ -23,7 +24,7 @@ import { runOperation } from './operations.js';
 export const answerProtocol = async (
   host: AgentHost,
   message: string,
-  skill: string | undefined,
+  skill: SkillTexts | undefined,
 ): Promise<string | null> => {
   const parsed = parseRequest(message);
   // A message that is not a request is already an error response, with the

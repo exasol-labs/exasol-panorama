@@ -17,6 +17,7 @@ import { AGENT_TOOLS } from './catalogue.js';
 import type { ClaudeEnvironment } from './claude.js';
 import { inspectClaude, openClaude, pairClaude } from './claude.js';
 import { handleMcpRequest } from './mcp.js';
+import type { SkillTexts } from './skill.js';
 import { CallRouter } from './router.js';
 
 /**
@@ -38,20 +39,20 @@ export const HEARTBEAT_MS = 20_000;
 export interface AgentEndpointOptions {
   readonly router?: CallRouter;
   /**
-   * The skill, asked for rather than handed over.
+   * The skill pages, asked for rather than handed over.
    *
-   * A function because the document is a *file*: a development server does not
+   * A function because the documents are *files*: a development server does not
    * restart when documentation changes, and a skill read once at startup would go
    * stale the moment somebody edited it — which would make "editing the docs is
    * editing what agents are told" false. It is asked on the handshake and on a
-   * read, which happen once or twice a session, so reading seven kilobytes then
-   * costs nothing.
+   * read, which happen once or twice a session, so reading a few pages then costs
+   * nothing.
    *
    * Left out, the handshake does not offer prompts or resources: a build of this
-   * package with no document beside it has no skill and should say so by not
+   * package with no documents beside it has no skill and should say so by not
    * claiming one.
    */
-  readonly skill?: (() => string | undefined) | undefined;
+  readonly skill?: (() => SkillTexts | undefined) | undefined;
   /** Progress for whoever is watching the dev server's output. */
   readonly onLog?: (message: string) => void;
   /**

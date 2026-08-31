@@ -1,11 +1,13 @@
 import type { ConnectionRequest, PersonalDeployment } from '@panorama/ui';
 import type { AgentHost } from '@panorama/mcp';
+import type { SkillTexts } from '@panorama/mcp';
 import { AGENT_TOOLS, answerProtocol, skillText } from '@panorama/mcp';
-// The skill, compiled in. In a browser the development server reads the file, so
+// The skills, compiled in. In a browser the development server reads the files, so
 // an edit to the documentation is an edit to what agents are told; the desktop
-// application has no file to read and no server to read it, so the document is
+// application has no file to read and no server to read it, so the documents are
 // part of the bundle instead. Same text, same source, one build later.
-import skillDocument from '../../../../docs/AGENT-SKILL.md?raw';
+import interfaceDocument from '../../../../docs/AGENT-SKILL.md?raw';
+import chartsDocument from '../../../../docs/AGENT-SKILL-CHARTS.md?raw';
 
 /**
  * The agent interface, inside the desktop application.
@@ -64,14 +66,17 @@ export const shellBridge = (host: TauriGlobal = globalThis as TauriGlobal): Shel
   };
 };
 
-/** The document, minus the note addressed to whoever opens the file. */
-export const shellSkill = (): string => skillText(skillDocument);
+/** The documents, each minus the note addressed to whoever opens the file. */
+export const shellSkill = (): SkillTexts => ({
+  interface: skillText(interfaceDocument),
+  charts: skillText(chartsDocument),
+});
 
 export interface ShellAgentOptions {
   readonly host: AgentHost;
   readonly bridge: ShellBridge;
-  /** Left out, the compiled-in document is used. Handed in by the tests. */
-  readonly skill?: string;
+  /** Left out, the compiled-in documents are used. Handed in by the tests. */
+  readonly skill?: SkillTexts;
   readonly onLog?: (message: string) => void;
 }
 

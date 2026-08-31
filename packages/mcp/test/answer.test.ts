@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { SkillTexts } from '@panorama/mcp';
 import { SERVER_VERSION, answerProtocol } from '@panorama/mcp';
 import { FakeHost } from './fixtures.js';
 
@@ -8,7 +9,7 @@ import { FakeHost } from './fixtures.js';
  * protocol code: what is being checked here is that nothing on the path from a
  * message to an answer needed a server.
  */
-const ask = async (host: FakeHost, message: unknown, skill?: string): Promise<unknown> => {
+const ask = async (host: FakeHost, message: unknown, skill?: SkillTexts): Promise<unknown> => {
   const answer = await answerProtocol(host, JSON.stringify(message), skill);
   return answer === null ? null : JSON.parse(answer);
 };
@@ -18,7 +19,7 @@ describe('answering the protocol in the page', () => {
     const answer = (await ask(
       new FakeHost(),
       { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
-      '# Driving Panorama',
+      { interface: '# Driving Panorama', charts: '# Writing charts in Panorama' },
     )) as { result: { serverInfo: { name: string; version: string } } };
     expect(answer.result.serverInfo.name).toBe('panorama');
     // The stamp is the tool count and a hash of them, so a client can tell a
@@ -54,7 +55,7 @@ describe('answering the protocol in the page', () => {
     const answer = (await ask(
       new FakeHost(),
       { jsonrpc: '2.0', id: 2, method: 'tools/list' },
-      '# Driving Panorama',
+      { interface: '# Driving Panorama', charts: '# Writing charts in Panorama' },
     )) as { result: { tools: { name: string }[] } };
     expect(answer.result.tools[0]?.name).toBe('skill');
     expect(answer.result.tools).toHaveLength(16);

@@ -35,6 +35,23 @@ export interface AgentToolSpec {
   readonly answeredByServer?: true;
 }
 
+/**
+ * Which page of the skill to read out.
+ *
+ * Optional, and the default is the one to read first: an agent that sends the
+ * tool with nothing filled in — which is what a client offering a no-argument
+ * tool does — gets the page the handshake told it to start with.
+ */
+const SKILL_PAGE: ArgsSpec = {
+  page: {
+    kind: 'string',
+    describe:
+      'Which page: "interface" for the whole interface, which is the default and what to read first, or "charts" for writing an ECharts option. Read "charts" when you are about to write one.',
+    enum: ['interface', 'charts'],
+    optional: true,
+  },
+};
+
 /** Rows read in one go, so a table cannot be asked for a million cells. */
 export const MAX_ROWS = 200;
 
@@ -136,9 +153,9 @@ export const CHART_SPEC_SCHEMA: Record<string, unknown> = {
           },
           kind: {
             type: 'string',
-            enum: ['group', 'rows', 'scalar'],
+            enum: ['group', 'rows', 'resample', 'scalar'],
             description:
-              "group: one row per category, as the chart's own reduction is — its own question entirely, so it does not take the chart's breakdown unless it names one. rows: the rows as they are, projected to the columns named — the shape a heatmap, a scatter with a size channel, a graph's edges or a tree's parents needs. scalar: one number, for a threshold or a reference line.",
+              "group: one row per category, as the chart's own reduction is — its own question entirely, so it does not take the chart's breakdown unless it names one. rows: the rows as they are, projected to the columns named — the shape a heatmap, a scatter with a size channel, a graph's edges or a tree's parents needs. resample: a series longer than the screen, reduced to a few hundred points where the rows are. scalar: one number, for a threshold or a reference line.",
           },
           columns: {
             type: 'array',
@@ -339,8 +356,8 @@ export const AGENT_TOOLS: readonly AgentToolSpec[] = [
      */
     name: 'skill',
     describe:
-      'Read this first. The whole interface on one page: the boxes on the canvas, the command and history model, charts and their named data sets, what a picked mark means, cross-filtering, and which feedback to read before believing a picture. Answered by the server, so it works before anything is open — and it is the same text as the prompt "panorama" and the resource "panorama://skill", for a client that shows those.',
-    args: NO_ARGS,
+      'Read this first. Two pages, and this reads out whichever one is asked for.\n\npage "interface" (the default): the whole interface at once — the boxes on the canvas, the command and history model, charts and their named data sets, what a picked mark means, cross-filtering, and which feedback to read before believing a picture.\n\npage "charts": how to write an ECharts option through this canvas, which is a longer and narrower subject — which series types come out drawable and which come out inert, how the four kinds of data set reach an option, the settings this seam silently drops (a named CSS colour, a rotated axis label, a dashed line), and the patterns that make a picture survive the query behind it changing. Read it when you are about to write one, and not before: it is three times the length of the other and answers nothing you need until then.\n\nAnswered by the server, so both work before anything is open — and they are the same texts as the prompts "panorama" and "panorama-charts" and the resources "panorama://skill" and "panorama://skill/charts", for a client that shows those.',
+    args: SKILL_PAGE,
     answeredByServer: true,
   },
   {
