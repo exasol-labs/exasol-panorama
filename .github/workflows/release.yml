@@ -139,18 +139,53 @@ jobs:
         run: |
           version="${{ steps.version.outputs.value }}"
           name="${{ steps.package.outputs.name }}"
-          {
-            echo "Panorama ${version}, as an installable application."
-            echo
-            echo "\`${name}.zip\` is the built application: static files to copy to the"
-            echo "root of an HTTPS origin, then install from the browser. \`SERVING.md\`"
-            echo "inside it says what a host has to get right."
-            echo
-            echo "Built from ${GITHUB_SHA} and driven in Chromium before packaging:"
-            echo "service worker registered and activated, manifest and every icon"
-            echo "checked against the files, and the application launched again with"
-            echo "the network taken away."
-          } > notes.md
+          # Written literally and then substituted, rather than echoed: the notes
+          # are markdown, markdown wants backticks, and a backtick in a shell
+          # heredoc that expands variables is a command waiting to be run.
+          sed "s/__VERSION__/${version}/g; s/__SHA__/${GITHUB_SHA}/g" > notes.md <<'NOTE'
+          Panorama __VERSION__.
+
+          ## Which one do I want?
+
+          | If you are on | Download | |
+          | --- | --- | --- |
+          | **macOS** | `Exasol-Panorama___VERSION___universal.dmg` | One download for both Apple silicon and Intel. |
+          | **Windows** | `Exasol-Panorama___VERSION___x64-setup.exe` | Start here. It installs for you alone and asks for no administrator. |
+          | **Windows, installed for you by someone else** | `Exasol-Panorama___VERSION___x64_en-US.msi` | For whoever deploys software across your machines. |
+          | **Linux** | `Exasol-Panorama___VERSION___amd64.AppImage` | Runs as it is, on any distribution: `chmod +x`, then open it. |
+          | **Debian or Ubuntu**, and you would rather have a package | `Exasol-Panorama___VERSION___amd64.deb` | `sudo apt install ./Exasol-Panorama___VERSION___amd64.deb` |
+          | **A headset, a tablet, or a locked-down laptop** | `exasol-panorama-pwa-__VERSION__.zip` | Not an installer — see below. |
+
+          ## The first launch
+
+          These builds are **not signed**, so each system asks about them once:
+
+          - **macOS** refuses a double-click. Right-click the application and choose
+            **Open**, then **Open** again. After that it starts normally.
+          - **Windows** shows "Windows protected your PC". Choose **More info**, then
+            **Run anyway**.
+
+          ## The browser build
+
+          `exasol-panorama-pwa-__VERSION__.zip` is the application as static files, for
+          serving rather than for installing. Copy its contents to the root of an HTTPS
+          origin and use the browser's own install control; `SERVING.md` inside it says
+          what a host has to get right. It is the only way in on a headset, and the only
+          one that installs without an administrator anywhere.
+
+          ## Files that are not for you
+
+          `Exasol-Panorama.app.tar.gz`, the `.sig` files beside the installers, and
+          `latest.json` are how an installed Panorama updates itself. Nothing needs to be
+          downloaded by hand for that to work, and none of them will install anything if
+          you do. `.sha256` is a checksum for the zip above.
+
+          ---
+
+          Built from __SHA__ and driven in Chromium before packaging: service worker
+          registered and activated, manifest and every icon checked against the files,
+          and the application launched again with the network taken away.
+          NOTE
           gh release create "${GITHUB_REF_NAME}" \
             --title "Panorama ${version}" \
             --notes-file notes.md \
