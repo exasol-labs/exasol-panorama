@@ -312,6 +312,12 @@ jobs:
             echo "::warning::Built ad-hoc signed: this repository holds no Developer ID secrets, so first launch needs right-click -> Open."
           fi
 
+      # The signatures are named one by one rather than swept up as `*.sig`,
+      # because the bundler signs everything it makes — including an RPM this
+      # workflow does not publish, whose signature would then sit in the release
+      # as a signature for a file that is not there. Only the four an updater
+      # actually reads are wanted.
+      #
       # Collected by searching rather than by naming paths, which differ per
       # platform and per target triple: a `.dmg` on macOS, a `.deb` and an AppImage
       # on Linux, an NSIS `-setup.exe` and an `.msi` on Windows. Installers only —
@@ -324,7 +330,9 @@ jobs:
           mkdir -p desktop-artifacts
           find apps/desktop/src-tauri/target -path '*/release/bundle/*' \
             \( -name '*.dmg' -o -name '*.deb' -o -name '*.AppImage' -o -name '*.msi' -o -name '*.exe' \
-               -o -name '*.app.tar.gz' -o -name '*.sig' \) \
+               -o -name '*.app.tar.gz' \
+               -o -name '*.app.tar.gz.sig' -o -name '*.AppImage.sig' \
+               -o -name '*-setup.exe.sig' -o -name '*.msi.sig' \) \
             -print0 |
             while IFS= read -r -d '' bundle; do
               cp "$bundle" "desktop-artifacts/$(basename "$bundle" | tr ' ' '-')"
