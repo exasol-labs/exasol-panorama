@@ -309,11 +309,21 @@ export const SchemaExplorer = ({
                 onClick={() => toggle(schema.name)}
               >
                 <Chevron open={open} />
+                <span className="pn-tree__name pn-tree__name--schema">{schema.name}</span>
+                {/*
+                  After the name, not before it.
+
+                  A virtual schema is the only row in the tree with a mark of its
+                  own, so ahead of the word it made a column that existed for one
+                  row in thirty and pushed that row's name out of line with every
+                  other. Behind the word, every name starts in the same place and
+                  the mark reads as something said about the schema once you have
+                  read which schema it is.
+                */}
                 {schema.virtual === true ? <VirtualSchemaIcon /> : null}
-                <span className="pn-tree__name">{schema.name}</span>
                 {/*
                   The word, for everyone the mark does not reach.
-                  
+
                   Not shown: a caption on every virtual schema was, on a panel of
                   thirty rows, the loudest thing in it — which is the opposite of
                   what a mark this size is for. So the visible signal is the mark

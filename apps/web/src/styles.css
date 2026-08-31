@@ -538,6 +538,19 @@ button:disabled {
 }
 
 /*
+ * A schema's name takes the width of the word and no more, so that the mark on a
+ * virtual one sits against the name rather than out at the far edge of the panel.
+ * A relation's name keeps the `flex: 1` above, because it has a kind and a row
+ * count after it that belong on the right.
+ *
+ * It still truncates: the shared `min-width: 0` and ellipsis do that, and the
+ * mark survives it by being outside the box that gets clipped.
+ */
+.pn-tree__name--schema {
+  flex: 0 1 auto;
+}
+
+/*
  * Captions at the end of a row: an unfamiliar kind, and the row count. Tabular
  * figures so a column of counts lines up on its digits rather than drifting.
  */
