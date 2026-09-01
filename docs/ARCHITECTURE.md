@@ -209,12 +209,39 @@ This is why `packages/renderer` can be tested with no workspace, and
 | `renderer`      | Babylon scene, camera, batched GPU drawing, glyph atlas, hit testing, interaction, halo, connectors, summary panels | Where data comes from                        |
 | `chart`         | Chart specification semantics, row reduction, the geometry contract a chart returns                                 | Any chart library                            |
 | `chart-echarts` | The ECharts adapter: option building, display-list extraction, triangulation, colour parsing                        | The canvas, the document                     |
+| `json-tables`   | Somebody else's storage contract: the column-name grammar, the grouping into properties, the family naming rules    | Panorama. It is a parser and nothing else    |
 | `export`        | Streaming CSV, XLSX and Parquet encoders; chart figures as SVG and PDF                                              | The renderer; the database                   |
 | `ui`            | React shell: connection dialog, schema explorer, export panel, settings, performance overlay                        | The canvas internals                         |
 | `mcp`           | Agent interface: tool catalogue, MCP endpoint, the bridge into the live session                                     | Which client is calling                      |
 | `test-support`  | Deterministic mock sources, virtual clock, pathological relation generators                                         | Production code paths                        |
 | `apps/web`      | Composition: workspace, canvas component, worker bootstrap, agent host, installability                              | —                                            |
 | `apps/desktop`  | Packaging only: a window onto `apps/web`'s build, bundled by Tauri                                                  | Everything. It holds no application code     |
+
+`json-tables` deserves one too, for the opposite reason: it is the only package
+that models something Panorama does not own. `exasol-json-tables` and
+`exasol-mongodb-vs` both store a nested document as a family of ordinary
+relational tables — one per object and array, joined by `_id`, `_parent` and
+`_pos`, with each property spread across a value column per type it had and
+boolean masks recording what SQL cannot say. Read against both projects' sources,
+they emit the _same_ physical shape.
+
+That shape is the reason those projects exist and it was invisible here: Panorama
+showed the storage, with `note` beside `note|n`, and drew a missing property and
+an explicit `null` as the same grey dash because both are SQL NULL. So the
+package parses the contract — and only parses it. It holds no presentation and no
+policy, imports nothing but the type vocabulary, and mirrors the loader's own
+`parse_column_name` deliberately, because that function is the contract's reading
+of itself. Everything above it — a column view that names the indices it reads,
+four cell states instead of one, a click that opens the child table, a schema
+explorer that nests a family under its root — is Panorama's, built on the answer.
+
+Two decisions are load-bearing. The branch vocabulary is **closed**, the union of
+what both loaders spell: read any `|` as a variant and a table with a column
+called `a|b` is reported as a document and drawn as one, over data that has
+nothing to do with JSON. And child links come from the **names**, not the
+catalogue, because that is where the two loaders differ — json-tables declares
+real foreign keys and mongodb-vs is a virtual schema, which in Exasol cannot
+carry a constraint at all.
 
 `apps/desktop` deserves a paragraph, because a second deployable usually means a
 second place for behaviour to hide and this one must not become that. It is a Tauri
