@@ -22,6 +22,10 @@ import {
 } from '../protocol/sql.js';
 import type { WrapperSurface } from './json-wrapper.js';
 import { readWrapperSurface } from './json-wrapper.js';
+import type { SemanticCompilation } from './semantic-compile.js';
+import { compileSemanticSql } from './semantic-compile.js';
+import type { SemanticSurface } from './semantic-surface.js';
+import { readSemanticSurface } from './semantic-surface.js';
 import { ExasolProtocolClient } from './client.js';
 import type { ExasolClientOptions } from './client.js';
 import type { SocketFactory } from './socket.js';
@@ -138,6 +142,15 @@ export class ExasolConnection {
    * reconnect rather than a poll.
    */
   #wrapperSurface: WrapperSurface | null = null;
+  /**
+   * What the semantic layer says, once asked for, and whether it was asked.
+   *
+   * Two fields rather than one, because `null` is a real answer here: almost no
+   * connection has `exasol-semantic-views` installed, and "asked, and there is
+   * none" must not be re-asked on every table that gets opened.
+   */
+  #semanticSurface: SemanticSurface | null = null;
+  #semanticRead = false;
 
   constructor(options: ExasolConnectionOptions) {
     this.#options = options;
@@ -251,6 +264,8 @@ export class ExasolConnection {
     // package should be noticed.
     this.#preprocessor = null;
     this.#wrapperSurface = null;
+    this.#semanticSurface = null;
+    this.#semanticRead = false;
     this.#setStatus('disconnected');
   }
 
@@ -311,17 +326,9 @@ export class ExasolConnection {
     };
   }
 
-  /**
-   * The wrapper surface if it has already been read, without reading it.
-   *
-   * For the one caller that cannot wait: choosing a statement's preprocessor
-   * happens on the way to running it, and an await there would put a catalogue
-   * round trip in front of every query. `null` before the first read, which means
-   * no preprocessor — correct, because nothing can have seeded a wrapper statement
-   * before the surface was known either.
-   */
-  wrapperSurfaceIfRead(): WrapperSurface | null {
-    return this.#wrapperSurface;
+  /** Turns semantic SQL into SQL this database will run; see `compileSemanticSql`. */
+  async compileSemantic(statement: string): Promise<SemanticCompilation> {
+    return compileSemanticSql(async (sqlText) => (await this.queryAll(sqlText)).columns, statement);
   }
 
   /** The JSON wrapper packages installed here; see `readWrapperSurface`. */
@@ -330,6 +337,24 @@ export class ExasolConnection {
       async (sqlText) => (await this.queryAll(sqlText)).columns,
     );
     return this.#wrapperSurface;
+  }
+
+  /**
+   * What the semantic layer knows, or `null` where there is not one.
+   *
+   * Three queries at most and usually one: the version lookup is the detection,
+   * and a connection without the layer stops there. Held for the session, like
+   * the wrapper surface — a model published while somebody is reading is worth a
+   * reconnect rather than a poll.
+   */
+  async semanticSurface(): Promise<SemanticSurface | null> {
+    if (!this.#semanticRead) {
+      this.#semanticSurface = await readSemanticSurface(
+        async (sqlText) => (await this.queryAll(sqlText)).columns,
+      );
+      this.#semanticRead = true;
+    }
+    return this.#semanticSurface;
   }
 
   /**

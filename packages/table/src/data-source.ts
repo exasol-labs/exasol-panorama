@@ -83,6 +83,15 @@ export type TableDataErrorCode =
   | 'fetch-failed'
   | 'session-closed'
   | 'aborted'
+  /**
+   * The statement was refused before it ran, and the refusal is the answer.
+   *
+   * A semantic layer that will not compile a query says why, names the object
+   * the field actually belongs to, and offers what else would have worked. That
+   * is a thing to show a reader, not a thing to retry — which is why it is its
+   * own code rather than a protocol error.
+   */
+  | 'statement-refused'
   | 'protocol-error';
 
 /**

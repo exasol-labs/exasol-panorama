@@ -1,5 +1,6 @@
 import type { ExasolValue } from '../protocol/messages.js';
 import {
+  statementNamesSchema,
   wrapperHelperSchemaQuery,
   wrapperPreprocessorQuery,
   wrapperRootsQuery,
@@ -225,23 +226,7 @@ export const preprocessorForStatement = (
 ): string | undefined => {
   const schemas = [...new Set([...(surface?.values() ?? [])].map((entry) => entry.schema))].sort();
   for (const schema of schemas) {
-    if (namesSchema(statement, schema)) return preprocessorForSchema(surface, schema);
+    if (statementNamesSchema(statement, schema)) return preprocessorForSchema(surface, schema);
   }
   return undefined;
 };
-
-/**
- * Whether a statement names a schema, quoted or not, as a whole word.
- *
- * Exasol folds an unquoted identifier to upper case, so both spellings have to be
- * looked for; and the boundary check is what stops `JSON_VIEW` matching a
- * statement that only mentions `JSON_VIEW_ARCHIVE`.
- */
-const namesSchema = (statement: string, schema: string): boolean => {
-  const quoted = `"${schema}"`;
-  if (statement.includes(quoted)) return true;
-  const bare = new RegExp(`(^|[^A-Z0-9_$"])${escapeForRegExp(schema)}\\s*\\.`, 'u');
-  return bare.test(statement.toUpperCase());
-};
-
-const escapeForRegExp = (value: string): string => value.replaceAll(/[.*+?^${}()|[\]\\]/gu, '\\$&');

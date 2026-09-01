@@ -173,6 +173,82 @@ export const wrapperPreprocessorQuery = (publicSchema: string, helperSchema: str
   ' ORDER BY SCRIPT_SCHEMA, SCRIPT_NAME';
 
 /**
+ * Where `exasol-semantic-views` publishes what it knows.
+ *
+ * Two schemas and both fixed, unlike the JSON wrapper's — the installer creates
+ * them by these names and the docs address them by these names, so this is a
+ * contract rather than a convention worth second-guessing. Reading
+ * `PRODUCT_VERSION` is therefore the whole of the detection: the query either
+ * answers or the layer is not installed here, which is the ordinary case.
+ */
+export const SEMANTIC_CATALOG_SCHEMA = 'SEMANTIC_CATALOG';
+export const SEMANTIC_AGENT_SCHEMA = 'SEMANTIC_AGENT';
+export const SEMANTIC_ADMIN_SCHEMA = 'SEMANTIC_ADMIN';
+
+/**
+ * Turns semantic SQL into physical SQL, and returns it rather than running it.
+ *
+ * The layer's own answer for a tool that cannot set a session preprocessor,
+ * which is exactly Panorama's position: Exasol allows one preprocessor per
+ * session and the JSON wrapper machinery already uses that slot.
+ *
+ * It is also the only correct answer for a box, for a reason that has nothing to
+ * do with the slot. Panorama derives further queries from a statement — column
+ * statistics, a histogram, the frequency bars — by wrapping it as
+ * `(statement) AS "panorama_source"`. Under the preprocessor those get rewritten
+ * a second time: measured against a live instance, `SELECT COUNT(*)` over a
+ * three-row statement came back **1**, and the summary and frequency queries
+ * failed outright. Compiling first means everything derived is derived from
+ * ordinary SQL the database handles normally.
+ *
+ * Nine columns come back; see `compileSemanticSql` for what is read from them.
+ */
+export const compileSemanticQuery = (statement: string): string =>
+  `EXECUTE SCRIPT ${qualifiedName(SEMANTIC_ADMIN_SCHEMA, 'COMPILE_SQL')}` +
+  `(${quoteLiteral(statement)})`;
+
+/** Which build of the semantic layer is installed, if any. */
+export const semanticVersionQuery = (): string =>
+  `SELECT DISPLAY_VERSION FROM ${quoteIdentifier(SEMANTIC_CATALOG_SCHEMA)}."PRODUCT_VERSION"`;
+
+/**
+ * The models, published and not.
+ *
+ * Drafts are read too and marked as drafts rather than filtered out in SQL: a
+ * draft is a real thing to show in an explorer, and it is *this* module's
+ * business to know which schema each model would publish to — because a draft
+ * whose published schema happens to name a real schema must not be allowed to
+ * describe it. See `indexSemanticFields`.
+ *
+ * `UPDATED_AT` is the one currency signal available. Publishing a model stamps
+ * it, so where two published models claim the same object the newer one is the
+ * one whose `CREATE OR REPLACE VIEW` ran last — which is the view that is
+ * actually there.
+ */
+export const semanticModelsQuery = (): string =>
+  'SELECT MODEL_ID, MODEL_NAME, PUBLISHED_SCHEMA, DESCRIPTION, STATUS, UPDATED_AT' +
+  ` FROM ${quoteIdentifier(SEMANTIC_CATALOG_SCHEMA)}."MODELS"` +
+  ' ORDER BY UPDATED_AT, MODEL_ID';
+
+/**
+ * Every field of every semantic object, by the physical name it is published as.
+ *
+ * `SQL_OBJECT_NAME` and `SQL_COLUMN_NAME` are the upper-cased names the publish
+ * step actually creates the view and its columns with — the lower-case
+ * `OBJECT_NAME` and `COLUMN_NAME` beside them are the model author's spelling
+ * and would match nothing in the catalogue. Verified against a published model:
+ * the view's columns are exactly the `SQL_COLUMN_NAME`s.
+ *
+ * The model is identified rather than joined here, so that which models count is
+ * decided once, in one place, against the models that were read.
+ */
+export const semanticFieldsQuery = (): string =>
+  'SELECT MODEL_ID, SQL_OBJECT_NAME, SQL_COLUMN_NAME, FIELD_KIND, DISPLAY_NAME' +
+  ', DESCRIPTION, FORMAT_HINT, UNIT_HINT, IS_CERTIFIED, SENSITIVITY_LABEL' +
+  ` FROM ${quoteIdentifier(SEMANTIC_AGENT_SCHEMA)}."FIELDS_FOR_AGENT"` +
+  ' ORDER BY MODEL_ID, SQL_OBJECT_NAME, ORDINAL_POSITION';
+
+/**
  * Points the session's SQL preprocessor at one script, or at none.
  *
  * Session state, and the reason it is set per statement rather than once: Exasol
@@ -182,6 +258,26 @@ export const wrapperPreprocessorQuery = (publicSchema: string, helperSchema: str
  */
 export const setPreprocessorStatement = (script: string | null): string =>
   `ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = ${script ?? 'null'}`;
+
+/**
+ * Whether a statement names a schema, quoted or not, as a whole word.
+ *
+ * Exasol folds an unquoted identifier to upper case, so both spellings have to be
+ * looked for; and the boundary check is what stops `JSON_VIEW` matching a
+ * statement that only mentions `JSON_VIEW_ARCHIVE`.
+ *
+ * Here rather than beside either caller because both the JSON wrapper and the
+ * semantic layer ask exactly this question of a statement, and two copies of a
+ * regular expression this fiddly would drift.
+ */
+export const statementNamesSchema = (statement: string, schema: string): boolean => {
+  const quoted = `"${schema}"`;
+  if (statement.includes(quoted)) return true;
+  const bare = new RegExp(`(^|[^A-Z0-9_$"])${escapeForRegExp(schema)}\\s*\\.`, 'u');
+  return bare.test(statement.toUpperCase());
+};
+
+const escapeForRegExp = (value: string): string => value.replaceAll(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 
 /**
  * Single-column foreign keys declared on a table.

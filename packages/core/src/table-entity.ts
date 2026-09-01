@@ -9,6 +9,8 @@ import type {
 import { clamp, type Size2, type Vec3 } from './geometry.js';
 import type { EntityId, IdFactory } from './ids.js';
 import type { JsonColumnView } from './json-column.js';
+import type { SemanticColumnView } from './semantic-column.js';
+import { semanticHeader } from './semantic-column.js';
 
 /** Layout defaults for a freshly opened table. Deliberately conventional. */
 export const DEFAULT_TABLE_VIEW: TableViewSettings = Object.freeze({
@@ -67,6 +69,8 @@ export interface TableColumnSpec {
   readonly foreignKey?: ForeignKeyReference;
   /** Set where this column presents several; see `JsonColumnView`. */
   readonly json?: JsonColumnView;
+  /** Set where a semantic layer says what this column means. */
+  readonly semantic?: SemanticColumnView;
 }
 
 export interface TableEntitySpec {
@@ -105,9 +109,14 @@ export const buildTableColumns = (
       type: column.type,
       ...(column.foreignKey === undefined ? {} : { foreignKey: column.foreignKey }),
     },
-    width: column.width ?? estimateColumnWidth(column.name, column.type),
+    // Measured against the header the reader will actually see: a column shown
+    // as "Gross Margin %" needs room for that and not for `GROSS_MARGIN_PCT`.
+    width:
+      column.width ??
+      estimateColumnWidth(semanticHeader(column.name, column.semantic), column.type),
     visible: column.visible ?? true,
     ...(column.json === undefined ? {} : { json: column.json }),
+    ...(column.semantic === undefined ? {} : { semantic: column.semantic }),
   }));
 
 /** Width at which every visible column is fully shown, gutter included. */

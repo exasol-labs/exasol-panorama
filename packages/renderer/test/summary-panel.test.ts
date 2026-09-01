@@ -13,6 +13,7 @@ import {
   formatNullShare,
   formatStatistic,
   layoutSummaryPanels,
+  wrapText,
 } from '@panorama/renderer';
 
 const VARCHAR = dataType('varchar', 'VARCHAR(64)', { size: 64 });
@@ -505,5 +506,77 @@ describe('the panel surface', () => {
 
   it('draws nothing at all when nothing is picked out', () => {
     expect(draw([])).toMatchObject({ quads: [], texts: [] });
+  });
+});
+
+/**
+ * What a semantic layer says the column is, above what the rows turned out to
+ * be. Two different questions, and this one comes first: somebody who does not
+ * know what a number *is* has no use for how it is spread.
+ */
+describe('the meaning of a column', () => {
+  const revenue = {
+    kind: 'metric',
+    model: 'sales',
+    displayName: 'Total Revenue',
+    description: 'Net recognized revenue excluding tax',
+    certified: true,
+  } as const;
+
+  it('gives the panel the model’s name for the column and the database’s', () => {
+    const { labels } = draw([
+      request({ column: column({ name: 'TOTAL_REVENUE', type: DOUBLE, semantic: revenue }) }),
+    ]);
+    expect(labels).toContain('Total Revenue');
+    expect(labels).toContain('TOTAL_REVENUE · DOUBLE');
+  });
+
+  it('says what it is, whether anybody vouched for it, and who said so', () => {
+    const { labels } = draw([
+      request({ column: column({ name: 'TOTAL_REVENUE', semantic: revenue }) }),
+    ]);
+    // Wrapped across the lines the panel has room for, so the sentence is
+    // checked as a sentence rather than as whatever the break happened to be.
+    expect(labels.join(' ')).toContain('Net recognized revenue excluding tax');
+    expect(labels).toContain('metric · certified');
+    // Meaning has an author, and a reader asked to trust a governed number
+    // deserves to see whose governance it is.
+    expect(labels).toContain('sales');
+  });
+
+  it('says only what there is to say about a column with no description', () => {
+    const bare = request({
+      column: column({ name: 'REGION', semantic: { kind: 'dimension', model: 'sales' } }),
+    });
+    const { labels } = draw([bare]);
+    expect(labels).toContain('dimension');
+    expect(labels).not.toContain('metric · certified');
+    // A panel with nothing to describe is a shorter panel, not one carrying
+    // three blank lines.
+    const described = request({ column: column({ name: 'REGION', semantic: revenue }) });
+    expect(layoutSummaryPanels([bare], 400)[0]?.height).toBeLessThan(
+      layoutSummaryPanels([described], 400)[0]?.height ?? 0,
+    );
+  });
+
+  it('leaves an ordinary column’s panel exactly as it was', () => {
+    const { labels } = draw([request()]);
+    expect(labels).toContain('COUNTRY');
+    expect(labels).toContain('VARCHAR(64)');
+    expect(labels.some((label) => label.includes('·'))).toBe(false);
+  });
+});
+
+describe('breaking a sentence across lines', () => {
+  it('breaks on words, and keeps the remainder on the last line it has', () => {
+    expect(wrapText('one two three four', 9, 3)).toEqual(['one two', 'three', 'four']);
+    // Out of lines with words left over: the rest joins the last line, and the
+    // panel's clip takes it from there — which at least shows there was more.
+    expect(wrapText('one two three four five', 4, 2)).toEqual(['one', 'two three four five']);
+  });
+
+  it('has nothing to say in a space nothing fits in', () => {
+    expect(wrapText('anything', 0, 3)).toEqual([]);
+    expect(wrapText('   ', 20, 3)).toEqual([]);
   });
 });

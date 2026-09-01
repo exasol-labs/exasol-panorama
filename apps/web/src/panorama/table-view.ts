@@ -15,7 +15,7 @@ import {
   maxScrollTopOf,
   tableMetrics,
 } from '@panorama/renderer';
-import type { TableDataGateway, TableOpenSpec } from '@panorama/worker';
+import type { CompiledStatement, TableDataGateway, TableOpenSpec } from '@panorama/worker';
 import { TableDataController } from '@panorama/worker';
 
 /**
@@ -72,6 +72,11 @@ export class TableView {
 
   get rowCount(): number | null {
     return this.controller.rowCount;
+  }
+
+  /** The physical SQL behind these rows, where a semantic layer compiled them. */
+  get compiled(): CompiledStatement | null {
+    return this.controller.compiled;
   }
 
   get scrollTop(): number {

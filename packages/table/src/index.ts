@@ -5,6 +5,7 @@ export * from './format.js';
 export * from './json-cell.js';
 export * from './json-summary.js';
 export * from './json-view.js';
+export * from './semantic-view.js';
 export * from './layout.js';
 export * from './prefetch.js';
 export * from './result-chunk.js';

@@ -32,92 +32,54 @@ const stubConnection = (): ExasolConnection =>
     closeResultSet: async (): Promise<void> => undefined,
   }) as unknown as ExasolConnection;
 
-const sqlFor = async (
-  request: Parameters<typeof createTableSource>[0],
-): Promise<string | undefined> => {
-  statements.length = 0;
-  const source = createTableSource(request, stubConnection());
-  await source.open();
-  await source.close();
-  return statements.at(-1);
-};
-
 const FILTER: RowFilter = {
   column: 'NAME',
   values: ['Denmark'],
   type: dataType('varchar', 'VARCHAR(64)', { size: 64 }),
 };
 
+/**
+ * What the page can serve, and — as much — what it must not.
+ *
+ * The statements a live source sends used to be asserted here, because this
+ * function used to build them. It no longer does: everything but a demo relation
+ * is the worker's to build, and it has to be, or a live source is created without
+ * the JSON wrapper preprocessor its statement needs and without the semantic
+ * compile a published object cannot be read without. Those statements are
+ * asserted in `packages/worker/test/data-worker.test.ts`, where they are now made.
+ */
 describe('createTableSource', () => {
-  it('selects a whole stored relation when nothing narrows it', async () => {
-    await expect(sqlFor({ schema: 'SALES', table: 'ORDERS' })).resolves.toBe(
-      'SELECT * FROM "SALES"."ORDERS"',
-    );
-  });
-
-  it('carries a foreign key filter into the statement it sends', async () => {
-    // The bug this exists for: the filter reached the worker and stopped there,
-    // so following a key against a real database opened the whole table.
-    await expect(sqlFor({ schema: 'SALES', table: 'COUNTRIES', filter: FILTER })).resolves.toBe(
-      `SELECT * FROM "SALES"."COUNTRIES" WHERE "NAME" = 'Denmark'`,
-    );
-  });
-
-  it('compares a numeric key numerically, whichever way Exasol sent it', async () => {
-    const key = dataType('decimal', 'DECIMAL(18,0)', { precision: 18, scale: 0 });
-    await expect(
-      sqlFor({ schema: 'S', table: 'T', filter: { column: 'ID', values: [4_711], type: key } }),
-    ).resolves.toBe('SELECT * FROM "S"."T" WHERE "ID" = 4711');
-    // A high-precision key arrives as digits rather than as a JSON number.
-    await expect(
-      sqlFor({
-        schema: 'S',
-        table: 'T',
-        filter: { column: 'ID', values: ['123456789012345678'], type: key },
-      }),
-    ).resolves.toBe('SELECT * FROM "S"."T" WHERE "ID" = 123456789012345678');
-  });
-
-  it('follows a key to a NULL with IS NULL rather than an impossible equality', async () => {
-    await expect(
-      sqlFor({ schema: 'S', table: 'T', filter: { column: 'C', values: [null] } }),
-    ).resolves.toBe('SELECT * FROM "S"."T" WHERE "C" IS NULL');
-  });
-
-  it('runs a statement as given, and never alongside a filter', async () => {
-    await expect(
-      sqlFor({ schema: 'QUERY', table: 'label', sql: 'SELECT 1 FROM DUAL', filter: FILTER }),
-    ).resolves.toBe('SELECT 1 FROM DUAL');
-  });
-
   it('serves a demo relation locally, filter and all', async () => {
     const source = createTableSource(
       { schema: DEMO_SCHEMA, table: 'COUNTRIES', filter: FILTER },
-      null,
       { demoLatencyMs: 0 },
     );
-    const session = await source.open();
+    const session = await source?.open();
     // Filtered to the one country, without a database to ask.
-    expect(session.rowCount).toBe(1);
-    await source.close();
+    expect(session?.rowCount).toBe(1);
+    await source?.close();
   });
 
   it('serves a whole demo relation when nothing narrows it', async () => {
-    const source = createTableSource({ schema: DEMO_SCHEMA, table: 'COUNTRIES' }, null, {
-      demoLatencyMs: 0,
-    });
-    const session = await source.open();
-    expect(session.rowCount).toBe(5);
-    await source.close();
+    const source = createTableSource(
+      { schema: DEMO_SCHEMA, table: 'COUNTRIES' },
+      {
+        demoLatencyMs: 0,
+      },
+    );
+    const session = await source?.open();
+    expect(session?.rowCount).toBe(5);
+    await source?.close();
   });
 
-  it('refuses what it cannot serve, rather than serving something else', async () => {
-    expect(() => createTableSource({ schema: 'SALES', table: 'ORDERS' }, null)).toThrow(
-      /No connection/u,
-    );
-    expect(() => createTableSource({ schema: 'S', table: 'T', sql: 'SELECT 1' }, null)).toThrow(
-      /without a database/u,
-    );
+  it('declines everything it is not the only one who can serve', () => {
+    expect(createTableSource({ schema: 'SALES', table: 'ORDERS' })).toBeUndefined();
+    expect(
+      createTableSource({ schema: 'SALES', table: 'COUNTRIES', filter: FILTER }),
+    ).toBeUndefined();
+    expect(createTableSource({ schema: 'QUERY', table: 'q', sql: 'SELECT 1' })).toBeUndefined();
+    // A demo relation that does not exist is not a demo relation.
+    expect(createTableSource({ schema: DEMO_SCHEMA, table: 'NOT_A_TABLE' })).toBeUndefined();
   });
 });
 

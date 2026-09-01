@@ -50,34 +50,27 @@ describe('demo relations', () => {
     const client = new DataWorkerClient(createWorkerEndpoint({ useWorker: false }));
     await expect(
       client.openTable({ tableId: 'table:x' as EntityId, schema: 'SALES', table: 'ORDERS' }),
-    ).rejects.toThrow(/No connection/);
+    ).rejects.toThrow(/Not connected/);
   });
 
-  it('builds an Exasol-backed source for real schemas', async () => {
+  /**
+   * The page knows about the demo relations and nothing else. Building a live
+   * source here would bypass the two decisions only the worker makes — which
+   * JSON wrapper preprocessor a statement needs, and whether a semantic layer has
+   * to compile it — and that is exactly the bug this contract exists to prevent.
+   */
+  it('declines a real schema, leaving it to the worker', async () => {
     const { createTableSource } = await import('../src/panorama/start-data-worker.js');
-    const connection = { id: 'connection:1' } as never;
-    const source = createTableSource({ schema: 'SALES', table: 'ORDERS' }, connection);
-    expect(source).toBeDefined();
-    expect(typeof source.open).toBe('function');
+    expect(createTableSource({ schema: 'SALES', table: 'ORDERS' })).toBeUndefined();
   });
 
-  it('sends a statement to the database, never to the demo generator', async () => {
+  it('declines a statement, even one addressed at the demo schema', async () => {
     const { createTableSource } = await import('../src/panorama/start-data-worker.js');
-    const connection = { id: 'connection:1' } as never;
-    // Even addressed at the demo schema, a statement needs a real engine: the
-    // local generator has no SQL in it.
-    const source = createTableSource(
-      { schema: DEMO_SCHEMA, table: 'SAMPLE_100', sql: 'SELECT 1' },
-      connection,
-    );
-    expect(source.constructor.name).toBe('ExasolTableDataSource');
-  });
-
-  it('refuses a statement when nothing is connected', async () => {
-    const { createTableSource } = await import('../src/panorama/start-data-worker.js');
-    expect(() => createTableSource({ schema: 'QUERY', table: 'q', sql: 'SELECT 1' }, null)).toThrow(
-      /without a database connection/,
-    );
+    // The local generator has no SQL in it, so a statement is always the
+    // database's — and the worker is what knows how to send it one.
+    expect(
+      createTableSource({ schema: DEMO_SCHEMA, table: 'SAMPLE_100', sql: 'SELECT 1' }),
+    ).toBeUndefined();
   });
 
   it('generates deterministic cells far into a huge relation', () => {

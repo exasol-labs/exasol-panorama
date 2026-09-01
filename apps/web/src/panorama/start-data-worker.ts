@@ -1,5 +1,5 @@
 import type { SocketLike } from '@panorama/exasol';
-import { ExasolConnection, ExasolTableDataSource } from '@panorama/exasol';
+import { ExasolConnection } from '@panorama/exasol';
 import type { RowFilter, TableDataSource } from '@panorama/table';
 import type { WorkerEndpoint } from '@panorama/worker';
 import { DataWorker } from '@panorama/worker';
@@ -20,42 +20,32 @@ export interface StartDataWorkerOptions {
 }
 
 /**
- * Chooses the data source for a table: the local demo generator for the
- * built-in schema, otherwise a live Exasol result set.
+ * The one source the worker cannot build for itself, or nothing.
+ *
+ * The built-in demo schema is generated in the page, so the table browser works —
+ * and can be profiled — with no database at all. That is the whole of what this
+ * knows; **everything else returns `undefined`, and the worker builds it.**
+ *
+ * The `undefined` is the important half. Building a live source here looks
+ * harmless and quietly bypasses two decisions that are only made in the worker:
+ * which JSON wrapper preprocessor a statement needs, and whether a semantic layer
+ * has to compile the statement before the database will run it. This function
+ * used to do exactly that, and the symptom was a published semantic object
+ * answering with `SEMANTIC_SURFACE_001` — the guard's "run the preprocessor"
+ * error — because the statement reached the database as written.
  */
 export const createTableSource = (
   request: { schema: string; table: string; filter?: RowFilter; sql?: string },
-  connection: ExasolConnection | null,
   options: StartDataWorkerOptions = {},
-): TableDataSource => {
+): TableDataSource | undefined => {
   // A statement is checked first: it names no schema of its own, so the demo
   // branch below could never recognise it, and only a database can run it.
-  if (request.sql !== undefined) {
-    if (connection === null) throw new Error('Cannot run SQL without a database connection');
-    return new ExasolTableDataSource({
-      connection,
-      schema: request.schema,
-      table: request.table,
-      sql: request.sql,
-    });
-  }
-  // The demo schema is served locally, so the table browser works — and can be
-  // profiled — with no database at all.
+  if (request.sql !== undefined) return undefined;
   const relation = request.schema === DEMO_SCHEMA ? demoRelation(request.table) : undefined;
-  if (relation !== undefined) {
-    return new MockTableDataSource({
-      relation,
-      latency: options.demoLatencyMs ?? 45,
-      ...(request.filter === undefined ? {} : { filter: request.filter }),
-    });
-  }
-  if (connection === null) {
-    throw new Error(`No connection for ${request.schema}.${request.table}`);
-  }
-  return new ExasolTableDataSource({
-    connection,
-    schema: request.schema,
-    table: request.table,
+  if (relation === undefined) return undefined;
+  return new MockTableDataSource({
+    relation,
+    latency: options.demoLatencyMs ?? 45,
     // The filter is what following a foreign key *is*. Dropping it here opened
     // the referenced table in full, which looks so nearly right that it took a
     // while to be believed.
@@ -91,6 +81,7 @@ export const startDataWorker = (
             }),
       });
     },
-    createSource: (request, connection): TableDataSource =>
-      createTableSource(request, connection, options),
+    // Only the demo relations; everything else is the worker's to build, and
+    // must be, or it loses the preprocessor and the semantic compile.
+    createSource: (request): TableDataSource | undefined => createTableSource(request, options),
   });

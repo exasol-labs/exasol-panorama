@@ -532,27 +532,25 @@ describe('the wrapper surface on a connection', () => {
         },
       },
     });
-    // Nothing has been asked yet, so the synchronous peek is empty — which reads
-    // as "no wrapper", and is right: nothing can have seeded a wrapper statement
-    // before the surface was known either.
-    expect(connection.wrapperSurfaceIfRead()).toBeNull();
-
     const surface = await connection.wrapperSurface();
     expect([...surface.keys()]).toEqual(['SRC.orders']);
-    expect(connection.wrapperSurfaceIfRead()).toBe(surface);
 
+    // Asked once. Everything that needs it asks for it — there is no peeking at
+    // what somebody else happened to have read — so the cache is what keeps the
+    // cost to one lookup per session.
     const asked = server.executed.filter((sql) => sql.includes('__JVS_ROOTS')).length;
     await connection.wrapperSurface();
     expect(server.executed.filter((sql) => sql.includes('__JVS_ROOTS')).length).toBe(asked);
   });
 
   /** A reconnect is exactly when a newly installed package should be noticed. */
-  it('forgets it when the session ends', async () => {
-    const { connection } = await connect();
+  it('reads it again when the session ends', async () => {
+    const { connection, server } = await connect();
     await connection.wrapperSurface();
-    expect(connection.wrapperSurfaceIfRead()).not.toBeNull();
+    const asked = server.executed.filter((sql) => sql.includes('__JVS_ROOTS')).length;
     await connection.close();
-    expect(connection.wrapperSurfaceIfRead()).toBeNull();
+    await connection.wrapperSurface().catch(() => undefined);
+    expect(server.executed.filter((sql) => sql.includes('__JVS_ROOTS')).length).toBe(asked);
   });
 });
 
@@ -647,5 +645,129 @@ describe('running a statement under a SQL preprocessor', () => {
         .at(-1);
       expect(before, `${sql} ran under ${String(before)}`).toBe(setting(expected));
     }
+  });
+});
+
+describe('the semantic layer on a connection', () => {
+  const layer = {
+    'PRODUCT_VERSION"': {
+      columns: [{ name: 'DISPLAY_VERSION', dataType: { type: 'VARCHAR', size: 64 } }],
+      rowCount: 1,
+      data: [['0.1+dev']],
+    },
+    '"MODELS"': {
+      columns: [
+        { name: 'MODEL_ID', dataType: { type: 'DECIMAL', precision: 18, scale: 0 } },
+        { name: 'MODEL_NAME', dataType: { type: 'VARCHAR', size: 128 } },
+        { name: 'PUBLISHED_SCHEMA', dataType: { type: 'VARCHAR', size: 128 } },
+        { name: 'DESCRIPTION', dataType: { type: 'VARCHAR', size: 2000 } },
+        { name: 'STATUS', dataType: { type: 'VARCHAR', size: 32 } },
+        { name: 'UPDATED_AT', dataType: { type: 'VARCHAR', size: 32 } },
+      ],
+      rowCount: 1,
+      data: [[1], ['sales'], ['SEMANTIC_SALES'], [null], ['PUBLISHED'], ['2026-09-01']],
+    },
+    FIELDS_FOR_AGENT: {
+      columns: [
+        { name: 'MODEL_ID', dataType: { type: 'DECIMAL', precision: 18, scale: 0 } },
+        { name: 'SQL_OBJECT_NAME', dataType: { type: 'VARCHAR', size: 128 } },
+        { name: 'SQL_COLUMN_NAME', dataType: { type: 'VARCHAR', size: 128 } },
+        { name: 'FIELD_KIND', dataType: { type: 'VARCHAR', size: 32 } },
+        { name: 'DISPLAY_NAME', dataType: { type: 'VARCHAR', size: 128 } },
+        { name: 'DESCRIPTION', dataType: { type: 'VARCHAR', size: 2000 } },
+        { name: 'FORMAT_HINT', dataType: { type: 'VARCHAR', size: 32 } },
+        { name: 'UNIT_HINT', dataType: { type: 'VARCHAR', size: 32 } },
+        { name: 'IS_CERTIFIED', dataType: { type: 'BOOLEAN' } },
+        { name: 'SENSITIVITY_LABEL', dataType: { type: 'VARCHAR', size: 32 } },
+      ],
+      rowCount: 1,
+      data: [
+        [1],
+        ['SALES'],
+        ['TOTAL_REVENUE'],
+        ['METRIC'],
+        ['Total Revenue'],
+        [null],
+        ['currency'],
+        [null],
+        [true],
+        [null],
+      ],
+    },
+  } as const;
+
+  it('reads it once and remembers it', async () => {
+    const { connection, server } = await connect({ queries: layer });
+    const surface = await connection.semanticSurface();
+    expect(surface?.version).toBe('0.1+dev');
+    expect(surface?.fields[0]?.displayName).toBe('Total Revenue');
+
+    const asked = server.executed.filter((sql) => sql.includes('FIELDS_FOR_AGENT')).length;
+    await connection.semanticSurface();
+    expect(server.executed.filter((sql) => sql.includes('FIELDS_FOR_AGENT')).length).toBe(asked);
+  });
+
+  /**
+   * The answer on nearly every connection, and the one that must not be asked
+   * twice: `null` is a real answer here, so "asked, and there is none" has to be
+   * remembered as firmly as a surface would be.
+   */
+  it('remembers that there is not one', async () => {
+    const { connection, server } = await connect();
+    expect(await connection.semanticSurface()).toBeNull();
+    const asked = server.executed.length;
+    expect(await connection.semanticSurface()).toBeNull();
+    expect(server.executed).toHaveLength(asked);
+  });
+
+  it('compiles a statement through the layer’s own script', async () => {
+    const { connection, server } = await connect({
+      queries: {
+        ...layer,
+        COMPILE_SQL: {
+          columns: [
+            { name: 'STATUS', dataType: { type: 'VARCHAR', size: 32 } },
+            { name: 'ERROR_CODE', dataType: { type: 'VARCHAR', size: 64 } },
+            { name: 'ERROR_MESSAGE', dataType: { type: 'VARCHAR', size: 2000 } },
+            { name: 'ORIGINAL_SQL', dataType: { type: 'VARCHAR', size: 2000 } },
+            { name: 'GENERATED_SQL', dataType: { type: 'VARCHAR', size: 2000 } },
+            { name: 'PLAN_JSON', dataType: { type: 'VARCHAR', size: 2000 } },
+            { name: 'CLARIFICATION_JSON', dataType: { type: 'VARCHAR', size: 2000 } },
+            { name: 'VALIDATION_RUN_ID', dataType: { type: 'DECIMAL', precision: 18, scale: 0 } },
+            { name: 'AGENT_REQUEST_ID', dataType: { type: 'VARCHAR', size: 64 } },
+          ],
+          rowCount: 1,
+          data: [
+            ['OK'],
+            [null],
+            [null],
+            ['SELECT total_revenue FROM SEMANTIC_SALES.SALES'],
+            ['SELECT SUM(x) FROM "MART"."ORDER_LINES"'],
+            [null],
+            [null],
+            [1],
+            [null],
+          ],
+        },
+      },
+    });
+    const compiled = await connection.compileSemantic(
+      'SELECT total_revenue FROM SEMANTIC_SALES.SALES',
+    );
+    expect(compiled).toEqual({ status: 'ok', sql: 'SELECT SUM(x) FROM "MART"."ORDER_LINES"' });
+    expect(server.executed.some((sql) => sql.includes('COMPILE_SQL'))).toBe(true);
+  });
+
+  /**
+   * A reconnect is exactly when a newly published model should be noticed, so
+   * the surface must not outlive the session it described. Asking again on a
+   * closed connection therefore finds nothing rather than handing back what the
+   * last session said.
+   */
+  it('forgets it when the session ends', async () => {
+    const { connection } = await connect({ queries: layer });
+    expect(await connection.semanticSurface()).not.toBeNull();
+    await connection.close();
+    expect(await connection.semanticSurface()).toBeNull();
   });
 });

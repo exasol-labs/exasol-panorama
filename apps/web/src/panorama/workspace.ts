@@ -51,6 +51,7 @@ import {
   formatCell,
   jsonColumnSpecs,
   physicalColumnSpecs,
+  withSemantics,
 } from '@panorama/table';
 import type {
   ChartMetrics,
@@ -59,8 +60,20 @@ import type {
   TableViewProvider,
 } from '@panorama/renderer';
 import type { ForeignKeyFollow, InteractionHost, TableViewState } from '@panorama/renderer';
-import type { ExasolCredentials, WrapperSurface, WrapperView } from '@panorama/exasol';
-import { filterPredicate, qualifiedName, wrapperFor, wrapperKey } from '@panorama/exasol';
+import type {
+  ExasolCredentials,
+  SemanticIndex,
+  WrapperSurface,
+  WrapperView,
+} from '@panorama/exasol';
+import {
+  filterPredicate,
+  indexSemanticFields,
+  qualifiedName,
+  semanticColumnsFor,
+  wrapperFor,
+  wrapperKey,
+} from '@panorama/exasol';
 import type { ChartMark, ChartSurface, ChartTheme } from '@panorama/chart';
 import type { ChartExportFormat, ChartFigure, FileFormatDescriptor } from '@panorama/export';
 import {
@@ -80,7 +93,7 @@ import type { ColumnSummaryState } from './column-summaries.js';
 import { ColumnSummaries } from './column-summaries.js';
 import type { ExportJob } from './export-jobs.js';
 import { ExportJobs } from './export-jobs.js';
-import type { DataWorkerClient, TableOpenSpec } from '@panorama/worker';
+import type { CompiledStatement, DataWorkerClient, TableOpenSpec } from '@panorama/worker';
 import { TableView } from './table-view.js';
 import { DEMO_SCHEMA } from './demo.js';
 
@@ -430,6 +443,17 @@ export class Workspace implements TableViewProvider, InteractionHost {
    * round trip per installed package and only connections that have one pay.
    */
   #wrappers: WrapperSurface | null = null;
+  /**
+   * What the semantic layer says the columns of each published object mean.
+   *
+   * `null` until it has been asked for. Read on connect so a box opened straight
+   * afterwards is drawn with the names a model gave it, and read *again* on
+   * demand if that ever fails or is skipped — the same rule the worker follows
+   * for compiling, and for the same reason: a box that quietly loses its display
+   * names because two pieces of code ran in the wrong order would be a hard thing
+   * to notice and a harder one to explain.
+   */
+  #semantics: SemanticIndex | null = null;
   /** Exports in flight; they outlive the tables and panels that started them. */
   readonly #exports: ExportJobs;
   /**
@@ -568,6 +592,16 @@ export class Workspace implements TableViewProvider, InteractionHost {
         view,
       ]),
     );
+    /**
+     * And what the columns of those tables *mean*, on the same terms.
+     *
+     * Here rather than lazily for the same reason: a box opened before the answer
+     * arrived would draw the database's column names and keep them, and nothing
+     * would ever go back and say what they were. One failing lookup on a
+     * connection with no semantic layer, which is nearly every connection.
+     */
+    this.#semantics = null;
+    await this.#semanticIndex();
     return result;
   }
 
@@ -592,6 +626,9 @@ export class Workspace implements TableViewProvider, InteractionHost {
   async disconnect(): Promise<void> {
     await this.#client.disconnect();
     this.#reached = null;
+    // Catalogue state belonging to a session that is over. A reconnect is exactly
+    // when a newly published model should be noticed.
+    this.#semantics = null;
     // Given up with the connection: the id named a live session, and anything
     // asking whether there is one — the agent interface does — would otherwise
     // be told yes by a number that outlived what it referred to.
@@ -622,15 +659,44 @@ export class Workspace implements TableViewProvider, InteractionHost {
    * the child table is there.
    */
   async #columnsFor(schema: TableSchema): Promise<readonly TableColumnSpec[]> {
-    if (jsonColumnSpecs(schema) === null) return physicalColumnSpecs(schema);
+    if (jsonColumnSpecs(schema) === null)
+      return await this.#described(schema, physicalColumnSpecs(schema));
     const siblings = await this.#siblingsOf(schema.schema);
     const comment = siblings.find((table) => table.name === schema.table)?.comment;
-    return (
+    return this.#described(
+      schema,
       jsonColumnSpecs(schema, {
         siblings: siblings.map((table) => table.name),
         ...(comment === undefined ? {} : { comment }),
-      }) ?? physicalColumnSpecs(schema)
+      }) ?? physicalColumnSpecs(schema),
     );
+  }
+
+  /**
+   * The same columns, with what the semantic layer says they mean.
+   *
+   * Applied to whichever view was built rather than instead of one of them: the
+   * meaning is drawn over the columns and does not decide what they are. Costs a
+   * map lookup and returns what it was given on every table nothing describes.
+   */
+  async #described(
+    schema: TableSchema,
+    specs: readonly TableColumnSpec[],
+  ): Promise<readonly TableColumnSpec[]> {
+    const index = await this.#semanticIndex();
+    return withSemantics(specs, semanticColumnsFor(index, schema.schema, schema.table));
+  }
+
+  /**
+   * The semantic index, read once per connection.
+   *
+   * A connection with no semantic layer costs one failing lookup and remembers
+   * that there was none — an empty index is a real answer here, not a missing
+   * one, so it is cached like any other.
+   */
+  async #semanticIndex(): Promise<SemanticIndex> {
+    this.#semantics ??= indexSemanticFields(await this.#client.semanticSurface().catch(() => null));
+    return this.#semantics;
   }
 
   /**
@@ -1060,7 +1126,9 @@ export class Workspace implements TableViewProvider, InteractionHost {
     const schema = this.#views.get(tableId)?.schema;
     if (schema === undefined || schema === null) return;
     const collapsed = entity.columns.some((column) => column.json !== undefined);
-    const specs = collapsed ? physicalColumnSpecs(schema) : await this.#columnsFor(schema);
+    const specs = collapsed
+      ? await this.#described(schema, physicalColumnSpecs(schema))
+      : await this.#columnsFor(schema);
     const columns = buildTableColumns(this.core.ids, specs);
     const applied = this.core.dispatch({ type: 'SetTableColumns', tableId, columns });
     if (!applied.ok) throw new Error(applied.error.message);
@@ -1769,6 +1837,18 @@ export class Workspace implements TableViewProvider, InteractionHost {
   }
 
   /**
+   * The physical SQL a box's statement compiled to, where it had to be compiled.
+   *
+   * A canvas built for looking at things should be able to show what a semantic
+   * statement became: the reader wrote — or was seeded with — the model's own
+   * vocabulary, and what ran is a join over real tables. `null` for every box
+   * that ran its statement as written, which is almost all of them.
+   */
+  compiledStatement(tableId: EntityId): CompiledStatement | null {
+    return this.#views.get(tableId)?.compiled ?? null;
+  }
+
+  /**
    * The wrapper view for a box's relation, where its package publishes one.
    *
    * Read from the surface the connection already holds, so this is a lookup rather
@@ -2142,6 +2222,18 @@ export class Workspace implements TableViewProvider, InteractionHost {
     // open the draft is the closer truth.
     const spec = this.chartDraft(entity.id) ?? entity.source.spec;
     return this.#pictures.view(entity.id, spec, width, height, metrics);
+  }
+
+  /**
+   * What became of this box's statement, for the line under its editor.
+   *
+   * Only the provenance, not the SQL: a compiled statement is several hundred
+   * characters of joins and `SUM`s, and the foot of an editor is a place for one
+   * sentence. The SQL itself is on the box for anyone who asks — see
+   * `compiledStatement` — and goes to an agent in full.
+   */
+  statementNoteFor(entity: TableEntity): string | undefined {
+    return this.compiledStatement(entity.id)?.provenance;
   }
 
   columnSummariesFor(entity: TableEntity): ReadonlyMap<EntityId, SummaryPanelView> | undefined {

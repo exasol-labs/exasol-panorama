@@ -23,9 +23,14 @@ const queryTable = (mode: 'editing' | 'result'): TableEntity =>
 
 const draw = (
   entity: TableEntity,
-  overrides: { lod?: TableRenderInput['lod']; showHalo?: boolean } = {},
+  overrides: {
+    lod?: TableRenderInput['lod'];
+    showHalo?: boolean;
+    statementNote?: string;
+  } = {},
 ) =>
   buildTableDrawList({
+    ...(overrides.statementNote === undefined ? {} : { statementNote: overrides.statementNote }),
     entity,
     layout: computeColumnLayout(entity.columns),
     theme: DEFAULT_TABLE_THEME,
@@ -204,5 +209,32 @@ describe('the name a query box calls its input by', () => {
     expect(
       referenceSpans([{ from: 2, to: 20 }], 10, 6, DEFAULT_TABLE_THEME.editorReferenceText),
     ).toEqual([{ from: 0, to: 6, color: DEFAULT_TABLE_THEME.editorReferenceText }]);
+  });
+});
+
+/**
+ * What became of the statement, where it became something else.
+ *
+ * A box reading a published semantic object does not run what it says: the
+ * object is a stub view and the statement is compiled into a join over real
+ * tables first. The foot of the editor is the one place a box already shows a
+ * reader a sentence about its statement, so that is where the provenance goes —
+ * which model answered, which joins it proved it needed, and what it read.
+ */
+describe('the line under the editor', () => {
+  it('says how to run the statement when there is nothing else to say', () => {
+    const labels = draw(queryTable('editing')).texts.map((run: TextRun) => run.text);
+    expect(labels).toContain(DEFAULT_TABLE_THEME.editorHint);
+  });
+
+  it('says what the statement compiled to when it was compiled', () => {
+    const note = 'sales · via order_line_to_order → order_to_customer · from MART.ROLLUP';
+    const labels = draw(queryTable('editing'), { statementNote: note }).texts.map(
+      (run: TextRun) => run.text,
+    );
+    expect(labels).toContain(note);
+    // One line, not two: a reader who has just watched a statement compile knows
+    // how to run one.
+    expect(labels).not.toContain(DEFAULT_TABLE_THEME.editorHint);
   });
 });

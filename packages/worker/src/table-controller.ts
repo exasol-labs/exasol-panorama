@@ -8,7 +8,7 @@ import {
   shouldRetryBlock,
 } from '@panorama/table';
 import type { BlockFailure, RowsAvailable, TableDataGateway } from './client.js';
-import type { OpenTableRequest } from './messages.js';
+import type { CompiledStatement, OpenTableRequest } from './messages.js';
 
 /**
  * The render-thread view of one table's data.
@@ -64,6 +64,14 @@ export class TableDataController {
   readonly #unsubscribe: Array<() => void> = [];
   #schema: TableSchema | null = null;
   #rowCount: number | null = null;
+  /**
+   * What the statement was compiled to, where a semantic layer had to compile it.
+   *
+   * Held here rather than on the entity because it is not authored content: it is
+   * what the database made of the statement this time, the way a row count is,
+   * and it is replaced whole every time the result set is reopened.
+   */
+  #compiled: CompiledStatement | null = null;
   #generation = 0;
   #viewport: TableViewportRequest = { firstVisibleRow: 0, visibleRowCount: 0, velocityY: 0 };
   #pendingBlocks = new Set<number>();
@@ -105,6 +113,11 @@ export class TableDataController {
     return this.#rowCount;
   }
 
+  /** The physical SQL behind these rows, where the statement went through a compiler. */
+  get compiled(): CompiledStatement | null {
+    return this.#compiled;
+  }
+
   get generation(): number {
     return this.#generation;
   }
@@ -115,6 +128,7 @@ export class TableDataController {
 
   async open(spec: TableOpenSpec): Promise<TableSchema> {
     const result = await this.#gateway.openTable({ tableId: this.tableId, ...spec });
+    this.#compiled = result.compiled ?? null;
     this.#schema = result.schema;
     this.#rowCount = result.rowCount;
     this.#generation = result.generation;
@@ -131,6 +145,7 @@ export class TableDataController {
    */
   async reopen(): Promise<TableSchema> {
     const result = await this.#gateway.reopenTable(this.tableId);
+    this.#compiled = result.compiled ?? null;
     this.#schema = result.schema;
     this.#rowCount = result.rowCount;
     this.#generation = result.generation;

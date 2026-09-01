@@ -13,6 +13,7 @@ export * from './json-column.js';
 export * from './placement.js';
 export * from './query-chain.js';
 export * from './result.js';
+export * from './semantic-column.js';
 export * from './session.js';
 export * from './table-entity.js';
 export * from './world.js';

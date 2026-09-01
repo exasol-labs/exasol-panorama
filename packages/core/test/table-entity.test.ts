@@ -4,9 +4,12 @@ import {
   MAX_ESTIMATED_COLUMN_WIDTH,
   MIN_ESTIMATED_COLUMN_WIDTH,
   ROW_NUMBER_GUTTER_WIDTH,
+  buildTableColumns,
   buildTableEntity,
   dataType,
   estimateColumnWidth,
+  semanticHeader,
+  semanticRenames,
 } from '@panorama/core';
 import { TEST_CONNECTION, makeTable, sampleColumns, testIds } from './fixtures.js';
 
@@ -113,5 +116,54 @@ describe('buildTableEntity', () => {
     expect(table.transform.height).toBe(
       DEFAULT_TABLE_VIEW.headerHeight + 5 * DEFAULT_TABLE_VIEW.rowHeight,
     );
+  });
+});
+
+/**
+ * A column that carries what a semantic layer says it means.
+ *
+ * The meaning is drawn *over* the column: the source column keeps the name and
+ * type the database answers to, so a statement written against the box still
+ * names something real, and only the measuring and the drawing follow the
+ * display name.
+ */
+describe('semantic columns', () => {
+  const revenue = {
+    kind: 'metric',
+    model: 'sales',
+    displayName: 'Total Revenue Recognised',
+    format: 'currency',
+  } as const;
+
+  it('measures the header the reader will see, not the identifier', () => {
+    const [wide] = buildTableColumns(testIds(), [
+      { name: 'TR', type: dataType('decimal', 'DECIMAL(18,2)'), semantic: revenue },
+    ]);
+    const [narrow] = buildTableColumns(testIds(), [
+      { name: 'TR', type: dataType('decimal', 'DECIMAL(18,2)') },
+    ]);
+    expect(wide?.width).toBeGreaterThan(narrow?.width ?? 0);
+    expect(wide?.semantic).toBe(revenue);
+    // The database's own name, untouched: it is what the SQL has to say.
+    expect(wide?.sourceColumn.name).toBe('TR');
+  });
+
+  it('leaves an ordinary column with nothing extra on it', () => {
+    const [plain] = buildTableColumns(testIds(), [
+      { name: 'ORDER_ID', type: dataType('varchar', 'VARCHAR(32)') },
+    ]);
+    expect(plain).not.toHaveProperty('semantic');
+  });
+
+  it('says a column is renamed only when the header differs from the name', () => {
+    expect(semanticHeader('TR', undefined)).toBe('TR');
+    expect(semanticRenames('TR', undefined)).toBe(false);
+    expect(semanticHeader('TR', revenue)).toBe('Total Revenue Recognised');
+    expect(semanticRenames('TR', revenue)).toBe(true);
+    // A display name that is just the column name has replaced nothing, so there
+    // is nothing to say underneath it.
+    const same = { kind: 'dimension', model: 'sales', displayName: 'TR' } as const;
+    expect(semanticRenames('TR', same)).toBe(false);
+    expect(semanticRenames('TR', { kind: 'dimension', model: 'sales' })).toBe(false);
   });
 });

@@ -3,7 +3,7 @@ import type { TableDataSource, TableSchema } from '@panorama/table';
 import { dataType } from '@panorama/core';
 import type { ConnectionFactoryOptions, TableSourceRequest } from '@panorama/worker';
 import { DataWorker, DataWorkerClient, createInProcessEndpointPair } from '@panorama/worker';
-import type { ExasolConnection } from '@panorama/exasol';
+import type { ExasolConnection, SemanticSurface } from '@panorama/exasol';
 import {
   ManualScheduler,
   MockTableDataSource,
@@ -90,7 +90,45 @@ export interface HarnessOptions {
    * table.
    */
   readonly jsonWrapper?: boolean | 'without-preprocessor';
+  /**
+   * Installs a semantic layer describing `PANORAMA_TEST.SALES`.
+   *
+   * The published model's object is the relation the harness already serves, so
+   * a box opened on it is a box whose columns a model has something to say
+   * about — which is the only case any of this changes.
+   */
+  readonly semanticLayer?: boolean;
 }
+
+/** What the layer says about the harness's own table, as its views report it. */
+const SEMANTIC_SURFACE: SemanticSurface = {
+  version: '0.1+dev',
+  models: [
+    { id: 1, name: 'sales', publishedSchema: 'PANORAMA_TEST', published: true },
+    // A draft naming the same schema, which is the shape a live instance had:
+    // it describes views it has never written and must describe nothing here.
+    { id: 2, name: 'sales_draft', publishedSchema: 'PANORAMA_TEST', published: false },
+  ],
+  fields: [
+    {
+      modelId: 1,
+      object: 'SALES',
+      column: 'REVENUE',
+      kind: 'metric',
+      displayName: 'Total Revenue',
+      description: 'Net recognized revenue excluding tax',
+      format: 'currency',
+      certified: true,
+    },
+    {
+      modelId: 2,
+      object: 'SALES',
+      column: 'REVENUE',
+      kind: 'metric',
+      displayName: 'Draft Revenue',
+    },
+  ],
+};
 
 /**
  * The wrapper package, as the catalogue would report it.
@@ -170,6 +208,7 @@ export const createAppHarness = (options: HarnessOptions = {}): AppHarness => {
               ],
         wrapperSurface: async () => wrapperMap(options.jsonWrapper),
         wrapperSurfaceIfRead: () => wrapperMap(options.jsonWrapper),
+        semanticSurface: async () => (options.semanticLayer === true ? SEMANTIC_SURFACE : null),
         describeTable: async (_schema: string, table: string): Promise<TableSchema> => {
           if (options.failDescribe === true) throw new Error('object not found');
           const member = jsonFamily().find((relation) => relation.table === table);

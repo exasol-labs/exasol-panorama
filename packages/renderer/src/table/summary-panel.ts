@@ -1,4 +1,5 @@
-import type { ColumnDataType, EntityId } from '@panorama/core';
+import type { ColumnDataType, EntityId, SemanticColumnView } from '@panorama/core';
+import { semanticHeader, semanticRenames } from '@panorama/core';
 import type {
   CellValue,
   ColumnSummary,
@@ -81,6 +82,14 @@ export interface SummaryPanelColumn {
    * empty, or absent — is the question to answer first.
    */
   readonly document?: JsonColumnSummary;
+  /**
+   * What a semantic layer says this column means, where one does.
+   *
+   * Drawn above everything else the panel has to say, because it answers what
+   * the numbers *are* — and the panel's other answers are about how they are
+   * spread, which is a question that comes second.
+   */
+  readonly semantic?: SemanticColumnView;
 }
 
 /** How the shell hands a summary in; every part may be missing. */
@@ -221,7 +230,7 @@ const nameSections = (column: SummaryPanelColumn): readonly PanelSection[] => [
         y: top,
         maxWidth: innerWidth(panel),
         height: TITLE_ROW,
-        text: column.name,
+        text: semanticHeader(column.name, column.semantic),
         align: 'left',
         fontSize: painter.theme.headerFontSize,
         bold: true,
@@ -236,13 +245,124 @@ const nameSections = (column: SummaryPanelColumn): readonly PanelSection[] => [
         y: top,
         maxWidth: innerWidth(panel),
         height: TYPE_ROW,
-        text: column.type.name,
+        // The same rule as the column header: where a display name has taken the
+        // title, the name the database answers to is said underneath it.
+        text: semanticRenames(column.name, column.semantic)
+          ? `${column.name} · ${column.type.name}`
+          : column.type.name,
         align: 'left',
         color: painter.theme.typeText,
       });
     },
   },
 ];
+
+/**
+ * Roughly how many characters fit across a width at the small font.
+ *
+ * The same estimate the branch tag in a cell is laid out with. Exact widths live
+ * in the glyph atlas and are not available while sections are being measured; a
+ * line that wraps a word early is a better failure than one that runs off the
+ * panel, so this deliberately under-counts.
+ */
+const CHARS_PER_UNIT = 0.62;
+/** A description is prose. Three lines of it, then it is somebody's essay. */
+const DESCRIPTION_LINES = 3;
+const DESCRIPTION_ROW = 13;
+
+/**
+ * A sentence broken across lines that fit, on word boundaries where it can.
+ *
+ * The last line it is allowed keeps whatever is left, so nothing is silently
+ * dropped: it is truncated by the clip like every other run in the panel, which
+ * at least shows that there was more.
+ */
+export const wrapText = (
+  text: string,
+  charsPerLine: number,
+  maxLines: number,
+): readonly string[] => {
+  if (charsPerLine < 1) return [];
+  const words = text.split(/\s+/u).filter((word) => word !== '');
+  const lines: string[] = [];
+  for (const word of words) {
+    const current = lines[lines.length - 1];
+    if (current === undefined || current.length + 1 + word.length > charsPerLine) {
+      if (lines.length === maxLines) {
+        // Out of lines and still words left: the rest joins the last one and the
+        // clip takes it from there.
+        lines[maxLines - 1] = `${lines[maxLines - 1] as string} ${word}`;
+        continue;
+      }
+      lines.push(word);
+      continue;
+    }
+    lines[lines.length - 1] = `${current} ${word}`;
+  }
+  return lines;
+};
+
+/**
+ * What a semantic layer says this column is.
+ *
+ * Above the distribution, because it answers a different and earlier question. A
+ * histogram says how the numbers are spread; this says what the numbers *are*,
+ * and somebody who does not know that has no use for the spread.
+ *
+ * The bottom line names the model, which is the panel's version of "says who" —
+ * meaning has an author, and a reader being asked to trust a governed number
+ * should be able to see whose governance it is.
+ */
+const meaningSection = (semantic: SemanticColumnView): PanelSection => {
+  const provenance = [semantic.kind, ...(semantic.certified === true ? ['certified'] : [])].join(
+    ' · ',
+  );
+  return {
+    height: DESCRIPTION_ROW * (semantic.description === undefined ? 1 : DESCRIPTION_LINES + 1),
+    paint: (painter, panel, top): void => {
+      const description = semantic.description;
+      const lines =
+        description === undefined
+          ? []
+          : wrapText(
+              description,
+              Math.floor(innerWidth(panel) / (painter.theme.typeFontSize * CHARS_PER_UNIT)),
+              DESCRIPTION_LINES,
+            );
+      lines.forEach((line, index) => {
+        label(painter, panel, {
+          x: panel.x + PADDING,
+          y: top + index * DESCRIPTION_ROW,
+          maxWidth: innerWidth(panel),
+          height: DESCRIPTION_ROW,
+          text: line,
+          align: 'left',
+        });
+      });
+      label(painter, panel, {
+        x: panel.x + PADDING,
+        // Pinned to the bottom of the reserved block rather than under the last
+        // line, so a one-line description and a three-line one put the model in
+        // the same place and a column of panels stays legible across.
+        y: top + DESCRIPTION_ROW * (description === undefined ? 0 : DESCRIPTION_LINES),
+        maxWidth: innerWidth(panel),
+        height: DESCRIPTION_ROW,
+        text: provenance,
+        align: 'left',
+        color: painter.theme.typeText,
+      });
+      label(painter, panel, {
+        x: panel.x + PADDING,
+        y: top + DESCRIPTION_ROW * (description === undefined ? 0 : DESCRIPTION_LINES),
+        maxWidth: innerWidth(panel),
+        height: DESCRIPTION_ROW,
+        text: semantic.model,
+        align: 'right',
+        color: painter.theme.typeText,
+      });
+    },
+  };
+};
 
 const noteSection = (note: string): PanelSection => ({
   height: META_ROW,
@@ -575,6 +695,7 @@ const numericSections = (summary: ColumnSummary, type: ColumnDataType): readonly
 /** Everything one panel has to say, top to bottom. */
 export const summaryPanelSections = (column: SummaryPanelColumn): readonly PanelSection[] => {
   const sections = [...nameSections(column)];
+  if (column.semantic !== undefined) sections.push(meaningSection(column.semantic));
   const document = column.document;
   if (document !== undefined) sections.push(documentSection(document));
   const summary = column.summary;

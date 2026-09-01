@@ -14,14 +14,28 @@ import {
   chunkTransferables,
   createResultChunk,
 } from '@panorama/table';
-import type { ExasolConnection, ExasolCredentials } from '@panorama/exasol';
-import { ExasolTableDataSource, preprocessorForStatement, quoteIdentifier } from '@panorama/exasol';
+import type {
+  ExasolConnection,
+  ExasolCredentials,
+  SemanticIndex,
+  SemanticSurface,
+} from '@panorama/exasol';
+import {
+  EMPTY_SEMANTIC_INDEX,
+  ExasolTableDataSource,
+  compilesSemantically,
+  indexSemanticFields,
+  preprocessorForStatement,
+  semanticProvenance,
+  sourceStatement,
+} from '@panorama/exasol';
 import type { ExportFormat, ExportResult } from '@panorama/export';
 import { ExportError, bufferedSink, isExportError, runExport } from '@panorama/export';
 import type { WorkerEndpoint } from './endpoint.js';
 import { remoteSink } from './export-sink.js';
 import type {
   ChartDataResult,
+  CompiledStatement,
   MainToWorkerMessage,
   OpenTableRequest,
   OpenTableResult,
@@ -123,10 +137,23 @@ export interface DataWorkerOptions {
   readonly endpoint: WorkerEndpoint;
   /** Injected so tests can run the worker against a mock data source. */
   readonly createConnection?: (options: ConnectionFactoryOptions) => ExasolConnection;
+  /**
+   * A source only the host can build, or `undefined` to let the worker build it.
+   *
+   * Declining matters more than providing. The host knows about things the
+   * worker cannot — a locally generated demo relation, a mock in a test — and
+   * nothing else. Everything about a *database* source is decided here: which
+   * JSON wrapper preprocessor a statement needs, and whether a semantic layer has
+   * to compile it before the database will run it. A factory that answered every
+   * request would silently take both of those away, which is exactly what
+   * happened: the application's factory built its own `ExasolTableDataSource` for
+   * live tables, so a published semantic object was read as written and answered
+   * with the guard's error instead of its rows.
+   */
   readonly createSource?: (
     request: TableSourceRequest,
     connection: ExasolConnection | null,
-  ) => TableDataSource;
+  ) => TableDataSource | undefined;
   readonly maxConcurrentFetches?: number;
 }
 
@@ -156,6 +183,13 @@ interface OpenTable {
    */
   readonly request: OpenTableRequest;
   session: TableDataSession;
+  /**
+   * What the statement compiled to, where it had to be compiled.
+   *
+   * Kept so a reopen and an export run the same SQL the viewport is showing
+   * rather than compiling again and hoping for the same answer.
+   */
+  readonly compiled?: CompiledStatement;
   /** Assigned immediately after construction; the scheduler closes over the entry. */
   scheduler: FetchScheduler | null;
   blockSize: number;
@@ -168,6 +202,9 @@ export class DataWorker {
   readonly #tables = new Map<EntityId, OpenTable>();
   readonly #exports = new Map<number, RunningExport>();
   #connection: ExasolConnection | null = null;
+  /** See `#semantics`: the index, and the surface it was built from. */
+  #indexedSurface: SemanticSurface | null = null;
+  #semanticIndex: SemanticIndex = EMPTY_SEMANTIC_INDEX;
 
   constructor(options: DataWorkerOptions) {
     this.#options = options;
@@ -201,6 +238,10 @@ export class DataWorker {
         return this.#run(message.requestId, async () => [
           ...(await this.#requireConnection().wrapperSurface()).values(),
         ]);
+      case 'semanticSurface':
+        return this.#run(message.requestId, async () =>
+          this.#requireConnection().semanticSurface(),
+        );
       case 'listTables':
         return this.#run(message.requestId, async () =>
           this.#requireConnection().listTables(message.schema),
@@ -259,7 +300,7 @@ export class DataWorker {
     }
     const running = new RunningExport(tableId);
     this.#exports.set(exportId, running);
-    const source = this.#createSource(entry.request);
+    const { source } = await this.#prepareSource(entry.request, entry.compiled);
     try {
       const session = await source.open();
       const result: ExportResult = await runExport({
@@ -559,35 +600,125 @@ export class DataWorker {
     }
   }
 
-  #createSource(request: TableSourceRequest): TableDataSource {
-    const factory = this.#options.createSource;
-    if (factory !== undefined) return factory(request, this.#connection);
+  /**
+   * The source for a request, and the compilation it needed if it needed one.
+   *
+   * Asynchronous because a statement reading a published semantic object is not
+   * a statement the database will run: the object is a guard stub, and something
+   * has to turn it into physical SQL first. Compiling **here**, on the way to
+   * creating the source, is what makes everything downstream ordinary — the
+   * source is handed the physical SQL as its statement, so the rows, the column
+   * statistics, the histogram and an export all read the same compiled query.
+   *
+   * `known` short-circuits the round trip for a statement already compiled: an
+   * export opens a second result set for the same request, and paying 178 ms to
+   * arrive at the same SQL twice would be waste with a chance of drift.
+   */
+  async #prepareSource(
+    request: TableSourceRequest,
+    known?: CompiledStatement,
+  ): Promise<{ readonly source: TableDataSource; readonly compiled?: CompiledStatement }> {
+    const provided = this.#options.createSource?.(request, this.#connection);
+    if (provided !== undefined) return { source: provided };
     const connection = this.#requireConnection();
-    const statement =
-      request.sql ?? `${quoteIdentifier(request.schema)}.${quoteIdentifier(request.table)}`;
+    const statement = sourceStatement(request);
+    const compiled = known ?? (await this.#compiled(connection, statement));
     /**
      * The preprocessor this statement needs, chosen from the statement itself.
      *
-     * Read from the surface the connection already holds rather than asked for
-     * here, so opening a table costs no extra round trip: a source is created on
-     * the way to running a statement, and the answer has been in hand since the
-     * connection was made. `undefined` for every ordinary statement.
+     * **Read** rather than peeked at, for the same reason the semantic index is:
+     * the peek returns nothing until somebody else has asked, so a statement's
+     * dotted paths were rewritten only if the main thread happened to have
+     * fetched the wrapper surface earlier in the session. It does, on connect —
+     * but that made a correctness rule depend on two unrelated pieces of code
+     * running in the right order, and the failure is silent in the worst way: the
+     * database answers `object "location.region" not found`, which reads like a
+     * typo rather than like machinery that did not run. The connection caches the
+     * surface, so asking costs nothing once it is warm.
+     *
+     * Asked of the statement that will *run*, which after a compile is the
+     * physical SQL — it reads the model's base tables, and whether one of those
+     * is behind a JSON wrapper is a different question from what the semantic
+     * statement named.
      */
-    const preprocessor = preprocessorForStatement(connection.wrapperSurfaceIfRead(), statement);
-    return new ExasolTableDataSource({
-      connection,
-      schema: request.schema,
-      table: request.table,
-      ...(request.filter === undefined ? {} : { filter: request.filter }),
-      ...(request.sql === undefined ? {} : { sql: request.sql }),
-      ...(preprocessor === undefined ? {} : { preprocessor }),
-    });
+    const preprocessor = preprocessorForStatement(
+      await connection.wrapperSurface(),
+      compiled?.sql ?? statement,
+    );
+    return {
+      source: new ExasolTableDataSource({
+        connection,
+        schema: request.schema,
+        table: request.table,
+        // Compiled SQL is the whole query, filter and all, so neither the filter
+        // nor the original statement is passed alongside it.
+        ...(compiled === undefined
+          ? {
+              ...(request.filter === undefined ? {} : { filter: request.filter }),
+              ...(request.sql === undefined ? {} : { sql: request.sql }),
+            }
+          : { sql: compiled.sql }),
+        ...(preprocessor === undefined ? {} : { preprocessor }),
+      }),
+      ...(compiled === undefined ? {} : { compiled }),
+    };
+  }
+
+  /**
+   * Compiles the statement if it reads a semantic object, and refuses out loud.
+   *
+   * A refusal is not a failure to be wrapped: the layer names the field it did
+   * not recognise, the object it actually belongs to, and what else would have
+   * worked. Those are better words than any Panorama could write about somebody
+   * else's model, so they are what the box shows.
+   */
+  async #compiled(
+    connection: ExasolConnection,
+    statement: string,
+  ): Promise<CompiledStatement | undefined> {
+    if (!compilesSemantically(await this.#semantics(connection), statement)) return undefined;
+    const result = await connection.compileSemantic(statement);
+    if (result.status !== 'ok' || result.sql === undefined) {
+      const said = [result.message, result.question].filter((part) => part !== undefined);
+      throw new TableDataError(
+        'statement-refused',
+        said.length === 0 ? 'The semantic layer would not compile this statement' : said.join(' '),
+      );
+    }
+    const provenance = semanticProvenance(result.plan);
+    return { sql: result.sql, ...(provenance === undefined ? {} : { provenance }) };
+  }
+
+  /**
+   * The semantic index for this connection, rebuilt only when the surface is.
+   *
+   * It **reads** the surface rather than peeking at what somebody else read, and
+   * that is the whole point of it being async. The peek — `semanticSurfaceIfRead`
+   * — was the first shape of this, and it made compiling a statement depend on
+   * the main thread having asked for the surface earlier in the session. It does
+   * ask, on connect; but a box that opens before that lands, a session restored
+   * some other way, or any future caller that skips the step would silently get
+   * no compilation and the guard's error instead of its rows. A correctness rule
+   * that holds only if two unrelated pieces of code run in the right order is not
+   * a rule, and the connection already caches the answer — so asking costs one
+   * lookup per session and removes the ordering entirely.
+   *
+   * Memoised on the surface's identity so the index is built once rather than on
+   * every statement.
+   */
+  async #semantics(connection: ExasolConnection): Promise<SemanticIndex> {
+    const surface = await connection.semanticSurface();
+    if (surface !== this.#indexedSurface) {
+      this.#indexedSurface = surface;
+      this.#semanticIndex = indexSemanticFields(surface);
+    }
+    return this.#semanticIndex;
   }
 
   async #openTable(requestId: number, request: TableSourceRequest): Promise<void> {
     await this.#teardown(request.tableId);
     try {
-      const source = this.#createSource(request);
+      const { source, compiled } = await this.#prepareSource(request);
       const session = await source.open();
       const entry: OpenTable = {
         source,
@@ -596,6 +727,7 @@ export class DataWorker {
         blockSize: DEFAULT_BLOCK_SIZE,
         generation: 0,
         scheduler: null,
+        ...(compiled === undefined ? {} : { compiled }),
       };
       entry.scheduler = this.#createScheduler(request.tableId, entry);
       this.#tables.set(request.tableId, entry);
@@ -603,6 +735,7 @@ export class DataWorker {
         schema: session.schema,
         rowCount: session.rowCount,
         generation: 0,
+        ...(compiled === undefined ? {} : { compiled }),
       };
       this.#reply(requestId, result);
     } catch (error) {
@@ -629,6 +762,7 @@ export class DataWorker {
         schema: entry.session.schema,
         rowCount: entry.session.rowCount,
         generation: entry.generation,
+        ...(entry.compiled === undefined ? {} : { compiled: entry.compiled }),
       };
       this.#reply(requestId, result);
     } catch (error) {

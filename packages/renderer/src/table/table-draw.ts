@@ -5,6 +5,8 @@ import {
   alignmentForType,
   clamp,
   isQueryTable,
+  semanticHeader,
+  semanticRenames,
   showsBranch,
   tableDisplayName,
 } from '@panorama/core';
@@ -108,6 +110,16 @@ export interface TableRenderInput {
    * one frame's inputs.
    */
   readonly columnSummaries?: ReadonlyMap<EntityId, SummaryPanelView>;
+  /**
+   * What became of this box's statement, said in one line under the editor.
+   *
+   * Set where a semantic layer compiled the statement into something else: which
+   * model answered, which joins it proved it needed, and whether it read the base
+   * tables or a rollup built for exactly this question. Panorama already draws a
+   * provenance line under a chart for agents; this is the same idea for people,
+   * in the one place a box already shows a reader a sentence about its statement.
+   */
+  readonly statementNote?: string;
 }
 
 /**
@@ -266,6 +278,16 @@ export interface TableMetrics {
  * measurement because hit testing must arrive at the same gutter as drawing,
  * and hit testing has no text system to ask.
  */
+/**
+ * The certification mark: a small square at the right of a column's name.
+ *
+ * A mark rather than a word, and the weight of the explorer's virtual-schema
+ * icon rather than a badge — it says "somebody vouched for this number" to a
+ * reader scanning a canvas, and a governed column and an ad-hoc one sitting side
+ * by side should be told apart at a glance without either shouting.
+ */
+const CERTIFIED_MARK = 6;
+
 const DIGIT_WIDTH_RATIO = 0.65;
 
 /**
@@ -908,7 +930,11 @@ export const buildTableDrawList = (input: TableRenderInput): TableDrawList => {
       y: height - pad - lineHeight,
       maxWidth: Math.max(0, width - pad * 4),
       height: lineHeight,
-      text: theme.editorHint,
+      // What the statement became, where it became something; otherwise how to
+      // run it. Both are one line at the foot of the editor and only one of them
+      // can be the more useful thing to say — a reader who has just watched a
+      // statement compile knows how to run one.
+      text: input.statementNote ?? theme.editorHint,
       color: theme.typeText,
       align: 'left',
       fontSize: theme.typeFontSize,
@@ -988,26 +1014,46 @@ export const buildTableDrawList = (input: TableRenderInput): TableDrawList => {
       width: cellRight - gutterWidth,
       height: headerHeight - titleHeight,
     };
+    const { name, type } = placement.column.sourceColumn;
+    const { semantic } = placement.column;
+    const room = Math.max(0, visibleWidth - theme.cellPaddingX * 2);
+    // A certified column keeps its mark's width clear of the name, the same way
+    // a variant cell reserves room for its branch tag: a long name should be cut
+    // short rather than run underneath the thing that qualifies it.
+    const certified = semantic?.certified === true;
     text({
       x: visibleX + theme.cellPaddingX,
       y: titleHeight,
-      maxWidth: Math.max(0, visibleWidth - theme.cellPaddingX * 2),
+      maxWidth: certified ? Math.max(0, room - CERTIFIED_MARK * 2) : room,
       height: nameRowHeight,
       clip: headerClip,
-      text: placement.column.sourceColumn.name,
+      text: semanticHeader(name, semantic),
       color: theme.headerText,
       align: 'left',
       fontSize: theme.headerFontSize,
       bold: true,
     });
+    if (certified) {
+      quad(
+        visibleX + visibleWidth - theme.cellPaddingX - CERTIFIED_MARK,
+        titleHeight + (nameRowHeight - CERTIFIED_MARK) / 2,
+        CERTIFIED_MARK,
+        CERTIFIED_MARK,
+        theme.semanticCertified,
+      );
+    }
     if (typeRowVisible) {
       text({
         x: visibleX + theme.cellPaddingX,
         y: titleHeight + nameRowHeight,
-        maxWidth: Math.max(0, visibleWidth - theme.cellPaddingX * 2),
+        maxWidth: room,
         height: theme.typeRowHeight,
         clip: headerClip,
-        text: placement.column.sourceColumn.type.name,
+        // The database's own name for the column, where the header is no longer
+        // showing it. A display name that has quietly replaced the identifier is
+        // a display name that has hidden it, and the identifier is what somebody
+        // writing SQL against this box has to type.
+        text: semanticRenames(name, semantic) ? `${name} · ${type.name}` : type.name,
         color: theme.typeText,
         align: 'left',
         fontSize: theme.typeFontSize,
@@ -1115,7 +1161,11 @@ export const buildTableDrawList = (input: TableRenderInput): TableDrawList => {
       if (!lettered) continue;
 
       const type = placement.column.sourceColumn.type;
-      const formatted = value === null ? MISSING_TEXT : formatCell(value, type);
+      // How the model says to write this column down, where one said anything.
+      // A hint it does not recognise changes nothing; see `formatCell`.
+      const hint = placement.column.semantic?.format;
+      const formatted =
+        value === null ? MISSING_TEXT : formatCell(value, type, hint === undefined ? {} : { hint });
       // A followable cell reads as a link, which is the whole affordance: the
       // click that opens the referenced rows has to look like it will.
       const followable = value !== null && placement.column.sourceColumn.foreignKey !== undefined;
@@ -1164,6 +1214,9 @@ export const buildTableDrawList = (input: TableRenderInput): TableDrawList => {
           summary: view?.summary,
           note: view?.note,
           ...(view?.document === undefined ? {} : { document: view.document }),
+          ...(placement.column.semantic === undefined
+            ? {}
+            : { semantic: placement.column.semantic }),
         },
       });
       quad(

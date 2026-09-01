@@ -7,7 +7,7 @@ import type {
   TableSchema,
 } from '@panorama/table';
 import { TableDataError } from '@panorama/table';
-import type { ExasolCredentials, WrapperView } from '@panorama/exasol';
+import type { ExasolCredentials, SemanticSurface, WrapperView } from '@panorama/exasol';
 import type { ByteSink, ExportFormat } from '@panorama/export';
 import { abandon } from '@panorama/export';
 import type { WorkerEndpoint } from './endpoint.js';
@@ -245,6 +245,16 @@ export class DataWorkerClient implements TableDataGateway {
    */
   wrapperSurface(): Promise<readonly WrapperView[]> {
     return this.#request((requestId) => ({ type: 'wrapperSurface', requestId }));
+  }
+
+  /**
+   * What the semantic layer says, or `null` where the connection has not got one.
+   *
+   * Plain arrays and no `Map`, for the same reason `wrapperSurface` returns a
+   * list: the caller builds whatever index it wants on its own side.
+   */
+  semanticSurface(): Promise<SemanticSurface | null> {
+    return this.#request((requestId) => ({ type: 'semanticSurface', requestId }));
   }
 
   describeTable(schema: string, table: string): Promise<TableSchema> {

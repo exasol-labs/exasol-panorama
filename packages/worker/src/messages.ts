@@ -66,6 +66,18 @@ export interface WrapperSurfaceMessage {
   readonly requestId: number;
 }
 
+/**
+ * What the semantic layer on the connection says, if there is one.
+ *
+ * Asked once and remembered by whoever asked, like the wrapper surface. Costs
+ * one failing lookup on the overwhelming majority of connections, which have no
+ * semantic layer installed.
+ */
+export interface SemanticSurfaceMessage {
+  readonly type: 'semanticSurface';
+  readonly requestId: number;
+}
+
 export interface ListTablesMessage {
   readonly type: 'listTables';
   readonly requestId: number;
@@ -209,6 +221,7 @@ export type MainToWorkerMessage =
   | ListSchemasMessage
   | ListTablesMessage
   | WrapperSurfaceMessage
+  | SemanticSurfaceMessage
   | DescribeTableMessage
   | OpenTableMessage
   | CloseTableMessage
@@ -220,10 +233,26 @@ export type MainToWorkerMessage =
   | SummariseColumnMessage
   | ChartDataMessage;
 
+/**
+ * A statement that had to be compiled before the database would run it, and what
+ * it became.
+ *
+ * Carried back so the box can offer both. The reader wrote — or was seeded with —
+ * semantic SQL; what ran is physical SQL over real tables, and a canvas built for
+ * looking at things should be able to show the second when asked.
+ */
+export interface CompiledStatement {
+  readonly sql: string;
+  /** One line: which model answered, which joins it took, what it read. */
+  readonly provenance?: string;
+}
+
 export interface OpenTableResult {
   readonly schema: TableSchema;
   readonly rowCount: number | null;
   readonly generation: number;
+  /** Set only where the statement went through a semantic compiler. */
+  readonly compiled?: CompiledStatement;
 }
 
 export interface ResultMessage {

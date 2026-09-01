@@ -63,6 +63,24 @@ export interface ExasolTableDataSourceOptions {
   readonly preprocessor?: string;
 }
 
+/**
+ * The statement a source will run, built from what it was given.
+ *
+ * Exported because the worker has to compile *exactly* the statement that would
+ * otherwise have run, and a second copy of this rule would be a second chance to
+ * compile something subtly different from what the box then reads.
+ */
+export const sourceStatement = (options: {
+  readonly schema: string;
+  readonly table: string;
+  readonly filter?: RowFilter;
+  readonly sql?: string;
+}): string =>
+  options.sql ??
+  (options.filter === undefined
+    ? selectAll(options.schema, options.table)
+    : selectWhere(options.schema, options.table, options.filter));
+
 class ExasolTableDataSession implements TableDataSession {
   readonly schema: TableSchema;
   readonly rowCount: number;
@@ -314,9 +332,8 @@ export class ExasolTableDataSource implements TableDataSource {
   /** Opens a fresh result set, replacing any previous one. */
   async open(): Promise<TableDataSession> {
     await this.close();
-    const { connection, schema, table, filter, sql, preprocessor } = this.#options;
-    const statement =
-      sql ?? (filter === undefined ? selectAll(schema, table) : selectWhere(schema, table, filter));
+    const { connection, schema, table, preprocessor } = this.#options;
+    const statement = sourceStatement(this.#options);
     const resultSet = await connection.openResultSet(statement, preprocessor);
     const tableSchema: TableSchema = {
       schema,

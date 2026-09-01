@@ -243,6 +243,76 @@ catalogue, because that is where the two loaders differ — json-tables declares
 real foreign keys and mongodb-vs is a virtual schema, which in Exasol cannot
 carry a constraint at all.
 
+The **semantic surface** is the same idea one layer up, and reads the opposite
+kind of thing. `json-tables` answers _which cells a column is stored across_;
+`exasol-semantic-views` answers _what the numbers mean_ — which columns are
+metrics and which are dimensions, what to call them, how to write them down, who
+has vouched for them. It publishes that as ordinary views, so reading it is three
+plain queries in `packages/exasol/src/connection/semantic-surface.ts`, and the
+first of them is the detection: nearly every connection has no semantic layer and
+must find that out in one failing lookup.
+
+Two rules live in that module and nowhere else, because both are ways of getting
+the wrong model's meanings onto a view. **Only a published model describes
+anything** — an unpublished model's `PUBLISHED_SCHEMA` is a schema it intends to
+use, and on the instance this was built against three drafts named a schema a
+fourth, published model owns. And where two _published_ models still claim one
+object, **the newer takes it whole**: publishing is `CREATE OR REPLACE VIEW`, so
+the view that is there is the one published last, and half of one model's
+meanings mixed with half of another's would describe a view that never existed.
+
+What comes of it is a `SemanticColumnView` in `core`, sitting beside
+`JsonColumnView` on the same column spec and composing with it: the header shows
+the display name and moves the identifier to the type row — because the
+identifier is what a statement has to say — the values are written by the format
+hint, a certified column carries a mark, and the statistics panel says what the
+column is and who says so before it says how it is spread. A format hint the
+vocabulary has grown since must change nothing, which is why `formatCell` returns
+the value untouched rather than guessing.
+
+What the surface deliberately does **not** do is set the semantic preprocessor.
+Exasol allows one per session and the JSON wrapper machinery already uses that
+slot; the layer's own answer for a tool in that position is
+`SEMANTIC_ADMIN.COMPILE_SQL`, which hands back physical SQL to run. So knowing
+what a column means costs no session state at all.
+
+**Running** a semantic statement is the other half, and it is built on the
+compiler for a second reason that turns out to matter more than the slot. A
+published object is a stub view of `SEMANTIC_GUARD()` calls, so something must
+rewrite a statement reading one; the worker does it in `#prepareSource`, on the
+way to creating the data source, and hands the source the _physical_ SQL as its
+statement. Everything downstream is then ordinary — the rows, the column
+statistics, the histogram, an export.
+
+The alternative was a per-statement preprocessor, reusing the JSON wrapper
+machinery, and it is a handful of lines and does make rows appear. It was
+rejected on evidence. Panorama derives its statistics by wrapping a box's
+statement as `(statement) AS "panorama_source"`, and the preprocessor rewrites
+the wrapper too: measured against a live instance, `SELECT COUNT(*)` over a
+statement returning three rows came back **1**, and the summary and frequency
+queries failed outright. A silently wrong count is the worst failure mode
+available here. Over compiled SQL the same three queries answer 3, `3/3/3`, and
+the right bars.
+
+Two rules fell out of getting this wrong twice, and both are about **who may
+build a data source**. The worker decides two things no one else can — which
+wrapper preprocessor a statement needs, and whether it has to be compiled — and
+it decides them from surfaces it now _reads_ rather than peeks at. The peek made
+both correct only when the main thread had happened to fetch the surface earlier
+in the session, which is a correctness rule resting on the order two unrelated
+pieces of code run in. And `DataWorker`'s `createSource` option is now "a source
+only the host can build, or `undefined`": the web application used it to build
+live Exasol sources itself, which silently took both decisions away — a published
+semantic object answered with the guard's error, and a wrapper's dotted paths came
+back as `object "location.region" not found`, which reads like a typo rather than
+like machinery that never ran.
+
+Two consequences worth knowing. `describeQuery`'s `LIMIT 0` is _not_ compiled and
+must not be — the guard lets it through, which is what opens the box, while the
+compiler rejects it (`LIMIT must be a positive integer`). And a compiled result
+set carries the model author's lower-case aliases where the stub view has
+upper-case columns, which is why `withSemantics` matches on both spellings.
+
 `apps/desktop` deserves a paragraph, because a second deployable usually means a
 second place for behaviour to hide and this one must not become that. It is a Tauri
 crate whose `main` opens a window on the `dist` that `apps/web` produces — the same

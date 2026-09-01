@@ -73,6 +73,15 @@ export interface TableTheme {
    * it: the eye should read the number first and find out it was a string second.
    */
   readonly jsonBranchTag: Rgba;
+  /**
+   * The mark on a column somebody has vouched for.
+   *
+   * Its own colour and not the accent the interface uses for things to click:
+   * this is a statement about the data, and a reader must not learn to read it as
+   * a control. Quiet enough to be scanned past on a table where every column
+   * carries one, which is what a fully governed model looks like.
+   */
+  readonly semanticCertified: Rgba;
   readonly scrollbar: Rgba;
   readonly scrollbarTrack: Rgba;
   readonly resizeHandle: Rgba;
@@ -204,6 +213,7 @@ export const DEFAULT_TABLE_THEME: TableTheme = Object.freeze({
   jsonNullText: rgb(0x8a_44_c8),
   jsonEmptyText: rgb(0x6b_7a_8f),
   jsonBranchTag: rgb(0x8b_94_9e),
+  semanticCertified: rgb(0x2f_8f_6a),
   scrollbar: rgb(0x9a_a3_ad, 0.75),
   scrollbarTrack: rgb(0x00_00_00, 0.05),
   resizeHandle: rgb(0x2f_6f_ed, 0.85),

@@ -77,6 +77,13 @@ export interface TableViewProvider {
    */
   columnSummariesFor?(entity: TableEntity): ReadonlyMap<EntityId, SummaryPanelView> | undefined;
   /**
+   * One line about what became of this box's statement, where anything did.
+   *
+   * From the host for the same reason a summary is: it is what the database made
+   * of the statement, which the renderer has no way to know and is told.
+   */
+  statementNoteFor?(entity: TableEntity): string | undefined;
+  /**
    * The chart this box draws, laid out for the given body size, and anything it
    * needs to admit about the rows it read.
    */
@@ -282,6 +289,11 @@ export class PanoramaRenderer {
       ...(view.note === undefined ? {} : { chartNote: view.note }),
       ...(view.caution === true ? { chartNoteCaution: true } : {}),
     };
+  }
+
+  #statementNote(entity: TableEntity): { statementNote?: string } {
+    const note = this.#views.statementNoteFor?.(entity);
+    return note === undefined ? {} : { statementNote: note };
   }
 
   #columnSummaries(entity: TableEntity): {
@@ -507,6 +519,7 @@ export class PanoramaRenderer {
         selectedColumns: session.selectedColumns,
         hoveredColumn: session.hoveredColumn,
         ...this.#columnSummaries(entity),
+        ...this.#statementNote(entity),
         ...this.#chart(entity),
         ...(panelMargin === 0 ? {} : { panelObstacles: this.#neighbours(entity) }),
       });

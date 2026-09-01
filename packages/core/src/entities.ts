@@ -2,6 +2,7 @@ import type { ChartSpec } from './chart-spec.js';
 import type { ColumnDataType, ForeignKeyReference } from './data-types.js';
 import type { ConnectionId, EntityId } from './ids.js';
 import type { JsonColumnView } from './json-column.js';
+import type { SemanticColumnView } from './semantic-column.js';
 
 /**
  * Document entities.
@@ -126,6 +127,15 @@ export interface TableColumnView {
    * sensible without knowing any of this exists.
    */
   readonly json?: JsonColumnView;
+  /**
+   * What this column means, where a semantic layer says so.
+   *
+   * Absent for every ordinary column. Where it is set, `sourceColumn` still
+   * carries the database's own name and type — the meaning is drawn *over* the
+   * column rather than in place of it, so a statement written against the box
+   * still names something the database will recognise.
+   */
+  readonly semantic?: SemanticColumnView;
 }
 
 export interface TableViewSettings {

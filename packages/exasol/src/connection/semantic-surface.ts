@@ -1,0 +1,221 @@
+import type { SemanticColumnView, SemanticFieldKind } from '@panorama/core';
+import type { ExasolValue } from '../protocol/messages.js';
+import { semanticFieldsQuery, semanticModelsQuery, semanticVersionQuery } from '../protocol/sql.js';
+// The same shape of caller as the wrapper surface has, and deliberately the same
+// type: both are "run a metadata query", and two names for it would suggest a
+// difference that is not there.
+import type { QueryRows } from './json-wrapper.js';
+
+/**
+ * The semantic layer, as the database describes it.
+ *
+ * `exasol-semantic-views` records what a database's numbers *mean* — which
+ * columns are metrics and which are things to group by, what to call them, how
+ * to write them down, who has vouched for them — and publishes it as ordinary
+ * views in `SEMANTIC_CATALOG` and `SEMANTIC_AGENT`. Where a model has been
+ * published, its objects also exist as real views, and those are the relations a
+ * reader opens.
+ *
+ * This module reads that description and nothing else. It does not compile
+ * semantic SQL and it does not set the semantic preprocessor — both are the next
+ * slice, and both are deliberately absent here so that knowing what a column
+ * means costs no session state at all.
+ *
+ * `null` from `readSemanticSurface` is the detection, and it is the ordinary
+ * answer: almost no connection has the layer installed.
+ */
+
+/** One semantic model, published or still being written. */
+export interface SemanticModel {
+  readonly id: number;
+  readonly name: string;
+  /** The schema its objects are published to — created only once it is published. */
+  readonly publishedSchema: string;
+  /**
+   * Whether the views are actually there.
+   *
+   * The whole reason this is carried: an unpublished model's `PUBLISHED_SCHEMA`
+   * is a name it *intends* to use, and on a real instance three drafts named
+   * `SEMANTIC_SALES` alongside the published model that owns it. Letting a draft
+   * describe the views of a schema it has never written to would put one model's
+   * meanings on another model's columns.
+   */
+  readonly published: boolean;
+  readonly description?: string;
+}
+
+/**
+ * One field of one semantic object, with the physical names to match it by.
+ *
+ * Everything a column view carries except the model, which a field does not know
+ * by name — it knows an id, and turning that into "who says so" is what
+ * `indexSemanticFields` does once it has both halves.
+ */
+export interface SemanticField extends Omit<SemanticColumnView, 'model'> {
+  readonly modelId: number;
+  /** The published view's name, upper-cased as the publish step creates it. */
+  readonly object: string;
+  /** The published view's column name, likewise. */
+  readonly column: string;
+}
+
+/** Everything the layer says, read once per connection. */
+export interface SemanticSurface {
+  /** The installed build, as it describes itself; `0.1+dev` and the like. */
+  readonly version: string;
+  readonly models: readonly SemanticModel[];
+  readonly fields: readonly SemanticField[];
+}
+
+const text = (value: ExasolValue | undefined): string | null =>
+  value === null || value === undefined ? null : String(value);
+
+/** Only `true` is true; see `toFlag` in the connection for why that is spelled out. */
+const flag = (value: ExasolValue | undefined): boolean =>
+  value === true || value === 'true' || value === 1;
+
+/**
+ * Reads the semantic layer, or reports that there is not one.
+ *
+ * Three queries, run once and remembered. The first is the detection and the
+ * cheap one: a connection with no semantic layer pays for a single failing
+ * lookup and stops there, which is what nearly every connection does.
+ *
+ * A layer that is installed but unreadable — the views exist and the user has no
+ * grant on them — costs the meanings and not the connection, the same rule the
+ * wrapper surface follows. Browsing tables must not depend on being allowed to
+ * read somebody's catalogue.
+ */
+export const readSemanticSurface = async (query: QueryRows): Promise<SemanticSurface | null> => {
+  const installed = await query(semanticVersionQuery()).catch(() => null);
+  const version = installed === null ? null : text(installed[0]?.[0]);
+  if (version === null) return null;
+
+  const models = await query(semanticModelsQuery()).catch(() => []);
+  const fields = await query(semanticFieldsQuery()).catch(() => []);
+  return { version, models: readModels(models), fields: readFields(fields) };
+};
+
+const readModels = (rows: ReadonlyArray<readonly ExasolValue[]>): readonly SemanticModel[] => {
+  const found: SemanticModel[] = [];
+  for (let row = 0; row < (rows[0]?.length ?? 0); row += 1) {
+    const id = Number(rows[0]?.[row]);
+    const name = text(rows[1]?.[row]);
+    const publishedSchema = text(rows[2]?.[row]);
+    const description = text(rows[3]?.[row]);
+    if (!Number.isFinite(id) || name === null || publishedSchema === null) continue;
+    found.push({
+      id,
+      name,
+      publishedSchema,
+      published: text(rows[4]?.[row]) === 'PUBLISHED',
+      ...(description === null ? {} : { description }),
+    });
+  }
+  return found;
+};
+
+const FIELD_KINDS: Readonly<Record<string, SemanticFieldKind>> = {
+  METRIC: 'metric',
+  DIMENSION: 'dimension',
+};
+
+const readFields = (rows: ReadonlyArray<readonly ExasolValue[]>): readonly SemanticField[] => {
+  const found: SemanticField[] = [];
+  for (let row = 0; row < (rows[0]?.length ?? 0); row += 1) {
+    const modelId = Number(rows[0]?.[row]);
+    const object = text(rows[1]?.[row]);
+    const column = text(rows[2]?.[row]);
+    // A field kind the layer grows later is a field this cannot present, and
+    // silently calling it a dimension would put it on a chart's category axis.
+    const kind = FIELD_KINDS[String(rows[3]?.[row])];
+    if (!Number.isFinite(modelId) || object === null || column === null || kind === undefined) {
+      continue;
+    }
+    const displayName = text(rows[4]?.[row]);
+    const description = text(rows[5]?.[row]);
+    const format = text(rows[6]?.[row]);
+    const unit = text(rows[7]?.[row]);
+    const sensitivity = text(rows[9]?.[row]);
+    found.push({
+      modelId,
+      object,
+      column,
+      kind,
+      ...(displayName === null ? {} : { displayName }),
+      ...(description === null ? {} : { description }),
+      ...(format === null ? {} : { format }),
+      ...(unit === null ? {} : { unit }),
+      ...(flag(rows[8]?.[row]) ? { certified: true } : {}),
+      ...(sensitivity === null ? {} : { sensitivity }),
+    });
+  }
+  return found;
+};
+
+/** How a published object is keyed here, and by whoever looks one up. */
+export const semanticObjectKey = (schema: string, object: string): string => `${schema}.${object}`;
+
+/** The meanings of one published object's columns, by column name. */
+export type SemanticColumns = ReadonlyMap<string, SemanticColumnView>;
+
+/** Every published object's columns, by `SCHEMA.OBJECT`. */
+export type SemanticIndex = ReadonlyMap<string, SemanticColumns>;
+
+/** An index over nothing, which is what a connection without the layer has. */
+export const EMPTY_SEMANTIC_INDEX: SemanticIndex = new Map();
+
+/**
+ * The surface as something a table box can be looked up in.
+ *
+ * Two rules live here, and only here.
+ *
+ * **Only published models describe anything.** A draft's published schema is an
+ * intention, and on the instance this was written against three drafts named a
+ * schema a fourth, published model owns. Their fields would otherwise land on
+ * that model's views.
+ *
+ * **Where two published models still claim the same object, the newer wins —
+ * whole.** Publishing is `CREATE OR REPLACE VIEW`, so the view that is there is
+ * the one published last and there is exactly one right answer;
+ * `semanticModelsQuery` orders by `UPDATED_AT` so walking the models in order
+ * leaves the newest claim standing. Whole, and not column by column: half of one
+ * model's meanings mixed with half of another's would describe a view that never
+ * existed. This is the opposite of the wrapper preprocessor's ambiguity, where
+ * several candidates were all equally correct and none was more current.
+ */
+export const indexSemanticFields = (surface: SemanticSurface | null): SemanticIndex => {
+  if (surface === null) return EMPTY_SEMANTIC_INDEX;
+  const byModel = new Map<number, SemanticField[]>();
+  for (const field of surface.fields) {
+    const fields = byModel.get(field.modelId) ?? [];
+    fields.push(field);
+    byModel.set(field.modelId, fields);
+  }
+  const index = new Map<string, Map<string, SemanticColumnView>>();
+  for (const model of surface.models) {
+    if (!model.published) continue;
+    // Cleared per object, not per model: a model claiming one of two objects
+    // must not take the other away from whoever published it.
+    const claimed = new Map<string, Map<string, SemanticColumnView>>();
+    for (const field of byModel.get(model.id) ?? []) {
+      const key = semanticObjectKey(model.publishedSchema, field.object);
+      let columns = claimed.get(key);
+      if (columns === undefined) {
+        columns = new Map();
+        claimed.set(key, columns);
+        index.set(key, columns);
+      }
+      const { modelId: _modelId, object: _object, column, ...view } = field;
+      columns.set(column, { ...view, model: model.name });
+    }
+  }
+  return index;
+};
+
+/** What a relation's columns mean, where it is a published semantic object. */
+export const semanticColumnsFor = (
+  index: SemanticIndex,
+  schema: string,
+  table: string,
+): SemanticColumns | undefined => index.get(semanticObjectKey(schema, table));

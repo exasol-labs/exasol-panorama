@@ -5,6 +5,9 @@ import { serializeError } from '@panorama/worker';
 import type { TableDataSession } from '@panorama/table';
 import { TableDataError, cellValue } from '@panorama/table';
 import { MAX_SUMMARY_SCAN, factRelation } from '@panorama/test-support';
+import type { RowFilter } from '@panorama/table';
+import { dataType } from '@panorama/core';
+import { compileSemanticSql } from '@panorama/exasol';
 import { TABLE_ID, createWorkerHarness } from './harness.js';
 
 describe('DataWorker table lifecycle', () => {
@@ -737,7 +740,10 @@ describe('the preprocessor a statement runs under', () => {
       id: 'connection:1',
       open: async (): Promise<void> => undefined,
       close: async (): Promise<void> => undefined,
-      wrapperSurfaceIfRead: () =>
+      // No semantic layer on this connection, which is the ordinary case and the
+      // one that must leave the wrapper path exactly as it was.
+      semanticSurface: async () => null,
+      wrapperSurface: async () =>
         new Map([
           [
             'SRC.orders',
@@ -784,5 +790,241 @@ describe('the preprocessor a statement runs under', () => {
     await client.openTable({ tableId: 'table:2' as never, schema: 'SRC', table: 'orders' });
     // The stored table needs no preprocessor: it has no paths to rewrite.
     expect(opened.at(-1)).toContain('none | ');
+  });
+});
+
+/**
+ * Compiling a statement that reads a semantic object, on the way to running it.
+ *
+ * The whole point of doing it here rather than setting the layer's session
+ * preprocessor: the source is handed the *physical* SQL, so the rows, the column
+ * statistics and an export all read the same ordinary query. Under the
+ * preprocessor the derived queries are rewritten a second time, and one of them
+ * came back with a silently wrong count.
+ */
+describe('compiling a semantic statement', () => {
+  const SURFACE = {
+    version: '0.1',
+    models: [{ id: 1, name: 'sales', publishedSchema: 'SEMANTIC_SALES', published: true }],
+    fields: [{ modelId: 1, object: 'SALES', column: 'TOTAL_REVENUE', kind: 'metric' as const }],
+  };
+  const PHYSICAL = 'SELECT SUM(x) AS "total_revenue" FROM "MART"."ORDER_LINES"';
+
+  const connection = (opened: string[], compiled: readonly (readonly unknown[])[]) =>
+    ({
+      id: 'connection:1',
+      open: async (): Promise<void> => undefined,
+      close: async (): Promise<void> => undefined,
+      semanticSurface: async () => SURFACE,
+      wrapperSurface: async () => new Map(),
+      // The real reader over fabricated columns, so the nine-column contract is
+      // exercised here rather than mocked past.
+      compileSemantic: async (statement: string) => {
+        opened.push(`compile | ${statement}`);
+        return compileSemanticSql(async () => compiled as never, statement);
+      },
+      openResultSet: async (sqlText: string, preprocessor?: string | null) => {
+        opened.push(`${preprocessor ?? 'none'} | ${sqlText}`);
+        return {
+          handle: null,
+          columns: [
+            { name: 'total_revenue', dataType: { type: 'DECIMAL', precision: 18, scale: 2 } },
+          ],
+          numRows: 0,
+          numRowsInMessage: 0,
+          inlineData: [[]],
+        };
+      },
+    }) as never;
+
+  const compileAnswer = (
+    status: string,
+    sql: string | null,
+    extra: { message?: string; clarification?: string; plan?: string } = {},
+  ) => [
+    [status],
+    [null],
+    [extra.message ?? null],
+    ['original'],
+    [sql],
+    [extra.plan ?? null],
+    [extra.clarification ?? null],
+    [1],
+    [null],
+  ];
+
+  const started = async (compiled: readonly (readonly unknown[])[]) => {
+    const { DataWorker, DataWorkerClient, createInProcessEndpointPair } =
+      await import('@panorama/worker');
+    const opened: string[] = [];
+    const pair = createInProcessEndpointPair();
+    // The real `#prepareSource`, which is the only place the decision is made.
+    new DataWorker({ endpoint: pair.worker, createConnection: () => connection(opened, compiled) });
+    const client = new DataWorkerClient(pair.main);
+    await client.connect('wss://x', { kind: 'token', token: 't' });
+    return { client, opened };
+  };
+
+  it('runs the compiled SQL rather than the statement it was given', async () => {
+    const plan = JSON.stringify({
+      model: 'sales',
+      relationship_paths: ['order_line_to_order'],
+      selected_materialization: { physical_schema: 'MART', physical_object: 'ROLLUP' },
+    });
+    const { client, opened } = await started(compileAnswer('OK', PHYSICAL, { plan }));
+    const result = await client.openTable({
+      tableId: TABLE_ID,
+      schema: 'SEMANTIC_SALES',
+      table: 'SALES',
+    });
+    expect(opened[0]).toBe('compile | SELECT * FROM "SEMANTIC_SALES"."SALES"');
+    // What actually ran is the physical SQL, so everything derived from the
+    // statement — summaries, histograms, an export — is derived from that too.
+    expect(opened[1]).toBe(`none | ${PHYSICAL}`);
+    expect(result.compiled).toEqual({
+      sql: PHYSICAL,
+      provenance: 'sales · via order_line_to_order · from MART.ROLLUP',
+    });
+  });
+
+  /**
+   * The bug this test exists for: the decision used to be made from a *peek* at
+   * whatever surface somebody else had already read, so a statement compiled only
+   * if the main thread had asked for the semantic surface earlier in the session.
+   * It does ask, on connect — but a rule that holds only when two unrelated
+   * pieces of code run in the right order is not a rule, and this is the shape of
+   * getting it wrong: the box shows the guard's error instead of its rows.
+   *
+   * Nothing here asks for the surface. The worker reads it itself or the
+   * statement is not compiled at all.
+   */
+  it('compiles without anyone having asked for the surface first', async () => {
+    const { client, opened } = await started(compileAnswer('OK', PHYSICAL));
+    await client.openTable({ tableId: TABLE_ID, schema: 'SEMANTIC_SALES', table: 'SALES' });
+    expect(opened[1]).toBe(`none | ${PHYSICAL}`);
+  });
+
+  it('compiles once, and reopens on what it already had', async () => {
+    const { client, opened } = await started(compileAnswer('OK', PHYSICAL));
+    await client.openTable({ tableId: TABLE_ID, schema: 'SEMANTIC_SALES', table: 'SALES' });
+    await client.reopenTable(TABLE_ID);
+    expect(opened.filter((entry) => entry.startsWith('compile'))).toHaveLength(1);
+  });
+
+  it('leaves an ordinary statement alone', async () => {
+    const { client, opened } = await started(compileAnswer('OK', PHYSICAL));
+    await client.openTable({ tableId: TABLE_ID, schema: 'MART', table: 'ORDER_LINES' });
+    expect(opened).toEqual(['none | SELECT * FROM "MART"."ORDER_LINES"']);
+  });
+
+  /** A refusal is the answer, so it reaches the box as the layer's own words. */
+  it('shows what the layer said when it would not compile', async () => {
+    const { client } = await started(
+      compileAnswer('NEEDS_CLARIFICATION', null, {
+        message: 'Unknown semantic field: product_category.',
+        clarification: JSON.stringify({ clarification_question: 'Query that view instead.' }),
+      }),
+    );
+    await expect(
+      client.openTable({ tableId: TABLE_ID, schema: 'SEMANTIC_SALES', table: 'SALES' }),
+    ).rejects.toThrow('Unknown semantic field: product_category. Query that view instead.');
+  });
+
+  it('says something even when the layer said nothing', async () => {
+    const { client } = await started(compileAnswer('ERROR', null));
+    await expect(
+      client.openTable({ tableId: TABLE_ID, schema: 'SEMANTIC_SALES', table: 'SALES' }),
+    ).rejects.toThrow('would not compile');
+  });
+});
+
+/**
+ * The statements the worker builds for a live source.
+ *
+ * These used to be asserted against the web application's own source factory,
+ * which built its `ExasolTableDataSource` itself. That is exactly how a published
+ * semantic object came to be read as written: a factory that answers every
+ * request takes the worker's two decisions away from it — the JSON wrapper
+ * preprocessor, and the semantic compile — and neither is visible in the source
+ * it returns. The host may now only serve what nothing else can, and these are
+ * asserted where they are made.
+ */
+describe('the statement a live source is opened with', () => {
+  const openedBy = async (
+    request: { schema: string; table: string; filter?: RowFilter; sql?: string },
+    createSource?: () => undefined,
+  ): Promise<string | undefined> => {
+    const { DataWorker, DataWorkerClient, createInProcessEndpointPair } =
+      await import('@panorama/worker');
+    const statements: string[] = [];
+    const pair = createInProcessEndpointPair();
+    new DataWorker({
+      endpoint: pair.worker,
+      ...(createSource === undefined ? {} : { createSource }),
+      createConnection: () =>
+        ({
+          id: 'connection:1',
+          open: async (): Promise<void> => undefined,
+          close: async (): Promise<void> => undefined,
+          semanticSurface: async () => null,
+          wrapperSurface: async () => new Map(),
+          openResultSet: async (sqlText: string) => {
+            statements.push(sqlText);
+            return {
+              handle: null,
+              columns: [{ name: 'A', dataType: { type: 'DECIMAL', precision: 18, scale: 0 } }],
+              numRows: 0,
+              numRowsInMessage: 0,
+              inlineData: [[]],
+            };
+          },
+        }) as never,
+    });
+    const client = new DataWorkerClient(pair.main);
+    await client.connect('wss://x', { kind: 'token', token: 't' });
+    await client.openTable({ tableId: TABLE_ID, ...request });
+    return statements.at(-1);
+  };
+
+  it('selects a whole stored relation when nothing narrows it', async () => {
+    await expect(openedBy({ schema: 'SALES', table: 'ORDERS' })).resolves.toBe(
+      'SELECT * FROM "SALES"."ORDERS"',
+    );
+  });
+
+  /**
+   * The bug this exists for: the filter reached the worker and stopped there, so
+   * following a key against a real database opened the whole table.
+   */
+  it('carries a foreign key filter into the statement it sends', async () => {
+    await expect(
+      openedBy({
+        schema: 'SALES',
+        table: 'COUNTRIES',
+        filter: {
+          column: 'NAME',
+          values: ['Denmark'],
+          type: dataType('varchar', 'VARCHAR(64)', { size: 64 }),
+        },
+      }),
+    ).resolves.toBe(`SELECT * FROM "SALES"."COUNTRIES" WHERE "NAME" = 'Denmark'`);
+  });
+
+  it('runs a statement as given, and never alongside a filter', async () => {
+    await expect(
+      openedBy({
+        schema: 'QUERY',
+        table: 'label',
+        sql: 'SELECT 1 FROM DUAL',
+        filter: { column: 'C', values: [null] },
+      }),
+    ).resolves.toBe('SELECT 1 FROM DUAL');
+  });
+
+  /** A host factory that declines leaves the source — and both decisions — here. */
+  it('builds the source itself when the host declines', async () => {
+    await expect(openedBy({ schema: 'SALES', table: 'ORDERS' }, () => undefined)).resolves.toBe(
+      'SELECT * FROM "SALES"."ORDERS"',
+    );
   });
 });
