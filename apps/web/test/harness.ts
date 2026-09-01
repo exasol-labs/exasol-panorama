@@ -4,7 +4,14 @@ import { dataType } from '@panorama/core';
 import type { ConnectionFactoryOptions, TableSourceRequest } from '@panorama/worker';
 import { DataWorker, DataWorkerClient, createInProcessEndpointPair } from '@panorama/worker';
 import type { ExasolConnection } from '@panorama/exasol';
-import { ManualScheduler, MockTableDataSource, factRelation } from '@panorama/test-support';
+import {
+  ManualScheduler,
+  MockTableDataSource,
+  factRelation,
+  familyComment,
+  jsonFamily,
+  relationSchema,
+} from '@panorama/test-support';
 import type { WorkspaceOptions } from '../src/panorama/workspace.js';
 import { Workspace } from '../src/panorama/workspace.js';
 import { DEMO_SCHEMA, demoRelation, demoSchema } from '../src/panorama/demo.js';
@@ -66,7 +73,26 @@ export interface HarnessOptions {
   readonly quietLogin?: boolean;
   /** Where database sockets should be opened; the desktop shell's, in an app. */
   readonly databaseSocket?: WorkspaceOptions['databaseSocket'];
+  /**
+   * Serves a JSON table family instead of the sales tables.
+   *
+   * The five tables of `@panorama/test-support`'s family, with the provenance
+   * comment a loader would have stamped on each — so what a test opens is a
+   * table Panorama has to recognise, rather than one told in advance what it is.
+   */
+  readonly jsonFamily?: boolean;
 }
+
+/** The family as the catalogue would report it, comments and all. */
+const FAMILY_TABLES = jsonFamily().map((relation) => ({
+  schema: relation.schema,
+  name: relation.table,
+  kind: 'TABLE',
+  rowCount: relation.rowCount,
+  comment: familyComment(relation.table === 'PEOPLE' ? 'root' : relation.table),
+}));
+
+export const JSON_FAMILY_SCHEMA_NAME = jsonFamily()[0]?.schema ?? 'PANORAMA_JSON';
 
 export const createAppHarness = (options: HarnessOptions = {}): AppHarness => {
   const pair = createInProcessEndpointPair();
@@ -94,15 +120,24 @@ export const createAppHarness = (options: HarnessOptions = {}): AppHarness => {
             }),
         open: async (): Promise<void> => undefined,
         close: async (): Promise<void> => undefined,
-        listSchemas: async () => [{ name: 'PANORAMA_TEST' }],
-        listTables: async () => [
-          // A table's count comes from the catalogue; a view has none.
-          { schema: 'PANORAMA_TEST', name: 'SALES', kind: 'TABLE', rowCount: 2_830_000_000 },
-          { schema: 'PANORAMA_TEST', name: 'SALES_V', kind: 'VIEW' },
-        ],
-        describeTable: async (): Promise<TableSchema> => {
+        listSchemas: async () =>
+          options.jsonFamily === true
+            ? [{ name: JSON_FAMILY_SCHEMA_NAME }]
+            : [{ name: 'PANORAMA_TEST' }],
+        listTables: async () =>
+          options.jsonFamily === true
+            ? FAMILY_TABLES
+            : [
+                // A table's count comes from the catalogue; a view has none.
+                { schema: 'PANORAMA_TEST', name: 'SALES', kind: 'TABLE', rowCount: 2_830_000_000 },
+                { schema: 'PANORAMA_TEST', name: 'SALES_V', kind: 'VIEW' },
+              ],
+        describeTable: async (_schema: string, table: string): Promise<TableSchema> => {
           if (options.failDescribe === true) throw new Error('object not found');
-          return TEST_SCHEMA;
+          const member = jsonFamily().find((relation) => relation.table === table);
+          return options.jsonFamily === true && member !== undefined
+            ? relationSchema(member)
+            : TEST_SCHEMA;
         },
       } as unknown as ExasolConnection;
     },
@@ -119,7 +154,8 @@ export const createAppHarness = (options: HarnessOptions = {}): AppHarness => {
       const relation =
         request.schema === DEMO_SCHEMA
           ? demoRelation(request.table)
-          : factRelation(options.rowCount ?? 100_000);
+          : (jsonFamily().find((member) => member.table === request.table) ??
+            factRelation(options.rowCount ?? 100_000));
       if (relation === undefined) throw new Error(`No demo relation ${request.table}`);
       return new MockTableDataSource({
         relation,

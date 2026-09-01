@@ -53,6 +53,26 @@ export interface TableTheme {
   readonly cellText: Rgba;
   readonly gutterText: Rgba;
   readonly nullText: Rgba;
+  /**
+   * A property that was there and whose value was `null`.
+   *
+   * Its own colour because it is its own *fact*, and the one the whole document
+   * view exists to make visible. `nullText` above draws a cell with nothing in
+   * it; this draws a cell whose contents are nothing, which is a different
+   * statement about the data — and drawing both in one grey is how the
+   * distinction was lost. A hue rather than a shade, since a reader should not
+   * have to compare two greys to know which they are looking at.
+   */
+  readonly jsonNullText: Rgba;
+  /** A string that was there and was empty, which the database stored as NULL. */
+  readonly jsonEmptyText: Rgba;
+  /**
+   * The type a variant's value arrived as, written small beside it.
+   *
+   * Dimmer than the value, because it is a note about the value and not part of
+   * it: the eye should read the number first and find out it was a string second.
+   */
+  readonly jsonBranchTag: Rgba;
   readonly scrollbar: Rgba;
   readonly scrollbarTrack: Rgba;
   readonly resizeHandle: Rgba;
@@ -181,6 +201,9 @@ export const DEFAULT_TABLE_THEME: TableTheme = Object.freeze({
   cellText: rgb(0x21_26_2c),
   gutterText: rgb(0x8b_94_9e),
   nullText: rgb(0xa9_b1_ba),
+  jsonNullText: rgb(0x8a_44_c8),
+  jsonEmptyText: rgb(0x6b_7a_8f),
+  jsonBranchTag: rgb(0x8b_94_9e),
   scrollbar: rgb(0x9a_a3_ad, 0.75),
   scrollbarTrack: rgb(0x00_00_00, 0.05),
   resizeHandle: rgb(0x2f_6f_ed, 0.85),

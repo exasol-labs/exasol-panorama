@@ -8,6 +8,7 @@ import type {
 } from './entities.js';
 import { clamp, type Size2, type Vec3 } from './geometry.js';
 import type { EntityId, IdFactory } from './ids.js';
+import type { JsonColumnView } from './json-column.js';
 
 /** Layout defaults for a freshly opened table. Deliberately conventional. */
 export const DEFAULT_TABLE_VIEW: TableViewSettings = Object.freeze({
@@ -64,6 +65,8 @@ export interface TableColumnSpec {
   readonly width?: number;
   readonly visible?: boolean;
   readonly foreignKey?: ForeignKeyReference;
+  /** Set where this column presents several; see `JsonColumnView`. */
+  readonly json?: JsonColumnView;
 }
 
 export interface TableEntitySpec {
@@ -104,6 +107,7 @@ export const buildTableColumns = (
     },
     width: column.width ?? estimateColumnWidth(column.name, column.type),
     visible: column.visible ?? true,
+    ...(column.json === undefined ? {} : { json: column.json }),
   }));
 
 /** Width at which every visible column is fully shown, gutter included. */

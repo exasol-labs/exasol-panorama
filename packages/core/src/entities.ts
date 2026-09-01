@@ -1,6 +1,7 @@
 import type { ChartSpec } from './chart-spec.js';
 import type { ColumnDataType, ForeignKeyReference } from './data-types.js';
 import type { ConnectionId, EntityId } from './ids.js';
+import type { JsonColumnView } from './json-column.js';
 
 /**
  * Document entities.
@@ -16,6 +17,16 @@ export interface RelationSource {
   readonly connectionId: ConnectionId;
   readonly schema: string;
   readonly table: string;
+  /**
+   * True where this relation stores a document rather than a row.
+   *
+   * A fact about the relation and not about how it is being shown, which is why
+   * it lives here and does not change when the view is toggled: the table holds
+   * a document family either way, and what the toggle picks is whether to draw
+   * the document or the columns it was spread across. Something has to remember
+   * it, or the way back from the raw view would be a button nobody could offer.
+   */
+  readonly document?: boolean;
   /**
    * Set when this table shows the rows behind a chart's selection.
    *
@@ -105,6 +116,16 @@ export interface TableColumnView {
   };
   readonly width: number;
   readonly visible: boolean;
+  /**
+   * The other result-set columns this one presents, for a table holding a
+   * document rather than a row.
+   *
+   * Absent for every ordinary column. Where it is set, `sourceColumn` names the
+   * *property* and carries the type of its strongest branch — so a chart, an
+   * export, the statistics panel and an agent's answer all read something
+   * sensible without knowing any of this exists.
+   */
+  readonly json?: JsonColumnView;
 }
 
 export interface TableViewSettings {

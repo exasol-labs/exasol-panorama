@@ -9,6 +9,7 @@ export * from './entities.js';
 export * from './geometry.js';
 export * from './history.js';
 export * from './ids.js';
+export * from './json-column.js';
 export * from './placement.js';
 export * from './query-chain.js';
 export * from './result.js';

@@ -1,14 +1,25 @@
-import type { SqlRange, TableEntity } from '@panorama/core';
+import type { CellAlignment, JsonColumnView, SqlRange, TableEntity } from '@panorama/core';
 import {
   ROW_NUMBER_GUTTER_WIDTH,
   derivedTableRanges,
   alignmentForType,
   clamp,
   isQueryTable,
+  showsBranch,
   tableDisplayName,
 } from '@panorama/core';
-import type { CellValue, ColumnLayout } from '@panorama/table';
-import { computeColumnWindow, computeRowWindow, formatCell } from '@panorama/table';
+import type { CellValue, ColumnLayout, PresentedCell } from '@panorama/table';
+import {
+  EMPTY_STRING_TEXT,
+  EXPLICIT_NULL_TEXT,
+  MISSING_TEXT,
+  OBJECT_TEXT,
+  arrayText,
+  computeColumnWindow,
+  computeRowWindow,
+  formatCell,
+  presentCell,
+} from '@panorama/table';
 import type { Rgba, TableTheme } from '../theme.js';
 import type { LodLevel } from './lod.js';
 import { showsCellText, showsGridLines, showsTypeRow } from './lod.js';
@@ -98,8 +109,6 @@ export interface TableRenderInput {
    */
   readonly columnSummaries?: ReadonlyMap<EntityId, SummaryPanelView>;
 }
-
-const NULL_PLACEHOLDER = '—';
 
 /**
  * Room kept under a chart for the line that says what it drew.
@@ -487,6 +496,107 @@ export const buildTableDrawList = (input: TableRenderInput): TableDrawList => {
     if (run.maxWidth <= 0 || run.text === '') return;
     texts.push(run);
     characters += run.text.length;
+  };
+
+  /** The bar drawn where a cell's block has not arrived, so the layout holds still. */
+  const placeholder = (
+    visibleX: number,
+    visibleWidth: number,
+    columnWidth: number,
+    top: number,
+    boxHeight: number,
+  ): void => {
+    quad(
+      visibleX + theme.cellPaddingX,
+      top + boxHeight / 2 - 4,
+      Math.max(0, Math.min(visibleWidth - theme.cellPaddingX * 2, columnWidth * 0.6)),
+      Math.min(8, boxHeight),
+      theme.placeholderFill,
+    );
+  };
+
+  /**
+   * A cell of a document property.
+   *
+   * The four states are four different sentences about the data, so they are
+   * four different colours and four different tokens rather than one dash doing
+   * duty for all of them. Nothing is drawn twice: the value path and the empty
+   * paths are exclusive.
+   *
+   * A variant's value gets its branch written after it, dimmed and only where the
+   * property actually has more than one — the type is a note about the value, so
+   * the eye should reach the number first and learn it was a string second. It is
+   * laid out from the right and the value's own width is reduced to fit, so a
+   * long string is truncated rather than the tag being pushed out of the cell.
+   */
+  const drawPresented = (
+    cell: PresentedCell,
+    json: JsonColumnView,
+    box: { x: number; width: number; y: number; height: number; clip: ClipRect },
+  ): void => {
+    const left = box.x + theme.cellPaddingX;
+    const room = Math.max(0, box.width - theme.cellPaddingX * 2);
+    const write = (content: string, color: Rgba, align: CellAlignment, maxWidth = room): void => {
+      text({
+        x: left,
+        y: box.y,
+        maxWidth,
+        height: box.height,
+        clip: box.clip,
+        text: content,
+        color,
+        align,
+        fontSize: theme.fontSize,
+      });
+    };
+    switch (cell.state) {
+      case 'null':
+        write(EXPLICIT_NULL_TEXT, theme.jsonNullText, 'left');
+        return;
+      case 'empty':
+        write(EMPTY_STRING_TEXT, theme.jsonEmptyText, 'left');
+        return;
+      case 'missing':
+        write(MISSING_TEXT, theme.nullText, 'left');
+        return;
+      case 'object':
+        write(OBJECT_TEXT, theme.linkText, 'left');
+        return;
+      case 'array':
+        // An empty list is not followable, so it does not read as a link.
+        write(arrayText(cell.length), cell.length === 0 ? theme.nullText : theme.linkText, 'left');
+        return;
+      case 'value': {
+        const tag = showsBranch(json) ? cell.branch : undefined;
+        // Measured with the same rough per-character estimate the column widths
+        // are: the exact width lives in the glyph atlas, and reserving a little
+        // too much room truncates a long value by a character rather than
+        // letting the tag slide off the edge.
+        const tagWidth =
+          tag === undefined ? 0 : tag.length * theme.typeFontSize * 0.62 + theme.cellPaddingX;
+        write(
+          formatCell(cell.value, cell.type),
+          theme.cellText,
+          alignmentForType(cell.type),
+          Math.max(0, room - tagWidth),
+        );
+        if (tag === undefined) return;
+        text({
+          x: left,
+          y: box.y,
+          maxWidth: room,
+          height: box.height,
+          clip: box.clip,
+          text: tag,
+          color: theme.jsonBranchTag,
+          align: 'right',
+          fontSize: theme.typeFontSize,
+        });
+      }
+    }
+    // `pending` is the case with nothing to write, and it never arrives: the
+    // caller draws its placeholder and moves on, because a cell still being
+    // fetched is not a cell with anything to say.
   };
 
   // Table body background and outer border.
@@ -966,25 +1076,46 @@ export const buildTableDrawList = (input: TableRenderInput): TableDrawList => {
       if (x + placement.width <= gutterWidth || x >= cellRight) continue;
       const visibleX = Math.max(x, gutterWidth);
       const visibleWidth = Math.min(x + placement.width, cellRight) - visibleX;
+      const json = placement.column.json;
+
+      /**
+       * A column presenting a document property rather than a stored column.
+       *
+       * Drawn here and returned to, rather than folded into the code below,
+       * because there is very little in common: what is being decided is not how
+       * to format a value but *which of four things this cell is*, and three of
+       * them have no value to format.
+       */
+      if (json !== undefined) {
+        const cell = presentCell(json, (index) => input.data.cell(row, index));
+        if (cell.state === 'pending') {
+          placeholderCells += 1;
+          placeholder(visibleX, visibleWidth, placement.width, clippedY, clippedHeight);
+          continue;
+        }
+        if (!lettered) continue;
+        drawPresented(cell, json, {
+          x: visibleX,
+          width: visibleWidth,
+          y,
+          height: rowHeight,
+          clip: rowClip,
+        });
+        continue;
+      }
+
       const value = input.data.cell(row, placement.sourceIndex);
 
       if (value === undefined) {
         placeholderCells += 1;
-        // Placeholders keep the layout stable so the eye has nothing to track.
-        quad(
-          visibleX + theme.cellPaddingX,
-          clippedY + clippedHeight / 2 - 4,
-          Math.max(0, Math.min(visibleWidth - theme.cellPaddingX * 2, placement.width * 0.6)),
-          Math.min(8, clippedHeight),
-          theme.placeholderFill,
-        );
+        placeholder(visibleX, visibleWidth, placement.width, clippedY, clippedHeight);
         continue;
       }
       // Same rule as the row number: a value cut in half is not the value.
       if (!lettered) continue;
 
       const type = placement.column.sourceColumn.type;
-      const formatted = value === null ? NULL_PLACEHOLDER : formatCell(value, type);
+      const formatted = value === null ? MISSING_TEXT : formatCell(value, type);
       // A followable cell reads as a link, which is the whole affordance: the
       // click that opens the referenced rows has to look like it will.
       const followable = value !== null && placement.column.sourceColumn.foreignKey !== undefined;

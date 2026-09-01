@@ -346,6 +346,35 @@ export const TABLE_ACTIONS: readonly ActionSpec[] = Object.freeze([
 ]);
 
 /**
+ * Switching between the document and the columns it is stored in.
+ *
+ * Offered only where there is a document to switch to, which is a property of
+ * the relation rather than of the moment — a button that is present and inert on
+ * every ordinary table would be worse than one that appears where it means
+ * something, which is the same rule the pencil follows.
+ *
+ * A word rather than a glyph: there is no picture of "show me the storage", and
+ * the three letters say it.
+ */
+const JSON_ACTION: ActionSpec = Object.freeze({
+  action: 'json',
+  icon: 'JSON',
+  label: 'Show the document, or the columns it is stored in',
+  tone: 'neutral',
+  place: 'side',
+  iconFontSize: SQL_ICON_FONT_SIZE,
+});
+
+/** What a table holding a document family offers, beyond the usual. */
+export const DOCUMENT_TABLE_ACTIONS: readonly ActionSpec[] = Object.freeze([
+  CHART_ACTION,
+  EXPORT_ACTION,
+  SQL_ACTION,
+  JSON_ACTION,
+  CLOSE_ACTION,
+]);
+
+/**
  * What a derived table offers: its statement can be reopened for editing.
  *
  * Only a derived table has a statement, so only a derived table gets the pencil.
@@ -427,7 +456,14 @@ export const actionsForTable = (
       CHART_EXPORT_ACTIONS,
     );
   }
-  if (!isQueryTable(entity)) return expand(TABLE_ACTIONS, expanded, EXPORT_FORMAT_ACTIONS);
+  if (!isQueryTable(entity)) {
+    const document = entity.source.kind === 'relation' && entity.source.document === true;
+    return expand(
+      document ? DOCUMENT_TABLE_ACTIONS : TABLE_ACTIONS,
+      expanded,
+      EXPORT_FORMAT_ACTIONS,
+    );
+  }
   return expand(
     entity.mode === 'editing' ? EDITING_TABLE_ACTIONS : DERIVED_TABLE_ACTIONS,
     expanded,

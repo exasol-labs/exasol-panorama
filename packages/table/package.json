@@ -10,6 +10,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@panorama/core": "*"
+    "@panorama/core": "*",
+    "@panorama/json-tables": "*"
   }
 }

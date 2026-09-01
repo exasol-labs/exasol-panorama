@@ -236,6 +236,7 @@ export const AGENT_ACTIONS: readonly string[] = [
   'sql',
   'chart',
   'rows',
+  'json',
   'export-csv',
   'export-xlsx',
   'export-parquet',

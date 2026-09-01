@@ -68,6 +68,8 @@ export type EntityActionId =
   | 'sql'
   | 'chart'
   | 'rows'
+  /** Switch between the document a table holds and the columns storing it. */
+  | 'json'
   | 'export'
   | 'export-csv'
   | 'export-xlsx'

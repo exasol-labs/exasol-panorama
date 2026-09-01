@@ -1,4 +1,10 @@
-import type { EntityId, QueryStep, TableColumnView, TableEntity } from '@panorama/core';
+import type {
+  EntityId,
+  QueryStep,
+  TableColumnSpec,
+  TableColumnView,
+  TableEntity,
+} from '@panorama/core';
 import type { Binding, BindingId } from '@panorama/core';
 import type { ChartColumnHint, ChartSource, ChartSpec, ColumnDataType } from '@panorama/core';
 import {
@@ -39,7 +45,12 @@ import {
   selectedMarksOf,
 } from '@panorama/core';
 import type { CellValue, RowFilter, SchemaInfo, TableInfo, TableSchema } from '@panorama/table';
-import { DEFAULT_BLOCK_SIZE, formatCell } from '@panorama/table';
+import {
+  DEFAULT_BLOCK_SIZE,
+  formatCell,
+  jsonColumnSpecs,
+  physicalColumnSpecs,
+} from '@panorama/table';
 import type {
   ChartMetrics,
   SummaryPanelView,
@@ -379,6 +390,14 @@ export class Workspace implements TableViewProvider, InteractionHost {
   readonly core: PanoramaCore;
   readonly #client: DataWorkerClient;
   readonly #views = new Map<EntityId, TableView>();
+  /**
+   * A schema's tables, once asked for.
+   *
+   * Only ever populated for a schema holding a document family, and only to know
+   * whether a nested property's child table is really there before offering to
+   * open it. See `#siblingsOf`.
+   */
+  readonly #schemaTables = new Map<string, readonly TableInfo[]>();
   /** Exports in flight; they outlive the tables and panels that started them. */
   readonly #exports: ExportJobs;
   /**
@@ -534,6 +553,53 @@ export class Workspace implements TableViewProvider, InteractionHost {
   }
 
   /**
+   * The columns a table is drawn with: its own, or the document they encode.
+   *
+   * Some databases store a nested document as a family of relational tables,
+   * spreading one property across a value column per type it had and boolean
+   * masks recording what SQL cannot say. Where the column names say that is what
+   * this is, the properties are drawn rather than the storage — see
+   * `@panorama/json-tables`.
+   *
+   * The shape test is pure and costs nothing, so it runs first and settles it for
+   * every ordinary table without a round trip. Only a table that already looks
+   * like a document pays for the catalogue lookup, and it pays for it because a
+   * nested property's cell can only offer to open the child table once it knows
+   * the child table is there.
+   */
+  async #columnsFor(schema: TableSchema): Promise<readonly TableColumnSpec[]> {
+    if (jsonColumnSpecs(schema) === null) return physicalColumnSpecs(schema);
+    const siblings = await this.#siblingsOf(schema.schema);
+    const comment = siblings.find((table) => table.name === schema.table)?.comment;
+    return (
+      jsonColumnSpecs(schema, {
+        siblings: siblings.map((table) => table.name),
+        ...(comment === undefined ? {} : { comment }),
+      }) ?? physicalColumnSpecs(schema)
+    );
+  }
+
+  /**
+   * The schema's tables, remembered for as long as the session lasts.
+   *
+   * A family opens several tables in a row — the root, then whatever a click
+   * follows into — and asking the catalogue the same question each time would be
+   * a round trip per click for an answer that does not change while somebody is
+   * reading.
+   */
+  async #siblingsOf(schema: string): Promise<readonly TableInfo[]> {
+    const remembered = this.#schemaTables.get(schema);
+    if (remembered !== undefined) return remembered;
+    // A catalogue that will not answer costs the links out of this table and
+    // nothing else. Opening it is what was asked for; knowing which of its
+    // properties lead somewhere is an enrichment, and failing the open for want
+    // of one would be losing the table to save the arrows.
+    const listed = await this.#client.listTables(schema).catch(() => []);
+    this.#schemaTables.set(schema, listed);
+    return listed;
+  }
+
+  /**
    * Opens a table: describe it, create the entity, then open the result set.
    * The entity appears immediately; rows arrive when they arrive.
    */
@@ -544,20 +610,19 @@ export class Workspace implements TableViewProvider, InteractionHost {
       request.knownSchema ??
       this.#options.resolveSchema?.(request.schema, request.table) ??
       (await this.#client.describeTable(request.schema, request.table));
+    const columns = await this.#columnsFor(schema);
     const sized = buildTableEntity(this.core.ids, {
       source: {
         kind: 'relation',
         connectionId: this.#connectionId,
         schema: request.schema,
         table: request.table,
+        // Remembered on the source rather than inferred from the columns,
+        // because the columns stop saying it the moment somebody switches to
+        // the stored view — and that is exactly when the way back is needed.
+        ...(columns.some((column) => column.json !== undefined) ? { document: true } : {}),
       },
-      columns: schema.columns.map((column) => ({
-        name: column.name,
-        type: column.type,
-        // Carried onto the entity so its cells render as links and can be
-        // followed without consulting the schema again.
-        ...(column.foreignKey === undefined ? {} : { foreignKey: column.foreignKey }),
-      })),
+      columns,
       // A free spot depends on how big the table is, and how big it is depends
       // on its columns — so it is built at the origin and moved once its size
       // is known, before anything has seen it.
@@ -891,9 +956,45 @@ export class Workspace implements TableViewProvider, InteractionHost {
     // Always a *new* box, on a query table as much as an ordinary one: refining
     // a query is how the next one is made, so this is not a toggle. Going back
     // to a box's own editor is what the edit button is for.
+    if (action === 'json') {
+      await this.toggleDocumentView(tableId);
+      return;
+    }
     if (action === 'sql') await this.openQuery(tableId);
     if (action === 'chart') await this.openChart(tableId);
     if (action === 'rows') await this.openChartRows(tableId);
+  }
+
+  /**
+   * Switches a document table between its properties and its stored columns.
+   *
+   * Both views are built from the same schema by the same pair of functions, so
+   * neither is a modification of the other and switching cannot half-apply. It is
+   * one commit — `SetTableColumns`, the command a query box already uses when its
+   * statement changes shape — so it is in the history and undoes like anything
+   * else somebody did.
+   *
+   * Column widths are not carried across, and deliberately: the two views do not
+   * have the same columns, so there is nothing to carry. What the reader sees is
+   * a table sized to what it is now showing.
+   */
+  async toggleDocumentView(tableId: EntityId): Promise<void> {
+    const entity = this.core.world.entities.get(tableId);
+    if (entity === undefined || !isTableEntity(entity)) return;
+    // Only where there is a document to switch to. On any other table this
+    // would rebuild the same columns with new identities — a commit that changes
+    // nothing a reader can see and invalidates every id addressing them.
+    if (entity.source.kind !== 'relation' || entity.source.document !== true) return;
+    // The schema the result set was opened with. Absent before the first rows
+    // are asked for, and there is nothing to switch between until then.
+    const schema = this.#views.get(tableId)?.schema;
+    if (schema === undefined || schema === null) return;
+    const collapsed = entity.columns.some((column) => column.json !== undefined);
+    const specs = collapsed ? physicalColumnSpecs(schema) : await this.#columnsFor(schema);
+    const columns = buildTableColumns(this.core.ids, specs);
+    const applied = this.core.dispatch({ type: 'SetTableColumns', tableId, columns });
+    if (!applied.ok) throw new Error(applied.error.message);
+    this.#resizeToColumns(tableId, columns);
   }
 
   /**
