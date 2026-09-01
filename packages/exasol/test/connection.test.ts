@@ -505,3 +505,147 @@ describe('ExasolConnection lifecycle', () => {
     );
   });
 });
+
+describe('the wrapper surface on a connection', () => {
+  /**
+   * Read lazily and held for the session: it costs a round trip per installed
+   * package, and a connection that never opens a document table should not pay
+   * for one it will not use.
+   */
+  it('reads it once and remembers it', async () => {
+    const { connection, server } = await connect({
+      queries: {
+        "TABLE_NAME = '__JVS_ROOTS'": {
+          columns: [{ name: 'TABLE_SCHEMA', dataType: { type: 'VARCHAR', size: 128 } }],
+          rowCount: 1,
+          data: [['H1']],
+        },
+        '"H1"."__JVS_ROOTS"': {
+          columns: [
+            { name: 'ROOT_TABLE', dataType: { type: 'VARCHAR', size: 128 } },
+            { name: 'SOURCE_SCHEMA', dataType: { type: 'VARCHAR', size: 128 } },
+            { name: 'PUBLIC_SCHEMA', dataType: { type: 'VARCHAR', size: 128 } },
+            { name: 'PUBLIC_VIEW', dataType: { type: 'VARCHAR', size: 128 } },
+          ],
+          rowCount: 1,
+          data: [['orders'], ['SRC'], ['WRAP'], ['orders']],
+        },
+      },
+    });
+    // Nothing has been asked yet, so the synchronous peek is empty — which reads
+    // as "no wrapper", and is right: nothing can have seeded a wrapper statement
+    // before the surface was known either.
+    expect(connection.wrapperSurfaceIfRead()).toBeNull();
+
+    const surface = await connection.wrapperSurface();
+    expect([...surface.keys()]).toEqual(['SRC.orders']);
+    expect(connection.wrapperSurfaceIfRead()).toBe(surface);
+
+    const asked = server.executed.filter((sql) => sql.includes('__JVS_ROOTS')).length;
+    await connection.wrapperSurface();
+    expect(server.executed.filter((sql) => sql.includes('__JVS_ROOTS')).length).toBe(asked);
+  });
+
+  /** A reconnect is exactly when a newly installed package should be noticed. */
+  it('forgets it when the session ends', async () => {
+    const { connection } = await connect();
+    await connection.wrapperSurface();
+    expect(connection.wrapperSurfaceIfRead()).not.toBeNull();
+    await connection.close();
+    expect(connection.wrapperSurfaceIfRead()).toBeNull();
+  });
+});
+
+describe('running a statement under a SQL preprocessor', () => {
+  /**
+   * A JSON wrapper's dotted paths are rewritten by a session preprocessor, and
+   * Exasol allows one per session — so a canvas with boxes from two wrapper
+   * packages has to set it per statement rather than once.
+   */
+  const PP_A = '"A_PP"."A_PREPROCESSOR"';
+  const PP_B = '"B_PP"."B_PREPROCESSOR"';
+  const setting = (script: string): string =>
+    `ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = ${script}`;
+
+  it('sets it before the statement it is for', async () => {
+    const { connection, server } = await connect();
+    server.executed.length = 0;
+    await connection.openResultSet('SELECT * FROM ORDERS', PP_A);
+    expect(server.executed).toEqual([setting(PP_A), 'SELECT * FROM ORDERS']);
+  });
+
+  /**
+   * The steady state costs nothing. Only a switch between packages pays for an
+   * `ALTER SESSION`, which is about two milliseconds against a real instance.
+   */
+  it('sends nothing again while the session is already on that one', async () => {
+    const { connection, server } = await connect();
+    server.executed.length = 0;
+    await connection.openResultSet('SELECT * FROM ORDERS', PP_A);
+    await connection.openResultSet('SELECT * FROM ORDERS', PP_A);
+    await connection.openResultSet('SELECT * FROM ORDERS', PP_A);
+    expect(server.executed.filter((sql) => sql.startsWith('ALTER SESSION'))).toEqual([
+      setting(PP_A),
+    ]);
+  });
+
+  it('leaves the session alone for a statement that asked for nothing', async () => {
+    const { connection, server } = await connect();
+    await connection.openResultSet('SELECT * FROM ORDERS', PP_A);
+    server.executed.length = 0;
+    await connection.openResultSet('SELECT * FROM ORDERS');
+    expect(server.executed).toEqual(['SELECT * FROM ORDERS']);
+  });
+
+  it('switches, and switches off', async () => {
+    const { connection, server } = await connect();
+    server.executed.length = 0;
+    await connection.openResultSet('SELECT * FROM ORDERS', PP_A);
+    await connection.openResultSet('SELECT * FROM ORDERS', PP_B);
+    await connection.openResultSet('SELECT * FROM ORDERS', null);
+    expect(server.executed.filter((sql) => sql.startsWith('ALTER SESSION'))).toEqual([
+      setting(PP_A),
+      setting(PP_B),
+      'ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = null',
+    ]);
+  });
+
+  /**
+   * **The test this mechanism exists to pass.** Two boxes from different wrapper
+   * packages, both queried without waiting for each other — which is the ordinary
+   * case on a canvas, and what a user with several documents open will do.
+   *
+   * The protocol has no correlation ids, so the client keeps a strict FIFO queue
+   * and sends one request at a time; the setting and its statement are enqueued in
+   * one synchronous block and are therefore adjacent in it. If they were not —
+   * if `openResultSet` awaited between them — the queue would interleave as
+   * `set A, set B, query A, query B` and each box would silently run under the
+   * other's preprocessor.
+   */
+  it('never lets one statement run under another statement’s preprocessor', async () => {
+    const { connection, server } = await connect();
+    server.executed.length = 0;
+    await Promise.all([
+      connection.openResultSet('SELECT a FROM ORDERS', PP_A),
+      connection.openResultSet('SELECT b FROM ORDERS', PP_B),
+      connection.openResultSet('SELECT c FROM ORDERS', PP_A),
+    ]);
+    // Every statement is immediately preceded by the setting it asked for.
+    const wanted = new Map([
+      ['SELECT a FROM ORDERS', PP_A],
+      ['SELECT b FROM ORDERS', PP_B],
+      ['SELECT c FROM ORDERS', PP_A],
+    ]);
+    for (const [index, sql] of server.executed.entries()) {
+      const expected = wanted.get(sql);
+      if (expected === undefined) continue;
+      // Either the setting is right before it, or the session was already on it
+      // and no setting was sent — in which case the last one sent must be it.
+      const before = server.executed
+        .slice(0, index)
+        .filter((entry) => entry.startsWith('ALTER SESSION'))
+        .at(-1);
+      expect(before, `${sql} ran under ${String(before)}`).toBe(setting(expected));
+    }
+  });
+});

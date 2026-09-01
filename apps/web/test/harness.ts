@@ -81,7 +81,28 @@ export interface HarnessOptions {
    * table Panorama has to recognise, rather than one told in advance what it is.
    */
   readonly jsonFamily?: boolean;
+  /**
+   * Serves a JSON wrapper package over the family's root, as
+   * `exasol-json-tables` installs one.
+   *
+   * Only the root: a package publishes a view per document root and none for the
+   * child tables, which is what makes a child box's statement read its source
+   * table.
+   */
+  readonly jsonWrapper?: boolean;
 }
+
+/** The wrapper package, as the catalogue would report it. */
+const FAMILY_WRAPPER = [
+  {
+    sourceSchema: jsonFamily()[0]?.schema ?? 'PANORAMA_JSON',
+    rootTable: 'PEOPLE',
+    schema: 'PANORAMA_JSON_VIEW',
+    view: 'PEOPLE',
+    helperSchema: 'PANORAMA_JSON_VIEW_INTERNAL',
+    preprocessor: '"PANORAMA_JSON_PP"."PANORAMA_JSON_PREPROCESSOR"',
+  },
+];
 
 /** The family as the catalogue would report it, comments and all. */
 const FAMILY_TABLES = jsonFamily().map((relation) => ({
@@ -132,6 +153,20 @@ export const createAppHarness = (options: HarnessOptions = {}): AppHarness => {
                 { schema: 'PANORAMA_TEST', name: 'SALES', kind: 'TABLE', rowCount: 2_830_000_000 },
                 { schema: 'PANORAMA_TEST', name: 'SALES_V', kind: 'VIEW' },
               ],
+        wrapperSurface: async () =>
+          new Map(
+            (options.jsonWrapper === true ? FAMILY_WRAPPER : []).map((view) => [
+              `${view.sourceSchema}.${view.rootTable}`,
+              view,
+            ]),
+          ),
+        wrapperSurfaceIfRead: () =>
+          new Map(
+            (options.jsonWrapper === true ? FAMILY_WRAPPER : []).map((view) => [
+              `${view.sourceSchema}.${view.rootTable}`,
+              view,
+            ]),
+          ),
         describeTable: async (_schema: string, table: string): Promise<TableSchema> => {
           if (options.failDescribe === true) throw new Error('object not found');
           const member = jsonFamily().find((relation) => relation.table === table);

@@ -15,7 +15,7 @@ import {
   createResultChunk,
 } from '@panorama/table';
 import type { ExasolConnection, ExasolCredentials } from '@panorama/exasol';
-import { ExasolTableDataSource } from '@panorama/exasol';
+import { ExasolTableDataSource, preprocessorForStatement, quoteIdentifier } from '@panorama/exasol';
 import type { ExportFormat, ExportResult } from '@panorama/export';
 import { ExportError, bufferedSink, isExportError, runExport } from '@panorama/export';
 import type { WorkerEndpoint } from './endpoint.js';
@@ -197,6 +197,10 @@ export class DataWorker {
         return this.#disconnect(message.requestId);
       case 'listSchemas':
         return this.#run(message.requestId, async () => this.#requireConnection().listSchemas());
+      case 'wrapperSurface':
+        return this.#run(message.requestId, async () => [
+          ...(await this.#requireConnection().wrapperSurface()).values(),
+        ]);
       case 'listTables':
         return this.#run(message.requestId, async () =>
           this.#requireConnection().listTables(message.schema),
@@ -558,12 +562,25 @@ export class DataWorker {
   #createSource(request: TableSourceRequest): TableDataSource {
     const factory = this.#options.createSource;
     if (factory !== undefined) return factory(request, this.#connection);
+    const connection = this.#requireConnection();
+    const statement =
+      request.sql ?? `${quoteIdentifier(request.schema)}.${quoteIdentifier(request.table)}`;
+    /**
+     * The preprocessor this statement needs, chosen from the statement itself.
+     *
+     * Read from the surface the connection already holds rather than asked for
+     * here, so opening a table costs no extra round trip: a source is created on
+     * the way to running a statement, and the answer has been in hand since the
+     * connection was made. `undefined` for every ordinary statement.
+     */
+    const preprocessor = preprocessorForStatement(connection.wrapperSurfaceIfRead(), statement);
     return new ExasolTableDataSource({
-      connection: this.#requireConnection(),
+      connection,
       schema: request.schema,
       table: request.table,
       ...(request.filter === undefined ? {} : { filter: request.filter }),
       ...(request.sql === undefined ? {} : { sql: request.sql }),
+      ...(preprocessor === undefined ? {} : { preprocessor }),
     });
   }
 

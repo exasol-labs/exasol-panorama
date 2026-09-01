@@ -53,6 +53,14 @@ export interface ExasolTableDataSourceOptions {
    * set reports where it came from, even one the user wrote by hand.
    */
   readonly sql?: string;
+  /**
+   * The SQL preprocessor this statement needs, where it reads a JSON wrapper.
+   *
+   * Carried on the source rather than looked up per query so that a summary and
+   * a histogram — which aggregate the *statement*, and therefore inherit its
+   * dotted paths — run under the same one the rows did. See `openResultSet`.
+   */
+  readonly preprocessor?: string;
 }
 
 class ExasolTableDataSession implements TableDataSession {
@@ -63,6 +71,8 @@ class ExasolTableDataSession implements TableDataSession {
   readonly #fetchBytes: number | undefined;
   /** The statement behind this result set; a summary aggregates it, not the table. */
   readonly #statement: string;
+  /** The preprocessor the rows were read under; a summary needs the same one. */
+  readonly #preprocessor: string | undefined;
   #closed = false;
 
   constructor(
@@ -71,11 +81,13 @@ class ExasolTableDataSession implements TableDataSession {
     resultSet: ExasolResultSetHandle,
     fetchBytes: number | undefined,
     statement: string,
+    preprocessor?: string,
   ) {
     this.#connection = connection;
     this.#resultSet = resultSet;
     this.#fetchBytes = fetchBytes;
     this.#statement = statement;
+    this.#preprocessor = preprocessor;
     this.schema = schema;
     this.rowCount = resultSet.numRows;
   }
@@ -268,7 +280,7 @@ class ExasolTableDataSession implements TableDataSession {
       throw new TableDataError('session-closed', 'The result set has been closed');
     }
     if (signal?.aborted === true) throw new TableDataError('aborted', 'Summary abandoned');
-    const result = await this.#connection.queryAll(statement);
+    const result = await this.#connection.queryAll(statement, this.#preprocessor);
     return result.columns;
   }
 
@@ -302,10 +314,10 @@ export class ExasolTableDataSource implements TableDataSource {
   /** Opens a fresh result set, replacing any previous one. */
   async open(): Promise<TableDataSession> {
     await this.close();
-    const { connection, schema, table, filter, sql } = this.#options;
+    const { connection, schema, table, filter, sql, preprocessor } = this.#options;
     const statement =
       sql ?? (filter === undefined ? selectAll(schema, table) : selectWhere(schema, table, filter));
-    const resultSet = await connection.openResultSet(statement);
+    const resultSet = await connection.openResultSet(statement, preprocessor);
     const tableSchema: TableSchema = {
       schema,
       table,
@@ -320,6 +332,7 @@ export class ExasolTableDataSource implements TableDataSource {
       resultSet,
       this.#options.fetchBytes,
       statement,
+      preprocessor,
     );
     this.#session = session;
     return session;

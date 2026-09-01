@@ -106,6 +106,84 @@ export const describeQuery = (schema: string, table: string): string =>
   `SELECT * FROM ${qualifiedName(schema, table)} LIMIT 0`;
 
 /**
+ * The metadata table a `exasol-json-tables` wrapper package publishes.
+ *
+ * Named here because finding the packages means asking which schemas contain a
+ * table by this name — the wrapper's schemas are free parameters of the
+ * generator, so there is no convention to rely on and this is the only fixed
+ * point.
+ */
+export const WRAPPER_ROOTS_TABLE = '__JVS_ROOTS';
+
+/** Every helper schema on the connection, whatever its package was named. */
+export const wrapperHelperSchemaQuery = (): string =>
+  'SELECT TABLE_SCHEMA FROM SYS.EXA_ALL_TABLES' +
+  ` WHERE TABLE_NAME = ${quoteLiteral(WRAPPER_ROOTS_TABLE)}` +
+  ' ORDER BY TABLE_SCHEMA';
+
+/**
+ * What one package wraps: the source it reads and the view it publishes.
+ *
+ * The wrapper's own record, which is why this is asked rather than derived from
+ * the schema names. `PUBLIC_VIEW` is an ordinary view and can be selected from
+ * with no preprocessor at all; the preprocessor is only what rewrites the dotted
+ * paths and array selectors written against it.
+ */
+export const wrapperRootsQuery = (helperSchema: string): string =>
+  'SELECT ROOT_TABLE, SOURCE_SCHEMA, PUBLIC_SCHEMA, PUBLIC_VIEW' +
+  ` FROM ${qualifiedName(helperSchema, WRAPPER_ROOTS_TABLE)}`;
+
+/**
+ * Escapes a value for the middle of a `LIKE` pattern.
+ *
+ * `_` matches any character in SQL, and wrapper schemas are full of underscores —
+ * so an unescaped `LIKE '%JSON_VIEW%'` matches `JSONXVIEW` too. It also matched
+ * twenty of this instance's thirty-two preprocessors, because `JSON_VIEW` is a
+ * prefix of `JSON_VIEW_ACCESS` and the rest. Both are why the pattern below
+ * matches a *configuration entry* rather than a bare name.
+ */
+const likeLiteral = (value: string): string =>
+  value.replaceAll('\\', '\\\\').replaceAll('_', '\\_').replaceAll('%', '\\%');
+
+/**
+ * The preprocessors that serve a wrapper schema, found by what they say they serve.
+ *
+ * A generated preprocessor carries its configuration in its own source, so this
+ * reads that rather than guessing from a name — and a name would be a guess,
+ * since the generator takes the preprocessor's schema and script name as free
+ * parameters too.
+ *
+ * Both halves of the match matter. `['<schema>'] = true` is the entry in
+ * `allowed_json_schemas`, which is what actually gates the rewriting, and looking
+ * for the entry rather than the bare name is what stops `JSON_VIEW` matching
+ * every package whose name begins with it. Naming the *helper* schema as well
+ * rules out a preprocessor generated against a helper that is no longer the one
+ * this wrapper reports — which is the shape a genuinely stale one has.
+ *
+ * Several may still qualify, and on a real instance several do: a package
+ * regenerated into a new preprocessor schema leaves the old one installed and
+ * both remain correct for that wrapper. So this returns them all, ordered, and
+ * the caller picks deterministically.
+ */
+export const wrapperPreprocessorQuery = (publicSchema: string, helperSchema: string): string =>
+  'SELECT SCRIPT_SCHEMA, SCRIPT_NAME FROM SYS.EXA_ALL_SCRIPTS' +
+  " WHERE SCRIPT_TYPE = 'PREPROCESSOR'" +
+  ` AND SCRIPT_TEXT LIKE ${quoteLiteral(`%['${likeLiteral(publicSchema)}'] = true%`)} ESCAPE '\\'` +
+  ` AND SCRIPT_TEXT LIKE ${quoteLiteral(`%${likeLiteral(helperSchema)}%`)} ESCAPE '\\'` +
+  ' ORDER BY SCRIPT_SCHEMA, SCRIPT_NAME';
+
+/**
+ * Points the session's SQL preprocessor at one script, or at none.
+ *
+ * Session state, and the reason it is set per statement rather than once: Exasol
+ * allows one preprocessor per session, so a canvas with boxes from two wrapper
+ * packages cannot have both — but the setting is cheap to change (about two
+ * milliseconds) and a statement can carry its own. See `openResultSet`.
+ */
+export const setPreprocessorStatement = (script: string | null): string =>
+  `ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = ${script ?? 'null'}`;
+
+/**
  * Single-column foreign keys declared on a table.
  *
  * Composite keys are excluded in SQL rather than in TypeScript: a constraint

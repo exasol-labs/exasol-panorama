@@ -58,8 +58,8 @@ import type {
   TableViewProvider,
 } from '@panorama/renderer';
 import type { ForeignKeyFollow, InteractionHost, TableViewState } from '@panorama/renderer';
-import type { ExasolCredentials } from '@panorama/exasol';
-import { filterPredicate, qualifiedName } from '@panorama/exasol';
+import type { ExasolCredentials, WrapperSurface, WrapperView } from '@panorama/exasol';
+import { filterPredicate, qualifiedName, wrapperFor, wrapperKey } from '@panorama/exasol';
 import type { ChartMark, ChartSurface, ChartTheme } from '@panorama/chart';
 import type { ChartExportFormat, ChartFigure, FileFormatDescriptor } from '@panorama/export';
 import {
@@ -296,10 +296,32 @@ const canRunSql = (entity: TableEntity): boolean =>
  * user's own clause lost somewhere inside it. The levels are put back together
  * when the query runs.
  */
-const defaultQueryFor = (base: TableEntity): string =>
+const defaultQueryFor = (base: TableEntity, wrapper?: WrapperView): string =>
   base.source.kind === 'relation'
-    ? `SELECT *\nFROM ${qualifiedName(base.source.schema, base.source.table)}`
+    ? `SELECT *\nFROM ${qualifiedName(...surfaceFor(base.source, wrapper))}`
     : `SELECT *\nFROM ${DERIVED_TABLE}`;
+
+/**
+ * Which surface a statement on a relation should read: the document, or the
+ * columns storing it.
+ *
+ * A JSON table family loaded with a wrapper package publishes a *view* of each
+ * document root whose columns are the properties — the same ones the box beside
+ * the editor is already showing. Writing against the source table instead means a
+ * statement whose columns are `location|object` and `faults|array`, which is the
+ * opposite of what is on screen, and it gives up the dotted paths and array
+ * selectors that are the whole point of the wrapper.
+ *
+ * So where there is a wrapper, that is the surface. Where there is not — an
+ * ordinary table, or a *child* of a family, which the package does not publish a
+ * view for — it is the relation itself, which is what the box is showing either
+ * way.
+ */
+const surfaceFor = (
+  source: { readonly schema: string; readonly table: string },
+  wrapper: WrapperView | undefined,
+): readonly [string, string] =>
+  wrapper === undefined ? [source.schema, source.table] : [wrapper.schema, wrapper.view];
 
 export interface OpenTableRequest {
   readonly schema: string;
@@ -398,6 +420,15 @@ export class Workspace implements TableViewProvider, InteractionHost {
    * open it. See `#siblingsOf`.
    */
   readonly #schemaTables = new Map<string, readonly TableInfo[]>();
+  /**
+   * The JSON wrapper packages on the connection, once they have been asked for.
+   *
+   * `null` until then, which is not the same as "none": a statement seeded before
+   * the answer arrives would read the source table, so the surface is fetched as
+   * part of connecting rather than lazily on the first `sql` press. It costs a
+   * round trip per installed package and only connections that have one pay.
+   */
+  #wrappers: WrapperSurface | null = null;
   /** Exports in flight; they outlive the tables and panels that started them. */
   readonly #exports: ExportJobs;
   /**
@@ -517,6 +548,25 @@ export class Workspace implements TableViewProvider, InteractionHost {
       ...(result.version === undefined ? {} : { version: result.version }),
       ...(result.sessionId === undefined ? {} : { sessionId: result.sessionId }),
     };
+    /**
+     * The wrapper packages, before anything can be opened against them.
+     *
+     * Asked here rather than lazily because the answer decides what a statement
+     * *says*: a box seeded before it arrived would read the source table and keep
+     * that statement, and the reader would have no way to tell that from a table
+     * with no wrapper. Costing a round trip per installed package at connect is
+     * the price of the seeded statement being right the first time.
+     *
+     * A failure costs the wrapper surface and not the connection — a session that
+     * cannot read the catalogue's script table can still browse tables.
+     */
+    this.#wrappers = new Map(
+      // Keyed by the module that owns the format, so the two cannot drift.
+      (await this.#client.wrapperSurface().catch(() => [])).map((view) => [
+        wrapperKey(view.sourceSchema, view.rootTable),
+        view,
+      ]),
+    );
     return result;
   }
 
@@ -1124,7 +1174,7 @@ export class Workspace implements TableViewProvider, InteractionHost {
     }
     if (!canRunSql(base)) throw new Error(`${tableDisplayName(base)} is not backed by a database`);
 
-    const sql = defaultQueryFor(base);
+    const sql = defaultQueryFor(base, this.wrapperFor(base));
     const entity = buildTableEntity(this.core.ids, {
       source: {
         kind: 'query',
@@ -1711,7 +1761,22 @@ export class Workspace implements TableViewProvider, InteractionHost {
     if (parent === undefined || !isTableEntity(parent) || parent.source.kind !== 'relation') {
       return DERIVED_TABLE;
     }
-    return qualifiedName(parent.source.schema, parent.source.table);
+    // The same surface `defaultQueryFor` seeds, because an agent writing a
+    // statement for this box has to make the same choice and the two disagreeing
+    // would be worse than either answer.
+    return qualifiedName(...surfaceFor(parent.source, this.wrapperFor(parent)));
+  }
+
+  /**
+   * The wrapper view for a box's relation, where its package publishes one.
+   *
+   * Read from the surface the connection already holds, so this is a lookup rather
+   * than a round trip — which is what lets it be asked wherever a statement is
+   * written without any of those call sites becoming asynchronous.
+   */
+  wrapperFor(entity: TableEntity): WrapperView | undefined {
+    if (entity.source.kind !== 'relation') return undefined;
+    return wrapperFor(this.#wrappers, entity.source.schema, entity.source.table);
   }
 
   /**

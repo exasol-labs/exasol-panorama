@@ -7,7 +7,7 @@ import type {
   TableSchema,
 } from '@panorama/table';
 import { TableDataError } from '@panorama/table';
-import type { ExasolCredentials } from '@panorama/exasol';
+import type { ExasolCredentials, WrapperView } from '@panorama/exasol';
 import type { ByteSink, ExportFormat } from '@panorama/export';
 import { abandon } from '@panorama/export';
 import type { WorkerEndpoint } from './endpoint.js';
@@ -234,6 +234,17 @@ export class DataWorkerClient implements TableDataGateway {
 
   listTables(schema: string): Promise<readonly TableInfo[]> {
     return this.#request((requestId) => ({ type: 'listTables', requestId, schema }));
+  }
+
+  /**
+   * The JSON wrapper packages installed on the connection.
+   *
+   * A list rather than the map, because a `Map` does not survive being posted
+   * between a worker and a page; the caller rebuilds it. Empty where nothing is
+   * installed, which is most connections.
+   */
+  wrapperSurface(): Promise<readonly WrapperView[]> {
+    return this.#request((requestId) => ({ type: 'wrapperSurface', requestId }));
   }
 
   describeTable(schema: string, table: string): Promise<TableSchema> {

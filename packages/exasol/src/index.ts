@@ -1,6 +1,7 @@
 export * from './connection/client.js';
 export * from './connection/connection.js';
 export * from './connection/errors.js';
+export * from './connection/json-wrapper.js';
 export * from './connection/socket.js';
 export * from './protocol/data-types.js';
 export * from './protocol/messages.js';

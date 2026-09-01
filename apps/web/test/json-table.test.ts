@@ -504,3 +504,68 @@ describe('what an agent is told about a document', () => {
     expect(rows[1]).toHaveProperty('tags', { items: 0 });
   });
 });
+
+describe('the SQL a document box seeds', () => {
+  const opened = async (table: string, wrapper: boolean) => {
+    const harness = await connected({
+      jsonFamily: true,
+      ...(wrapper ? { jsonWrapper: true } : {}),
+    });
+    const opening = harness.workspace.openTable({ schema: JSON_FAMILY_SCHEMA_NAME, table });
+    await harness.settle();
+    const tableId = await opening;
+    await harness.settle();
+    const query = await harness.drive(harness.workspace.openQuery(tableId));
+    const box = harness.workspace.core.world.entities.get(query.tableId) as TableEntity;
+    return { harness, tableId, sql: box.source.kind === 'query' ? box.source.sql : '', query };
+  };
+
+  /**
+   * The point of the whole thing: the statement reads the surface the box is
+   * showing. Against the source table its columns would be `note|n` and
+   * `profile|object` — the opposite of what is on screen — and there would be no
+   * way to write a dotted path.
+   */
+  it('reads the wrapper view where the package publishes one', async () => {
+    const { sql } = await opened('PEOPLE', true);
+    expect(sql).toBe('SELECT *\nFROM "PANORAMA_JSON_VIEW"."PEOPLE"');
+  });
+
+  it('reads the source table where there is no wrapper', async () => {
+    const { sql } = await opened('PEOPLE', false);
+    expect(sql).toBe(`SELECT *\nFROM "${JSON_FAMILY_SCHEMA_NAME}"."PEOPLE"`);
+  });
+
+  /**
+   * A package publishes a view per document *root* and none for the children, so
+   * a child box has no wrapper — and its statement should read the thing that box
+   * is actually showing.
+   */
+  it('reads the source table for a child of the family', async () => {
+    const { sql } = await opened('PEOPLE_tags_arr', true);
+    expect(sql).toBe(`SELECT *\nFROM "${JSON_FAMILY_SCHEMA_NAME}"."PEOPLE_tags_arr"`);
+  });
+
+  /**
+   * `readsFrom` is what an agent is told to write against. It makes the same
+   * choice, because the two disagreeing would be worse than either answer — an
+   * agent would write a statement whose columns are not the ones the box shows.
+   */
+  it('tells an agent the same surface it seeded', async () => {
+    const { harness, query } = await opened('PEOPLE', true);
+    expect(harness.workspace.readsFrom(query.tableId)).toBe('"PANORAMA_JSON_VIEW"."PEOPLE"');
+  });
+
+  it('leaves an ordinary table exactly as it was', async () => {
+    const harness = await connected();
+    const opening = harness.workspace.openTable({ schema: 'PANORAMA_TEST', table: 'SALES' });
+    await harness.settle();
+    const tableId = await opening;
+    await harness.settle();
+    const query = await harness.drive(harness.workspace.openQuery(tableId));
+    const box = harness.workspace.core.world.entities.get(query.tableId) as TableEntity;
+    expect(box.source.kind === 'query' ? box.source.sql : '').toBe(
+      'SELECT *\nFROM "PANORAMA_TEST"."SALES"',
+    );
+  });
+});

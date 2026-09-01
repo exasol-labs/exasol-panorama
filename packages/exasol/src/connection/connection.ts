@@ -14,7 +14,14 @@ import { DEFAULT_PROTOCOL_VERSION, isResultSet } from '../protocol/messages.js';
 import { toColumnDataType } from '../protocol/data-types.js';
 import type { RsaPublicKey } from '../protocol/rsa.js';
 import { encryptPassword, publicKeyFromHex, publicKeyFromPem } from '../protocol/rsa.js';
-import { describeQuery, foreignKeyQuery, quoteLiteral } from '../protocol/sql.js';
+import {
+  describeQuery,
+  foreignKeyQuery,
+  quoteLiteral,
+  setPreprocessorStatement,
+} from '../protocol/sql.js';
+import type { WrapperSurface } from './json-wrapper.js';
+import { readWrapperSurface } from './json-wrapper.js';
 import { ExasolProtocolClient } from './client.js';
 import type { ExasolClientOptions } from './client.js';
 import type { SocketFactory } from './socket.js';
@@ -112,6 +119,25 @@ export class ExasolConnection {
   readonly #openResultSets = new Set<number>();
   #status: ConnectionStatus = 'disconnected';
   #session: SessionInfo | null = null;
+  /**
+   * The SQL preprocessor this session is currently set to.
+   *
+   * Tracked so the steady state costs nothing: a statement asking for the
+   * preprocessor already in force sends no `ALTER SESSION`, and only a switch
+   * between wrapper packages pays for one. `null` is "none", which is also what a
+   * fresh session has.
+   */
+  #preprocessor: string | null = null;
+  /**
+   * The wrapper packages on this connection, once asked for.
+   *
+   * Read lazily rather than on connect: it costs a round trip per package — about
+   * six hundred milliseconds on an instance with twenty of them — and a connection
+   * that never opens a document table should not pay it. Held for the session,
+   * because a package being installed while somebody is reading is worth a
+   * reconnect rather than a poll.
+   */
+  #wrapperSurface: WrapperSurface | null = null;
 
   constructor(options: ExasolConnectionOptions) {
     this.#options = options;
@@ -219,15 +245,56 @@ export class ExasolConnection {
     }
     this.#client.close();
     this.#session = null;
+    // A new session starts with no preprocessor, so the tracked value must not
+    // outlive the one it described. The surface is catalogue state and could in
+    // principle survive, but a reconnect is exactly when a newly installed
+    // package should be noticed.
+    this.#preprocessor = null;
+    this.#wrapperSurface = null;
     this.#setStatus('disconnected');
   }
 
-  async openResultSet(sqlText: string): Promise<ExasolResultSetHandle> {
-    const response = await this.#client.request<ExecuteResponseData>({
+  /**
+   * Runs a statement, optionally under a named SQL preprocessor.
+   *
+   * The preprocessor is what rewrites the dotted paths and array selectors of a
+   * JSON wrapper surface, and Exasol allows **one per session** — so a canvas with
+   * boxes from two wrapper packages cannot set it once and be done. It is set here
+   * instead, per statement, which costs about two milliseconds and only when it
+   * changes.
+   *
+   * The two requests are enqueued **in one synchronous block, deliberately**. The
+   * protocol carries no correlation ids, so `ExasolProtocolClient` keeps a strict
+   * FIFO queue and sends one request at a time; two pushed without yielding are
+   * therefore adjacent in it, and no other caller's statement can land between the
+   * setting and the statement it is for. An `await` between these two lines would
+   * open exactly that gap, and the symptom would be one box's query silently
+   * running under another box's preprocessor.
+   */
+  async openResultSet(
+    sqlText: string,
+    preprocessor?: string | null,
+  ): Promise<ExasolResultSetHandle> {
+    const setting =
+      preprocessor === undefined || preprocessor === this.#preprocessor
+        ? null
+        : this.#client.request({
+            command: 'execute',
+            sqlText: setPreprocessorStatement(preprocessor),
+            attributes: {},
+          });
+    const executed = this.#client.request<ExecuteResponseData>({
       command: 'execute',
       sqlText,
       attributes: {},
     });
+    if (setting !== null) {
+      // Awaited before the statement's own answer so a refused setting is
+      // reported as itself. Its position in the queue is already fixed.
+      await setting;
+      this.#preprocessor = preprocessor ?? null;
+    }
+    const response = await executed;
     const first = response.results[0];
     if (first === undefined || !isResultSet(first)) {
       throw new TableDataError('protocol-error', 'Query did not produce a result set');
@@ -242,6 +309,27 @@ export class ExasolConnection {
       numRowsInMessage: resultSet.numRowsInMessage,
       inlineData: resultSet.data ?? [],
     };
+  }
+
+  /**
+   * The wrapper surface if it has already been read, without reading it.
+   *
+   * For the one caller that cannot wait: choosing a statement's preprocessor
+   * happens on the way to running it, and an await there would put a catalogue
+   * round trip in front of every query. `null` before the first read, which means
+   * no preprocessor — correct, because nothing can have seeded a wrapper statement
+   * before the surface was known either.
+   */
+  wrapperSurfaceIfRead(): WrapperSurface | null {
+    return this.#wrapperSurface;
+  }
+
+  /** The JSON wrapper packages installed here; see `readWrapperSurface`. */
+  async wrapperSurface(): Promise<WrapperSurface> {
+    this.#wrapperSurface ??= await readWrapperSurface(
+      async (sqlText) => (await this.queryAll(sqlText)).columns,
+    );
+    return this.#wrapperSurface;
   }
 
   /**
@@ -269,8 +357,8 @@ export class ExasolConnection {
   }
 
   /** Runs a query and returns every row, column-oriented. For metadata only. */
-  async queryAll(sqlText: string): Promise<ExasolChunk> {
-    const resultSet = await this.openResultSet(sqlText);
+  async queryAll(sqlText: string, preprocessor?: string | null): Promise<ExasolChunk> {
+    const resultSet = await this.openResultSet(sqlText, preprocessor);
     const columns: ExasolValue[][] = resultSet.columns.map((_, index) => [
       ...(resultSet.inlineData[index] ?? []),
     ]);

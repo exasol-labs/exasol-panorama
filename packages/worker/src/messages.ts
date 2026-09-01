@@ -55,6 +55,17 @@ export interface ListSchemasMessage {
   readonly requestId: number;
 }
 
+/**
+ * The JSON wrapper packages installed on the connection.
+ *
+ * Asked once and remembered by whoever asked: it is catalogue state that does not
+ * change while somebody is reading, and it costs a round trip per package.
+ */
+export interface WrapperSurfaceMessage {
+  readonly type: 'wrapperSurface';
+  readonly requestId: number;
+}
+
 export interface ListTablesMessage {
   readonly type: 'listTables';
   readonly requestId: number;
@@ -197,6 +208,7 @@ export type MainToWorkerMessage =
   | DisconnectMessage
   | ListSchemasMessage
   | ListTablesMessage
+  | WrapperSurfaceMessage
   | DescribeTableMessage
   | OpenTableMessage
   | CloseTableMessage

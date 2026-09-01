@@ -311,6 +311,21 @@ export class FakeExasolServer {
   }
 
   #execute(socket: FakeSocket, sqlText: string): void {
+    /**
+     * A session setting, which produces no result set.
+     *
+     * Recorded like any other statement, because what a test needs to see is the
+     * *order* it arrived in relative to the queries around it — that is the whole
+     * of what makes a per-statement preprocessor safe.
+     */
+    if (/^\s*ALTER SESSION\b/iu.test(sqlText)) {
+      this.executed.push(sqlText);
+      socket.deliver({
+        status: 'ok',
+        responseData: { numResults: 1, results: [{ resultType: 'rowCount', rowCount: 0 }] },
+      });
+      return;
+    }
     const relation = this.#relationFor(sqlText);
     if (relation === null) {
       socket.deliver({
