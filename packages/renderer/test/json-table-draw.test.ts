@@ -7,6 +7,7 @@ import {
   TABLE_ACTIONS,
   actionsForTable,
   buildTableDrawList,
+  summaryPanelSections,
 } from '@panorama/renderer';
 import { computeColumnLayout, jsonColumnSpecs } from '@panorama/table';
 import { jsonFamilyRoot, jsonFamilyTables, relationSchema } from '@panorama/test-support';
@@ -185,5 +186,91 @@ describe('a column view built from the specs', () => {
     expect(value?.json?.branches).toHaveLength(2);
     const id = columns.find((column) => column.sourceColumn.name === '_id');
     expect(id?.json).toBeUndefined();
+  });
+});
+
+describe('the panel under a picked-out property', () => {
+  const breakdown = {
+    rows: 100,
+    branches: [
+      { name: 'value', count: 60, primary: true },
+      { name: 'string', count: 18 },
+    ],
+    explicitNulls: 12,
+    emptyStrings: 4,
+    missing: 6,
+  };
+
+  const panelTexts = (
+    document?: typeof breakdown,
+    summary?: Parameters<typeof summaryPanelSections>[0]['summary'],
+  ) => {
+    const sections = summaryPanelSections({
+      name: 'value',
+      type: dataType('decimal', 'DECIMAL(19,0)'),
+      summary,
+      note: undefined,
+      ...(document === undefined ? {} : { document }),
+    });
+    const quads: unknown[] = [];
+    const texts: { text: string; color: readonly number[] }[] = [];
+    const panel = { columnId: 'col' as never, x: 0, y: 0, width: 240, height: 400, sections };
+    for (const [index, section] of sections.entries()) {
+      section.paint(
+        { quads, texts, theme: DEFAULT_TABLE_THEME } as never,
+        panel as never,
+        index * 20,
+      );
+    }
+    return texts;
+  };
+
+  /**
+   * The question a tagged union actually raises. A histogram of the integer
+   * branch describes the sixty rows that were integers and cannot mention the
+   * other forty at all.
+   */
+  it('says what is in the property before saying how it is distributed', () => {
+    const texts = panelTexts(breakdown).map((run) => run.text);
+    expect(texts).toContain('value');
+    expect(texts).toContain('string');
+    expect(texts).toContain('60');
+    expect(texts).toContain('18');
+    // The three kinds of nothing, in the same words the cells use.
+    expect(texts).toContain('null');
+    expect(texts).toContain('""');
+    expect(texts).toContain('—');
+    expect(texts).toContain('12');
+    expect(texts).toContain('4');
+    expect(texts).toContain('6');
+  });
+
+  it('names the emptinesses in the colours the cells drew them in', () => {
+    const texts = panelTexts(breakdown);
+    const colour = (text: string) => texts.find((run) => run.text === text)?.color.join(',');
+    expect(colour('null')).toBe(DEFAULT_TABLE_THEME.jsonNullText.join(','));
+    expect(colour('""')).toBe(DEFAULT_TABLE_THEME.jsonEmptyText.join(','));
+    expect(colour('—')).toBe(DEFAULT_TABLE_THEME.nullText.join(','));
+  });
+
+  /** A row of zero costs a line and says nothing. */
+  it('leaves out an emptiness that never happened', () => {
+    const texts = panelTexts({ ...breakdown, emptyStrings: 0, missing: 10 }).map((run) => run.text);
+    expect(texts).not.toContain('""');
+    expect(texts).toContain('—');
+  });
+
+  /**
+   * A breakdown with no distribution under it is a complete answer, not a half
+   * one: a list, an object, or a property that was `null` in every row has
+   * nothing to be distributed.
+   */
+  it('does not ask the reader to wait for a distribution there will not be', () => {
+    const texts = panelTexts(breakdown).map((run) => run.text);
+    expect(texts).not.toContain('Reading…');
+  });
+
+  it('still says so where there is nothing at all yet', () => {
+    expect(panelTexts(undefined, undefined).map((run) => run.text)).toContain('Reading…');
   });
 });

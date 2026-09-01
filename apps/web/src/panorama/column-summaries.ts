@@ -1,6 +1,7 @@
 import type { EntityId, TableColumnView, TableEntity, WorldState } from '@panorama/core';
 import { findColumn, isTableEntity } from '@panorama/core';
-import type { ColumnSummary } from '@panorama/table';
+import type { ColumnSummary, JsonColumnSummary } from '@panorama/table';
+import { jsonColumnSummary, worthBreakingDown } from '@panorama/table';
 import type { SummaryPanelView } from '@panorama/renderer';
 
 /**
@@ -17,6 +18,14 @@ import type { SummaryPanelView } from '@panorama/renderer';
 export type ColumnSummaryState =
   | { readonly status: 'loading' }
   | { readonly status: 'ready'; readonly summary: ColumnSummary }
+  /**
+   * A property spread across several columns.
+   *
+   * Its own state rather than a `ColumnSummary` with extra fields, because the
+   * first thing to say about it is not a distribution: it is what is in there,
+   * across the branches and the three kinds of emptiness.
+   */
+  | { readonly status: 'document'; readonly summary: JsonColumnSummary }
   | { readonly status: 'unavailable' }
   | { readonly status: 'failed'; readonly error: string };
 
@@ -32,6 +41,11 @@ export const summaryPanelView = (state: ColumnSummaryState): SummaryPanelView =>
   switch (state.status) {
     case 'ready':
       return { summary: state.summary };
+    case 'document':
+      return {
+        document: state.summary,
+        ...(state.summary.dominant === undefined ? {} : { summary: state.summary.dominant }),
+      };
     case 'unavailable':
       return { note: 'No statistics for this source' };
     case 'failed':
@@ -44,6 +58,15 @@ export const summaryPanelView = (state: ColumnSummaryState): SummaryPanelView =>
 export interface ColumnSummariesOptions {
   /** Asks the database to describe one column of one table. */
   readonly summarise: (tableId: EntityId, column: string) => Promise<ColumnSummary | null>;
+  /**
+   * The name of a result-set column, by position.
+   *
+   * A presented column knows the *indices* it reads and not the names, because
+   * an index is what reads a cell and a name is what a query needs. Rather than
+   * carry both on the document, the names are looked up here from the schema the
+   * result set was opened with.
+   */
+  readonly columnAt?: (tableId: EntityId, index: number) => string | undefined;
   /** Called when an answer arrives, so the canvas redraws. */
   readonly onChange?: () => void;
 }
@@ -81,7 +104,7 @@ export class ColumnSummaries {
       const found = columnOwner(world, id);
       if (found === null) continue;
       this.#states.set(id, { status: 'loading' });
-      void this.#load(id, found.tableId, found.column.sourceColumn.name);
+      void this.#load(id, found.tableId, found.column);
     }
   }
 
@@ -101,7 +124,7 @@ export class ColumnSummaries {
     return views.size === 0 ? undefined : views;
   }
 
-  async #load(columnId: EntityId, tableId: EntityId, name: string): Promise<void> {
+  async #load(columnId: EntityId, tableId: EntityId, column: TableColumnView): Promise<void> {
     const settle = (state: ColumnSummaryState): void => {
       // Only if it is still wanted: a column let go of while its query was in
       // flight should not have the answer arrive behind it.
@@ -110,7 +133,22 @@ export class ColumnSummaries {
       this.#options.onChange?.();
     };
     try {
-      const summary = await this.#options.summarise(tableId, name);
+      const json = column.json;
+      if (json !== undefined && worthBreakingDown(json)) {
+        settle({
+          status: 'document',
+          summary: await this.#describeDocument(tableId, column, json),
+        });
+        return;
+      }
+      // A presented column with one branch and no masks is an ordinary column
+      // with a nicer name, and the name it is asked about has to be the one the
+      // database knows — the property's name is not always a column at all.
+      const only = json?.branches[0]?.index;
+      const asked =
+        (only === undefined ? undefined : this.#options.columnAt?.(tableId, only)) ??
+        column.sourceColumn.name;
+      const summary = await this.#options.summarise(tableId, asked);
       settle(summary === null ? { status: 'unavailable' } : { status: 'ready', summary });
     } catch (error) {
       settle({
@@ -118,6 +156,41 @@ export class ColumnSummaries {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+
+  /**
+   * Describes a property by describing every column it is spread across.
+   *
+   * One question per physical column rather than one clever one: they are the
+   * same `GROUP BY` the panel has always used, they only run when somebody picks
+   * a header out, and the answer is cached until they let go. A column that
+   * cannot be summarised comes back `null` and is counted as nothing, which is
+   * what it is — and leaves `missing` larger rather than making the whole
+   * breakdown fail.
+   */
+  async #describeDocument(
+    tableId: EntityId,
+    column: TableColumnView,
+    json: NonNullable<TableColumnView['json']>,
+  ): Promise<JsonColumnSummary> {
+    const wanted = [
+      ...json.branches.map((branch) => branch.index),
+      json.nullMask,
+      json.emptyMask,
+      json.objectLink,
+      json.arrayCount,
+    ].filter((index): index is number => index !== undefined);
+    const answered = await Promise.all(
+      wanted.map(async (index) => {
+        const name = this.#options.columnAt?.(tableId, index);
+        const summary =
+          name === undefined
+            ? null
+            : await this.#options.summarise(tableId, name).catch(() => null);
+        return [index, summary] as const;
+      }),
+    );
+    return jsonColumnSummary(json, { byIndex: new Map(answered) }, column.sourceColumn.name);
   }
 }
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { isTableEntity } from '@panorama/core';
 import type { TableEntity } from '@panorama/core';
 import { presentCell } from '@panorama/table';
+import { ColumnSummaries, summaryPanelView } from '../src/panorama/column-summaries.js';
 import { JSON_FAMILY_SCHEMA_NAME, createAppHarness } from './harness.js';
 
 /**
@@ -249,5 +250,157 @@ describe('clicking through into a nested document', () => {
     const binding = harness.workspace.core.world.bindings.get(result.bindingId);
     expect(binding).toMatchObject({ kind: 'connector', fromId: tableId, toId: result.tableId });
     expect(binding?.label).toContain('tags');
+  });
+});
+
+describe('the statistics under a picked-out property', () => {
+  /**
+   * The panel's first question for a property is what is *in* it, and answering
+   * it means asking about every column the property is spread across — the
+   * branches and the masks — because the property's own name is not a column the
+   * database has heard of.
+   */
+  it('breaks a variant down by branch, and by the three kinds of nothing', async () => {
+    const { harness, entity } = await openFamily();
+    const value = entity.columns.find((one) => one.sourceColumn.name === 'value');
+    harness.workspace.core.dispatchSession({
+      type: 'SetSelectedColumns',
+      ids: [value?.id as never],
+    });
+    harness.workspace.syncColumnSummaries();
+    await harness.settle();
+    const state = harness.workspace.columnSummary(value?.id as never);
+    expect(state?.status).toBe('document');
+    const summary = state?.status === 'document' ? state.summary : undefined;
+    // Five rows: two integers, one string, and two where it was not there.
+    expect(summary).toMatchObject({ rows: 5, explicitNulls: 0, missing: 2 });
+    expect(summary?.branches).toEqual([
+      { name: 'value', count: 2, primary: true },
+      { name: 'string', count: 1 },
+    ]);
+  });
+
+  /**
+   * The one that would have failed outright: `tags` is a property and not a
+   * column, so asking the database about `tags` asks about nothing.
+   */
+  it('answers for a property whose name is not a column at all', async () => {
+    const { harness, entity } = await openFamily();
+    const tags = entity.columns.find((one) => one.sourceColumn.name === 'tags');
+    harness.workspace.core.dispatchSession({
+      type: 'SetSelectedColumns',
+      ids: [tags?.id as never],
+    });
+    harness.workspace.syncColumnSummaries();
+    await harness.settle();
+    const state = harness.workspace.columnSummary(tags?.id as never);
+    expect(state?.status).toBe('document');
+    const summary = state?.status === 'document' ? state.summary : undefined;
+    // Three rows carry a list marker — 3, 0 and 1 — and two do not.
+    expect(summary?.branches).toEqual([{ name: 'array', count: 3 }]);
+    expect(summary).toMatchObject({ missing: 2 });
+  });
+});
+
+describe('handing a breakdown to the panel', () => {
+  const breakdown = {
+    rows: 10,
+    branches: [{ name: 'value', count: 6, primary: true }],
+    explicitNulls: 2,
+    emptyStrings: 0,
+    missing: 2,
+  };
+
+  /**
+   * Both halves, and the distribution only where there is one. A property that
+   * is a list, or that was `null` in every row, has a breakdown and nothing to
+   * distribute — and the panel must not then tell the reader to wait.
+   */
+  it('sends the breakdown, and the distribution beside it where there is one', () => {
+    expect(summaryPanelView({ status: 'document', summary: breakdown })).toEqual({
+      document: breakdown,
+    });
+    const dominant = {
+      column: 'value',
+      rows: 10,
+      nulls: 4,
+      basis: 'exact' as const,
+      distinct: null,
+      min: 1,
+      max: 9,
+    };
+    expect(summaryPanelView({ status: 'document', summary: { ...breakdown, dominant } })).toEqual({
+      document: { ...breakdown, dominant },
+      summary: dominant,
+    });
+  });
+
+  /**
+   * A column the schema cannot name is a column nothing can be asked about, and
+   * it counts as nothing rather than failing the breakdown around it.
+   */
+  it('counts a column it cannot name as nothing', async () => {
+    const harness = await connected({ jsonFamily: true });
+    const opening = harness.workspace.openTable({
+      schema: JSON_FAMILY_SCHEMA_NAME,
+      table: 'PEOPLE',
+    });
+    await harness.settle();
+    const tableId = await opening;
+    await harness.settle();
+    const summaries = new ColumnSummaries({
+      summarise: async () => null,
+      // Stands in for a table whose schema is not in hand: every index is
+      // nameless, so every branch counts as nothing and everything is missing.
+      columnAt: () => undefined,
+    });
+    const entity = harness.workspace.core.world.entities.get(tableId) as TableEntity;
+    const value = entity.columns.find((one) => one.sourceColumn.name === 'value');
+    summaries.sync(harness.workspace.core.world, [value?.id as never]);
+    await harness.settle();
+    const state = summaries.stateOf(value?.id as never);
+    expect(state?.status).toBe('document');
+    const summary = state?.status === 'document' ? state.summary : undefined;
+    expect(summary).toMatchObject({ rows: 0, missing: 0 });
+    expect(summary?.branches.every((branch) => branch.count === 0)).toBe(true);
+  });
+
+  /**
+   * One branch failing does not fail the property.
+   *
+   * A breakdown is several questions, and the answer to the ones that came back
+   * is worth more than nothing at all — so a refusal on one column counts as
+   * nothing there and leaves the rest of the breakdown standing.
+   */
+  it('keeps the rest of a breakdown when one column is refused', async () => {
+    const harness = await connected({ jsonFamily: true });
+    const opening = harness.workspace.openTable({
+      schema: JSON_FAMILY_SCHEMA_NAME,
+      table: 'PEOPLE',
+    });
+    await harness.settle();
+    const tableId = await opening;
+    await harness.settle();
+    const summaries = new ColumnSummaries({
+      summarise: async (_id, column) => {
+        if (column === 'value|string') throw new Error('no statistics for that one');
+        return { column, rows: 5, nulls: 3, basis: 'exact' as const, distinct: null };
+      },
+      // The two branch columns of `value`, at their positions in the family's
+      // root. Everything else is nameless here, which is not the point of the
+      // test and keeps it to the two questions that matter.
+      columnAt: (_id, index) => ({ 7: 'value', 8: 'value|string' })[index],
+    });
+    const entity = harness.workspace.core.world.entities.get(tableId) as TableEntity;
+    const value = entity.columns.find((one) => one.sourceColumn.name === 'value');
+    summaries.sync(harness.workspace.core.world, [value?.id as never]);
+    await harness.settle();
+    const state = summaries.stateOf(value?.id as never);
+    const summary = state?.status === 'document' ? state.summary : undefined;
+    // The branch that answered is counted; the one that refused is nothing.
+    expect(summary?.branches).toEqual([
+      { name: 'value', count: 2, primary: true },
+      { name: 'string', count: 0 },
+    ]);
   });
 });

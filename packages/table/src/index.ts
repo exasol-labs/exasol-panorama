@@ -3,6 +3,7 @@ export * from './cache.js';
 export * from './data-source.js';
 export * from './format.js';
 export * from './json-cell.js';
+export * from './json-summary.js';
 export * from './json-view.js';
 export * from './layout.js';
 export * from './prefetch.js';

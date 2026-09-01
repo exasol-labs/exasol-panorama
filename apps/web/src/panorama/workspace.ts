@@ -471,6 +471,9 @@ export class Workspace implements TableViewProvider, InteractionHost {
     });
     this.#summaries = new ColumnSummaries({
       summarise: (tableId, column) => options.client.summariseColumn(tableId, column),
+      // A presented column reads its several physical columns by index; the
+      // names live on the schema the result set was opened with.
+      columnAt: (tableId, index) => this.#views.get(tableId)?.schema?.columns[index]?.name,
       ...(options.onDataChanged === undefined ? {} : { onChange: options.onDataChanged }),
     });
   }

@@ -1163,6 +1163,7 @@ export const buildTableDrawList = (input: TableRenderInput): TableDrawList => {
           type: placement.column.sourceColumn.type,
           summary: view?.summary,
           note: view?.note,
+          ...(view?.document === undefined ? {} : { document: view.document }),
         },
       });
       quad(

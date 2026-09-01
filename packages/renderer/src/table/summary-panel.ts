@@ -1,6 +1,19 @@
 import type { ColumnDataType, EntityId } from '@panorama/core';
-import type { CellValue, ColumnSummary, SummaryBin, SummaryValueCount } from '@panorama/table';
-import { formatCell, isNumericType, summaryChart } from '@panorama/table';
+import type {
+  CellValue,
+  ColumnSummary,
+  JsonColumnSummary,
+  SummaryBin,
+  SummaryValueCount,
+} from '@panorama/table';
+import {
+  EMPTY_STRING_TEXT,
+  EXPLICIT_NULL_TEXT,
+  MISSING_TEXT,
+  formatCell,
+  isNumericType,
+  summaryChart,
+} from '@panorama/table';
 import type { ClipRect, QuadInstance, TextRun } from './draw-list.js';
 import type { TableTheme } from '../theme.js';
 
@@ -59,12 +72,22 @@ export interface SummaryPanelColumn {
   readonly summary: ColumnSummary | undefined;
   /** Shown in place of the numbers when there are none: why there are none. */
   readonly note: string | undefined;
+  /**
+   * What is in a property, where this column presents one.
+   *
+   * Drawn *above* the distribution rather than instead of it. For a property
+   * spread across several typed branches the distribution is a statement about
+   * some of the rows, and how many rows that is — and how many were `null`, or
+   * empty, or absent — is the question to answer first.
+   */
+  readonly document?: JsonColumnSummary;
 }
 
-/** How the shell hands a summary in; both parts may be missing. */
+/** How the shell hands a summary in; every part may be missing. */
 export interface SummaryPanelView {
   readonly summary?: ColumnSummary;
   readonly note?: string;
+  readonly document?: JsonColumnSummary;
 }
 
 /** A placed, selected column whose panel is wanted. */
@@ -279,6 +302,87 @@ const overviewSections = (summary: ColumnSummary): readonly PanelSection[] => [
   },
 ];
 
+/**
+ * What is in a property: a bar per branch, then the three kinds of nothing.
+ *
+ * The counts are not a distribution and are not drawn as one. Each branch is
+ * named by the type its values arrived as, and the three emptinesses are named in
+ * the same words the cells use — `null`, `""`, `—` — so the panel and the grid
+ * agree about what they are calling things. `missing` is a subtraction rather
+ * than a count, because nothing in the storage can say "this property was
+ * absent", and it is the number the whole document view exists to show.
+ */
+const documentSection = (document: JsonColumnSummary): PanelSection => {
+  const rows: readonly (readonly [string, number, 'branch' | 'null' | 'empty' | 'missing'])[] = [
+    ...document.branches.map(
+      (branch) => [branch.name, branch.count, 'branch'] as readonly [string, number, 'branch'],
+    ),
+    ...(
+      [
+        [EXPLICIT_NULL_TEXT, document.explicitNulls, 'null'],
+        [EMPTY_STRING_TEXT, document.emptyStrings, 'empty'],
+        [MISSING_TEXT, document.missing, 'missing'],
+      ] as readonly (readonly [string, number, 'null' | 'empty' | 'missing'])[]
+    ).filter(
+      // A property with no empty-string mask has no empty strings to report, and
+      // a row of zero is a row that costs a line and says nothing.
+      ([, count]) => count > 0,
+    ),
+  ];
+  const most = rows.reduce((high, [, count]) => Math.max(high, count), 1);
+  const colourOf = (
+    painter: PanelPainter,
+    kind: 'branch' | 'null' | 'empty' | 'missing',
+  ): PanelPainter['theme']['cellText'] => {
+    if (kind === 'null') return painter.theme.jsonNullText;
+    if (kind === 'empty') return painter.theme.jsonEmptyText;
+    if (kind === 'missing') return painter.theme.nullText;
+    return painter.theme.cellText;
+  };
+  return {
+    height: rows.length * BAR_ROW,
+    paint: (painter, panel, top): void => {
+      const inner = innerWidth(panel);
+      const left = panel.x + PADDING;
+      const nameWidth = Math.round(inner * 0.42);
+      const countWidth = 36;
+      const barWidth = Math.max(8, inner - nameWidth - countWidth - 8);
+      rows.forEach(([name, count, kind], index) => {
+        const y = top + index * BAR_ROW;
+        label(painter, panel, {
+          x: left,
+          y,
+          maxWidth: nameWidth,
+          height: BAR_ROW,
+          text: name,
+          align: 'left',
+          color: colourOf(painter, kind),
+        });
+        const barLeft = left + nameWidth + 4;
+        bar(
+          painter,
+          barLeft,
+          y + Math.round((BAR_ROW - BAR_HEIGHT) / 2),
+          barWidth,
+          count / most,
+          // The emptinesses share the colour the null bar has always used, so a
+          // reader who knows the panel knows what these are without being told.
+          kind === 'branch' ? painter.theme.summaryBar : painter.theme.summaryNullBar,
+        );
+        label(painter, panel, {
+          x: barLeft + barWidth + 4,
+          y,
+          maxWidth: countWidth,
+          height: BAR_ROW,
+          text: compactCount(count),
+          align: 'right',
+          color: painter.theme.typeText,
+        });
+      });
+    },
+  };
+};
+
 /** A bar per named value: the value, the bar, the count. */
 const frequencySection = (
   frequencies: readonly SummaryValueCount[],
@@ -471,9 +575,14 @@ const numericSections = (summary: ColumnSummary, type: ColumnDataType): readonly
 /** Everything one panel has to say, top to bottom. */
 export const summaryPanelSections = (column: SummaryPanelColumn): readonly PanelSection[] => {
   const sections = [...nameSections(column)];
+  const document = column.document;
+  if (document !== undefined) sections.push(documentSection(document));
   const summary = column.summary;
   if (summary === undefined) {
-    sections.push(noteSection(column.note ?? 'Reading…'));
+    // A breakdown with no distribution under it is a complete answer, not a
+    // half one: a property that is a list, or an object, or was `null` in every
+    // row, has nothing to be distributed.
+    if (document === undefined) sections.push(noteSection(column.note ?? 'Reading…'));
     return sections;
   }
   sections.push(...overviewSections(summary));
