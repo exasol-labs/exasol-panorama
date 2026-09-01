@@ -81,9 +81,29 @@ export const selectWhere = (schema: string, table: string, filter: RowFilter): s
 export const selectWhereFrom = (statement: string, filter: RowFilter): string =>
   `SELECT * FROM ${subquery(statement)} WHERE ${filterPredicate(filter)}`;
 
-/** A projection-only query used to read column metadata without moving rows. */
+/**
+ * A projection-only query used to read column metadata without moving rows.
+ *
+ * `LIMIT 0` rather than `WHERE 1 = 0`, and the difference is the difference
+ * between opening a virtual schema's tables and not being able to. A predicate
+ * on a virtual table is *pushed down* to its adapter, and a literal-only one is
+ * a predicate most adapters have never been asked to render:
+ *
+ *     E-VSCL-2: Unable to render unknown SQL predicate type 'literal_bool'
+ *     F-UDF-CL-RUST-9001: filter contains an operation that was not advertised
+ *
+ * — the first from Exasol's own Lua virtual-schema framework, the second from a
+ * Rust adapter, both against a live instance. Since this is the *first* statement
+ * Panorama runs when opening any table, the whole box failed before a single row
+ * was asked for.
+ *
+ * A limit is not a predicate. It is applied to the result rather than pushed into
+ * the source, so there is nothing for an adapter to render and nothing for it to
+ * have advertised — and on an ordinary table it costs exactly what the false
+ * predicate did, which is nothing.
+ */
 export const describeQuery = (schema: string, table: string): string =>
-  `SELECT * FROM ${qualifiedName(schema, table)} WHERE 1 = 0`;
+  `SELECT * FROM ${qualifiedName(schema, table)} LIMIT 0`;
 
 /**
  * Single-column foreign keys declared on a table.

@@ -270,7 +270,12 @@ describe('ExasolConnection metadata', () => {
       ],
     });
     // The projection query, then the catalogue lookup for foreign keys.
-    expect(server.executed.some((sql) => sql.includes('WHERE 1 = 0'))).toBe(true);
+    //
+    // A limit and not a predicate, and the difference is whether a virtual
+    // schema's tables can be opened at all: a predicate is pushed down to the
+    // adapter, and `1 = 0` is one most adapters cannot render.
+    expect(server.executed.some((sql) => sql.includes('LIMIT 0'))).toBe(true);
+    expect(server.executed.some((sql) => sql.includes('WHERE 1 = 0'))).toBe(false);
     expect(server.executed.at(-1)).toContain('EXA_ALL_CONSTRAINT_COLUMNS');
     expect(connection.openResultSetCount).toBe(0);
   });

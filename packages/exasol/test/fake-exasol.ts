@@ -319,7 +319,10 @@ export class FakeExasolServer {
       });
       return;
     }
-    const empty = sqlText.includes('WHERE 1 = 0');
+    // A describe: the projection only, no rows. `LIMIT 0` rather than a false
+    // predicate, because a predicate on a virtual table is pushed down to its
+    // adapter and a literal-only one is what most of them refuse.
+    const empty = /\blimit\s+0\b/iu.test(sqlText) || sqlText.includes('WHERE 1 = 0');
     const rowCount = empty ? 0 : relation.rowCount;
     const inline = Math.min(rowCount, this.#options.inlineRows ?? rowCount);
     const needsHandle = inline < rowCount;

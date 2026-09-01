@@ -29,7 +29,10 @@ describe('SQL helpers', () => {
   it('builds the Stage 1 queries', () => {
     expect(qualifiedName('S', 'T')).toBe('"S"."T"');
     expect(selectAll('SALES', 'ORDERS')).toBe('SELECT * FROM "SALES"."ORDERS"');
-    expect(describeQuery('SALES', 'ORDERS')).toBe('SELECT * FROM "SALES"."ORDERS" WHERE 1 = 0');
+    // `LIMIT 0` and not a false predicate: this is the first statement run when
+    // a table is opened, and a predicate on a virtual table is pushed down to
+    // its adapter, which is where a literal-only one is refused.
+    expect(describeQuery('SALES', 'ORDERS')).toBe('SELECT * FROM "SALES"."ORDERS" LIMIT 0');
   });
 
   it('neutralises injection attempts in object names', () => {
@@ -224,6 +227,31 @@ describe('filtering by membership', () => {
     expect(filterPredicate({ column: 'C', values: ['a', 'b', null], type: varchar })).toBe(
       '("C" IN (\'a\', \'b\') OR "C" IS NULL)',
     );
+  });
+
+  /**
+   * The describe carries no predicate, and that is not a style preference.
+   *
+   * A predicate on a virtual table is pushed down to its adapter, and a
+   * literal-only one is a predicate most adapters have never been asked to
+   * render. Against a live Exasol Personal instance, `WHERE 1 = 0` produced
+   *
+   *     E-VSCL-2: Unable to render unknown SQL predicate type 'literal_bool'
+   *     F-UDF-CL-RUST-9001: filter contains an operation that was not advertised
+   *
+   * from Exasol's own Lua framework and from a Rust adapter respectively — on
+   * eight of the nine virtual schemas on that instance. Since the describe is
+   * the *first* statement Panorama runs when a table is opened, every one of
+   * those tables failed to open at all.
+   *
+   * Written as its own test because the obvious tidy-up is to reunite this with
+   * `filterPredicate`'s `1 = 0`, which reads like the same expression and is not:
+   * that one is a filter nobody asked to be pushed anywhere.
+   */
+  it('describes a table without asking an adapter to render a predicate', () => {
+    const sql = describeQuery('MONGO_ORDERS', 'ORDERS');
+    expect(sql).not.toContain('WHERE');
+    expect(sql).toContain('LIMIT 0');
   });
 
   it('matches nothing at all when there is nothing to match', () => {
