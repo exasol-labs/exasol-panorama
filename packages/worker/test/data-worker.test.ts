@@ -721,3 +721,68 @@ describe('DataWorker chart data', () => {
     expect(data?.data.basis).toBe('sampled');
   });
 });
+
+describe('the preprocessor a statement runs under', () => {
+  /**
+   * A statement reading a JSON wrapper view needs that package's session
+   * preprocessor, and the worker chooses it from the statement rather than from
+   * the box's source — a query box's schema is a label, and what decides whether
+   * the dotted paths must be rewritten is which schema the `FROM` names.
+   *
+   * Asserted through the real `#createSource`, because that is the only place the
+   * choice is made; every other test replaces it.
+   */
+  const connection = (opened: string[]) =>
+    ({
+      id: 'connection:1',
+      open: async (): Promise<void> => undefined,
+      close: async (): Promise<void> => undefined,
+      wrapperSurfaceIfRead: () =>
+        new Map([
+          [
+            'SRC.orders',
+            {
+              sourceSchema: 'SRC',
+              rootTable: 'orders',
+              schema: 'WRAP',
+              view: 'orders',
+              helperSchema: 'H',
+              preprocessor: '"PP"."P"',
+            },
+          ],
+        ]),
+      openResultSet: async (sqlText: string, preprocessor?: string | null) => {
+        opened.push(`${preprocessor ?? 'none'} | ${sqlText}`);
+        return {
+          handle: null,
+          columns: [{ name: 'ORDER_ID', dataType: { type: 'DECIMAL', precision: 18, scale: 0 } }],
+          numRows: 0,
+          numRowsInMessage: 0,
+          inlineData: [[]],
+        };
+      },
+    }) as never;
+
+  it('sets it for a statement that reads a wrapper view, and not otherwise', async () => {
+    const { DataWorker, DataWorkerClient, createInProcessEndpointPair } =
+      await import('@panorama/worker');
+    const opened: string[] = [];
+    const pair = createInProcessEndpointPair();
+    // No `createSource`, so the real one runs — which is the only place the
+    // preprocessor is chosen, and every other test in this file replaces it.
+    new DataWorker({ endpoint: pair.worker, createConnection: () => connection(opened) });
+    const client = new DataWorkerClient(pair.main);
+    await client.connect('wss://x', { kind: 'token', token: 't' });
+    await client.openTable({
+      tableId: TABLE_ID,
+      schema: 'QUERY',
+      table: 'q',
+      sql: 'SELECT "a.b" FROM "WRAP"."orders"',
+    });
+    expect(opened.at(-1)).toBe('"PP"."P" | SELECT "a.b" FROM "WRAP"."orders"');
+
+    await client.openTable({ tableId: 'table:2' as never, schema: 'SRC', table: 'orders' });
+    // The stored table needs no preprocessor: it has no paths to rewrite.
+    expect(opened.at(-1)).toContain('none | ');
+  });
+});

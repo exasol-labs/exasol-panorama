@@ -569,3 +569,77 @@ describe('the SQL a document box seeds', () => {
     );
   });
 });
+
+describe('what an agent is told about writing SQL', () => {
+  const asked = async (
+    name: string,
+    args: Record<string, unknown>,
+    wrapper: boolean | 'without-preprocessor' = true,
+  ) => {
+    const harness = await connected({
+      jsonFamily: true,
+      ...(wrapper === false ? {} : { jsonWrapper: wrapper }),
+    });
+    const opening = harness.workspace.openTable({
+      schema: JSON_FAMILY_SCHEMA_NAME,
+      table: 'PEOPLE',
+    });
+    await harness.settle();
+    const tableId = await opening;
+    await harness.settle();
+    return {
+      harness,
+      tableId,
+      result: (await runOperation(harness.workspace as never, name, {
+        tableId,
+        ...args,
+      })) as Record<string, unknown>,
+    };
+  };
+
+  /**
+   * An agent cannot see that the box's columns are properties rather than stored
+   * columns, so being handed the view by `readsFrom` is not enough — what changed
+   * is the *syntax* available, and that has to be said.
+   */
+  it('names the surface to write against, and that the paths work', async () => {
+    const { result } = await asked('entity', {});
+    expect(result['documentSql']).toMatchObject({
+      write: '"PANORAMA_JSON_VIEW"."PEOPLE"',
+      stored: `"${JSON_FAMILY_SCHEMA_NAME}"."PEOPLE"`,
+    });
+    expect(String((result['documentSql'] as Record<string, unknown>)['paths'])).toContain(
+      'dotted paths',
+    );
+  });
+
+  it('says nothing about a surface where no wrapper is installed', async () => {
+    const { result } = await asked('entity', {}, false);
+    expect(result['documentSql']).toBeUndefined();
+  });
+
+  /**
+   * A wrapper with no preprocessor is a usable state, not a broken one: the view
+   * is an ordinary view and reads fine, and only the path syntax is unavailable.
+   * Saying so beats an agent writing a dotted path and reading a scope error.
+   */
+  it('says the paths are unavailable where the package has no preprocessor', async () => {
+    const { result } = await asked('entity', {}, 'without-preprocessor');
+    const surface = result['documentSql'] as Record<string, unknown>;
+    expect(surface['write']).toBe('"PANORAMA_JSON_VIEW"."PEOPLE"');
+    expect(surface['paths']).toBe(false);
+    expect(String(surface['note'])).toContain('no preprocessor');
+  });
+
+  /** The two must agree, or an agent writes against a surface nothing seeded. */
+  it('agrees with the statement the sql action seeds', async () => {
+    const { harness, tableId, result } = await asked('entity', {});
+    const query = await harness.drive(harness.workspace.openQuery(tableId));
+    const box = harness.workspace.core.world.entities.get(query.tableId) as TableEntity;
+    const sql = box.source.kind === 'query' ? box.source.sql : '';
+    expect(sql).toContain((result['documentSql'] as Record<string, unknown>)['write'] as string);
+    expect(harness.workspace.readsFrom(query.tableId)).toBe(
+      (result['documentSql'] as Record<string, unknown>)['write'],
+    );
+  });
+});

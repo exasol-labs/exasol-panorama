@@ -61,6 +61,23 @@ export interface AgentExportJob {
   readonly error?: string;
 }
 
+/** What an agent can write against a box that holds a document. */
+export interface DocumentSurface {
+  /** The view to read, quoted and qualified: what `readsFrom` also answers. */
+  readonly view: string;
+  /** The source table it wraps, for a statement that wants the stored columns. */
+  readonly stored: string;
+  /**
+   * Whether the path and array syntax is actually available.
+   *
+   * The view reads either way — it is an ordinary view. The syntax needs a
+   * session preprocessor, and a package installed without one leaves the surface
+   * readable and the sugar unavailable, which is worth saying rather than
+   * discovering.
+   */
+  readonly paths: boolean;
+}
+
 export interface AgentHost {
   /** The document, its history and the session. */
   readonly core: PanoramaCore;
@@ -113,6 +130,15 @@ export interface AgentHost {
    * because that is where the quoting of an identifier lives.
    */
   readsFrom(tableId: EntityId): string;
+  /**
+   * The JSON wrapper surface a box's statement should be written against.
+   *
+   * `null` for every ordinary table. Where it is set, `readsFrom` already names
+   * this view rather than the source table — but an agent needs to be *told*,
+   * because what changes is the syntax available: a wrapper surface accepts
+   * dotted paths and array selectors that the source table has never heard of.
+   */
+  documentSurface(tableId: EntityId): DocumentSurface | null;
   editingQueryTables(): readonly EntityId[];
 
   chartDraft(tableId: EntityId): ChartSpec | null;

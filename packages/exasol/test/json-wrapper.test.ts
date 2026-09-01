@@ -244,6 +244,29 @@ describe('when the catalogue will not answer', () => {
     expect((await readWrapperSurface(query)).size).toBe(0);
   });
 
+  /**
+   * A script row it cannot read in full names no script, so it is dropped — and
+   * a schema left with no readable candidate has no preprocessor rather than a
+   * half-quoted one.
+   */
+  it('drops a script row it cannot read in full', async () => {
+    const { query } = answering([
+      ["TABLE_NAME = '__JVS_ROOTS'", [['H1']]],
+      ['"H1"."__JVS_ROOTS"', roots([['orders', 'SRC', 'WRAP', 'orders']])],
+      [
+        "[''WRAP''] = true",
+        // Column-oriented: schemas, then names. The first row has no schema.
+        [
+          [null, 'GOOD_PP'],
+          ['NAMELESS', 'P'],
+        ],
+      ],
+    ]);
+    const surface = await readWrapperSurface(query);
+    // The unreadable row is dropped and the readable one behind it stands.
+    expect(preprocessorForSchema(surface, 'WRAP')).toBe('"GOOD_PP"."P"');
+  });
+
   /** A row missing any of the four fields describes no wrapper, so it is dropped. */
   it('drops a root row it cannot read in full', async () => {
     const { query } = answering([

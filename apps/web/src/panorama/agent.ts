@@ -34,6 +34,7 @@ export const agentHostFor = (workspace: Workspace): AgentHost => ({
     sql === undefined ? workspace.runQuery(tableId) : workspace.runQuery(tableId, sql),
   composedQuery: (tableId) => workspace.composedQuery(tableId),
   readsFrom: (tableId) => workspace.readsFrom(tableId),
+  documentSurface: (tableId) => workspace.documentSurface(tableId),
   editingQueryTables: () => workspace.editingQueryTables(),
   chartDraft: (tableId) => workspace.chartDraft(tableId),
   setChartDraft: (tableId, spec) => {

@@ -44,6 +44,7 @@ import {
   rightEdgeAnchor,
   selectedMarksOf,
 } from '@panorama/core';
+import type { DocumentSurface } from '@panorama/mcp';
 import type { CellValue, RowFilter, SchemaInfo, TableInfo, TableSchema } from '@panorama/table';
 import {
   DEFAULT_BLOCK_SIZE,
@@ -1777,6 +1778,29 @@ export class Workspace implements TableViewProvider, InteractionHost {
   wrapperFor(entity: TableEntity): WrapperView | undefined {
     if (entity.source.kind !== 'relation') return undefined;
     return wrapperFor(this.#wrappers, entity.source.schema, entity.source.table);
+  }
+
+  /**
+   * The document surface a box's statement should be written against.
+   *
+   * For an agent, which cannot see that the box's columns are properties rather
+   * than stored columns and would otherwise have to infer from `readsFrom` that
+   * the syntax changed. `null` for every ordinary table, and for a box built on a
+   * query rather than a relation.
+   */
+  documentSurface(tableId: EntityId): DocumentSurface | null {
+    const entity = this.core.world.entities.get(tableId);
+    const base =
+      entity !== undefined && isTableEntity(entity) ? (derivedFromOf(entity) ?? tableId) : tableId;
+    const relation = this.core.world.entities.get(base);
+    if (relation === undefined || !isTableEntity(relation)) return null;
+    const wrapper = this.wrapperFor(relation);
+    if (wrapper === undefined || relation.source.kind !== 'relation') return null;
+    return {
+      view: qualifiedName(wrapper.schema, wrapper.view),
+      stored: qualifiedName(relation.source.schema, relation.source.table),
+      paths: wrapper.preprocessor !== undefined,
+    };
   }
 
   /**

@@ -89,18 +89,23 @@ export interface HarnessOptions {
    * child tables, which is what makes a child box's statement read its source
    * table.
    */
-  readonly jsonWrapper?: boolean;
+  readonly jsonWrapper?: boolean | 'without-preprocessor';
 }
 
-/** The wrapper package, as the catalogue would report it. */
-const FAMILY_WRAPPER = [
+/**
+ * The wrapper package, as the catalogue would report it.
+ *
+ * `without-preprocessor` is a real state and not a broken one: the view reads —
+ * it is an ordinary view — and only the path syntax is unavailable.
+ */
+const familyWrapper = (preprocessor: boolean) => [
   {
     sourceSchema: jsonFamily()[0]?.schema ?? 'PANORAMA_JSON',
     rootTable: 'PEOPLE',
     schema: 'PANORAMA_JSON_VIEW',
     view: 'PEOPLE',
     helperSchema: 'PANORAMA_JSON_VIEW_INTERNAL',
-    preprocessor: '"PANORAMA_JSON_PP"."PANORAMA_JSON_PREPROCESSOR"',
+    ...(preprocessor ? { preprocessor: '"PANORAMA_JSON_PP"."PANORAMA_JSON_PREPROCESSOR"' } : {}),
   },
 ];
 
@@ -114,6 +119,16 @@ const FAMILY_TABLES = jsonFamily().map((relation) => ({
 }));
 
 export const JSON_FAMILY_SCHEMA_NAME = jsonFamily()[0]?.schema ?? 'PANORAMA_JSON';
+
+const wrapperMap = (
+  wrapper: HarnessOptions['jsonWrapper'],
+): Map<string, ReturnType<typeof familyWrapper>[number]> =>
+  new Map(
+    (wrapper === undefined || wrapper === false
+      ? []
+      : familyWrapper(wrapper !== 'without-preprocessor')
+    ).map((view) => [`${view.sourceSchema}.${view.rootTable}`, view]),
+  );
 
 export const createAppHarness = (options: HarnessOptions = {}): AppHarness => {
   const pair = createInProcessEndpointPair();
@@ -153,20 +168,8 @@ export const createAppHarness = (options: HarnessOptions = {}): AppHarness => {
                 { schema: 'PANORAMA_TEST', name: 'SALES', kind: 'TABLE', rowCount: 2_830_000_000 },
                 { schema: 'PANORAMA_TEST', name: 'SALES_V', kind: 'VIEW' },
               ],
-        wrapperSurface: async () =>
-          new Map(
-            (options.jsonWrapper === true ? FAMILY_WRAPPER : []).map((view) => [
-              `${view.sourceSchema}.${view.rootTable}`,
-              view,
-            ]),
-          ),
-        wrapperSurfaceIfRead: () =>
-          new Map(
-            (options.jsonWrapper === true ? FAMILY_WRAPPER : []).map((view) => [
-              `${view.sourceSchema}.${view.rootTable}`,
-              view,
-            ]),
-          ),
+        wrapperSurface: async () => wrapperMap(options.jsonWrapper),
+        wrapperSurfaceIfRead: () => wrapperMap(options.jsonWrapper),
         describeTable: async (_schema: string, table: string): Promise<TableSchema> => {
           if (options.failDescribe === true) throw new Error('object not found');
           const member = jsonFamily().find((relation) => relation.table === table);

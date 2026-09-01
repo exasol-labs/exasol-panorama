@@ -303,6 +303,27 @@ export const entityDetail = (
         }
       : {}),
   };
+  /**
+   * The surface to write a statement against, where it is not the stored table.
+   *
+   * Said on both a relation box and a query box built on one, because either is
+   * where somebody decides what to write. `readsFrom` already names the view; what
+   * this adds is that the *syntax* is different there — a wrapper surface takes
+   * dotted paths and array selectors, and the stored table does not.
+   */
+  const surface = host.documentSurface(entity.id);
+  if (surface !== null) {
+    detail['documentSql'] = {
+      write: surface.view,
+      ...(surface.paths
+        ? { paths: 'dotted paths and array selectors work here — see skill(page: "interface")' }
+        : {
+            paths: false,
+            note: 'no preprocessor is installed for this wrapper, so only plain columns work',
+          }),
+      stored: surface.stored,
+    };
+  }
   if (entity.source.kind === 'query') {
     // What to put after FROM. Said outright because the alternative is working
     // it out from `derivedFrom`, and the answer to guess at — `derived_table` —

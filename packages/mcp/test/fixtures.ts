@@ -1,3 +1,4 @@
+import type { DocumentSurface } from '../src/host.js';
 import type {
   ChartSpec,
   ConnectionId,
@@ -183,6 +184,13 @@ export class FakeHost implements AgentHost {
   }
 
   /** A relation by name where there is a parent relation; otherwise the word. */
+  /** Set by a test that wants a box to have a wrapper surface. */
+  surfaces = new Map<EntityId, DocumentSurface>();
+
+  documentSurface(tableId: EntityId): DocumentSurface | null {
+    return this.surfaces.get(tableId) ?? null;
+  }
+
   readsFrom(tableId: EntityId): string {
     const entity = this.core.world.entities.get(tableId);
     const parentId = entity === undefined ? undefined : derivedFromOf(entity);

@@ -129,10 +129,52 @@ A nested value is tagged, because a list of three is not the number three:
 filter, or press the cell the way a person does.
 
 `action(tableId, "json")` switches the box between the document and the columns
-storing it. Reach for the stored view when you are about to write SQL: the
-database knows `note|n` and has never heard of a property called `note` being
-absent. Every column of a document box also carries the result-set index it
+storing it. Every column of a document box also carries the result-set index it
 reads, so a box showing nine columns over thirteen is still unambiguous.
+
+### Writing SQL against a document
+
+Where the family was loaded with a **wrapper package**, `entity` reports
+`documentSql` and `readsFrom` already names the wrapper _view_ rather than the
+source table — because the view's columns are the properties the box is showing,
+and the source table's are `note|n` and `profile|object`. Write against the view.
+
+`documentSql.paths` says whether the path syntax is available. Where it is:
+
+    -- nested objects, to any depth
+    SELECT "device_id", "location.region", "location.geo.lat" FROM …
+
+    -- how long a list is
+    SELECT "faults[SIZE]" FROM …
+
+    -- one element of a *scalar* list
+    SELECT "tags[FIRST]", "tags[LAST]", "tags[0]" FROM …
+
+    -- one element of an *object* list needs a trailing property
+    SELECT "faults[FIRST].code", "faults[LAST].severity" FROM …
+
+    -- a row per element: VALUE for a scalar list, no keyword for an object list
+    SELECT s."order_id", t          FROM … s JOIN VALUE t IN s."tags"
+    SELECT s."device_id", f."code"  FROM … s JOIN       f IN s."faults"
+
+`JSON_TYPEOF(...)` works on the surface too. Everything above was run against a
+live instance; the two forms that do _not_ work are bare bracket access on an
+object list (`"faults[FIRST]"`, which the database refuses and tells you to add a
+property to) and `JOIN VALUE` over an object list.
+
+Two limits worth knowing:
+
+- **One wrapper surface per statement.** The path rewriting is done by a session
+  preprocessor and Exasol allows one at a time, so a statement joining two
+  wrapper views cannot work. Panorama sets the right one for each statement, so
+  any number of boxes work at once — but a single statement has to pick a side.
+  Joining across them means going through the _stored_ tables instead.
+- **Only a document root has a view.** A child table — `orders_line_items_arr` —
+  is not in the wrapper schema, so its box reads its source table and
+  `documentSql` is absent. Reach a child from its root with `JOIN … IN`.
+
+`documentSql.stored` names the source table, for a statement that wants the
+physical columns: the masks, the branch columns, `_id` and `_parent`.
 
 ## What a picked mark means
 
