@@ -25,6 +25,7 @@ import { relationSchema } from '@panorama/test-support';
 
 const INT = dataType('decimal', 'DECIMAL(19,0)', { precision: 19, scale: 0 });
 const TEXT = dataType('varchar', 'VARCHAR(2000000)', { size: 2_000_000 });
+const ID_TYPE = dataType('varchar', 'VARCHAR(64)', { size: 64 });
 
 const root = jsonFamilyRoot();
 const specs = jsonColumnSpecs(relationSchema(root), { siblings: jsonFamilyTables() });
@@ -179,7 +180,7 @@ describe('the columns a family is drawn with', () => {
   });
 
   it('draws one column per property, in the document order', () => {
-    expect(specs?.filter((spec) => spec.json !== undefined).map((spec) => spec.name)).toEqual([
+    expect(specs?.filter((spec) => spec.visible !== false).map((spec) => spec.name)).toEqual([
       'mongo_id',
       'name',
       'empty_text',
@@ -196,11 +197,18 @@ describe('the columns a family is drawn with', () => {
    * Kept and hidden rather than dropped: they are how the document is stored, so
    * not the first thing to show and exactly what somebody debugging one wants
    * next.
+   *
+   * It carries a reading instruction too, and that is not decoration. With the
+   * properties drawn, a column's position in the table is no longer its position
+   * in the result set, so a caller that assumed the two were the same would read
+   * the wrong cell. Every column of a document table names the index it reads.
    */
-  it('keeps the structural columns, hidden', () => {
+  it('keeps the structural columns, hidden, and self-describing', () => {
     const id = specs?.find((spec) => spec.name === '_id');
     expect(id).toMatchObject({ visible: false });
-    expect(id?.json).toBeUndefined();
+    expect(id?.json).toEqual({ kind: 'scalar', branches: [{ index: 0, type: ID_TYPE }] });
+    // And its own type, which no property could have supplied.
+    expect(id?.type).toEqual(ID_TYPE);
   });
 
   /** Except `_pos`, which in a list is the order of the list. */

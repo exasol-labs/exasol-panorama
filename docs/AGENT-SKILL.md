@@ -103,6 +103,37 @@ you had stays on screen until the next window arrives.
 **Numbers.** Figures carry twelve significant digits, so binary addition noise
 never reaches a label. `precision` reads them to a stated number of places.
 
+## Tables that hold a document
+
+Some schemas store nested documents — from `exasol-json-tables`, or a MongoDB
+collection through `exasol-mongodb-vs` — as a family of ordinary tables: one per
+object and array, joined by `_id`, `_parent` and `_pos`, with each property
+spread across a value column per type it turned out to have and boolean masks
+recording what SQL cannot say.
+
+Panorama reads those as the document. A box shows one column per **property**,
+and `entity` says so: a column with a `document` field presents several, and its
+`says` lists what a cell of it can be beyond a value — `missing` always, `null`
+and `empty string` where the source recorded them.
+
+**`rows` uses JSON's own distinction and adds nothing.** A property that was
+_missing_ is an **absent key**; one that was explicitly `null` is `null`. A
+present empty string is `""`. So `{"note": null}` and `{}` are two different
+documents, which is exactly what they were. Do not read an absent key as "not
+fetched" — that comes back as `notFetchedYet`.
+
+A nested value is tagged, because a list of three is not the number three:
+`{"items": 3}` for a list, `{"object": "p0"}` for an embedded document. Its
+`document.opens` names the child table and the column to match on, and
+`action(tableId, "rows")` is not how to get there — open the child table with a
+filter, or press the cell the way a person does.
+
+`action(tableId, "json")` switches the box between the document and the columns
+storing it. Reach for the stored view when you are about to write SQL: the
+database knows `note|n` and has never heard of a property called `note` being
+absent. Every column of a document box also carries the result-set index it
+reads, so a box showing nine columns over thirteen is still unambiguous.
+
 ## What a picked mark means
 
 Marks carry the data set and row they were drawn from. `session_dispatch` with

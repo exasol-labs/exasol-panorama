@@ -340,4 +340,38 @@ describe('what a box looks like written down', () => {
     expect(rows['rows']).toEqual([]);
     expect(rows['notFetchedYet']).toBe(2);
   });
+
+  /**
+   * A document property whose cells have not arrived.
+   *
+   * The one case where "not read yet" and "not there" would look identical in
+   * this answer — both an absent key — and they mean opposite things. So a row
+   * nothing has arrived for is not a row here at all, whether its columns present
+   * properties or not.
+   */
+  it('does not report an unread document row as a row of absent properties', async () => {
+    const fake = host();
+    const table = makeTable(fake.ids, {
+      columns: [
+        {
+          name: 'note',
+          type: dataType('varchar', 'VARCHAR(20)'),
+          json: {
+            kind: 'scalar',
+            branches: [{ index: 0, type: dataType('varchar', 'VARCHAR(20)') }],
+            nullMask: 1,
+          },
+        },
+      ],
+    });
+    fake.core.dispatch({ type: 'CreateTableEntity', entity: table });
+    fake.rowCount = 3;
+    fake.notFetched = 3;
+    const rows = (await runOperation(fake, 'rows', { tableId: table.id, limit: 3 })) as Record<
+      string,
+      unknown
+    >;
+    expect(rows['rows']).toEqual([]);
+    expect(rows['notFetchedYet']).toBe(3);
+  });
 });

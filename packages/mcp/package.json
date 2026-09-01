@@ -13,6 +13,7 @@
     "panorama-agent": "./bin/panorama-agent.mjs"
   },
   "dependencies": {
-    "@panorama/core": "*"
+    "@panorama/core": "*",
+    "@panorama/table": "*"
   }
 }

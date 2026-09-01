@@ -184,8 +184,11 @@ describe('a column view built from the specs', () => {
     const value = columns.find((column) => column.sourceColumn.name === 'value');
     expect(value?.json).toMatchObject({ kind: 'variant' });
     expect(value?.json?.branches).toHaveLength(2);
+    // A structural column carries one too: with the properties drawn, a
+    // column's position in the table is no longer its position in the result
+    // set, so every column of a document table names the index it reads.
     const id = columns.find((column) => column.sourceColumn.name === '_id');
-    expect(id?.json).toBeUndefined();
+    expect(id?.json).toMatchObject({ kind: 'scalar', branches: [{ index: 0 }] });
   });
 });
 

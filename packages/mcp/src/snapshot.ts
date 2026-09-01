@@ -7,7 +7,9 @@ import {
   isCustomChart,
   tableDisplayName,
 } from '@panorama/core';
-import type { AgentCell, AgentHost } from './host.js';
+import type { PresentedCell } from '@panorama/table';
+import { presentCell, worthBreakingDown } from '@panorama/table';
+import type { AgentHost } from './host.js';
 import { MAX_COLUMNS, MAX_ROWS } from './catalogue.js';
 import { AgentError } from './schema.js';
 
@@ -282,6 +284,7 @@ export const entityDetail = (
             ...(column.sourceColumn.foreignKey === undefined
               ? {}
               : { foreignKey: column.sourceColumn.foreignKey }),
+            ...documentColumn(column),
           }
         : {
             name: column.sourceColumn.name,
@@ -290,6 +293,7 @@ export const entityDetail = (
             ...(column.sourceColumn.foreignKey === undefined
               ? {}
               : { foreignKey: column.sourceColumn.foreignKey }),
+            ...documentColumn(column),
           },
     ),
     ...(verbose
@@ -453,6 +457,74 @@ export interface RowsRequest {
  * has not arrived is reported as absent rather than as null, which is a value a
  * database can also return.
  */
+/**
+ * What a column is, where it presents a document property rather than a column.
+ *
+ * Said because it changes how the cells are to be read, and an agent that does
+ * not know cannot tell an absent key from a property it forgot to ask about.
+ * Absent for every ordinary column, and for the structural columns of a document
+ * table, whose reading instruction has nothing in it worth reporting.
+ */
+const documentColumn = (column: TableEntity['columns'][number]): Record<string, unknown> => {
+  const json = column.json;
+  if (json === undefined || !worthBreakingDown(json)) return {};
+  const branches = json.branches
+    .map((branch) => branch.branch ?? column.sourceColumn.name)
+    .concat(json.objectLink === undefined ? [] : ['object'])
+    .concat(json.arrayCount === undefined ? [] : ['array']);
+  return {
+    document: {
+      kind: json.kind,
+      // Which types a value may arrive as. One is populated per row, and a cell
+      // says which — see the "charts" page's note on reading a variant.
+      ...(branches.length > 1 ? { branches } : {}),
+      // What a cell of this property can say beyond a value. `missing` is always
+      // possible; the other two only where the source recorded them.
+      says: [
+        'missing',
+        ...(json.nullMask === undefined ? [] : ['null']),
+        ...(json.emptyMask === undefined ? [] : ['empty string']),
+      ],
+      ...(json.follow === undefined
+        ? {}
+        : { opens: `${json.follow.table} where ${json.follow.column} matches this row` }),
+    },
+  };
+};
+
+/**
+ * A sentinel for a property that was not there.
+ *
+ * Distinct from `undefined`, which is what an unfetched cell is, because the two
+ * mean opposite things: one is a fact about the document and the other is a fact
+ * about the fetch. An absent key says the first; the row simply omits it.
+ */
+const MISSING = Symbol('missing');
+
+/** One presented cell, as an agent should read it. */
+const agentCell = (cell: PresentedCell): unknown => {
+  switch (cell.state) {
+    case 'value':
+      return cell.value;
+    // JSON's own `null` for the document's own `null`. Nothing to add.
+    case 'null':
+      return null;
+    case 'empty':
+      return '';
+    case 'object':
+      // Tagged, because an agent has to be able to tell a nested document from a
+      // string that happens to look like a key — and the key is what opens it.
+      return { object: cell.key };
+    case 'array':
+      // Likewise: a list of three is not the number three.
+      return { items: cell.length };
+    case 'pending':
+      return undefined;
+    default:
+      return MISSING;
+  }
+};
+
 export const rowsJson = (host: AgentHost, request: RowsRequest): Record<string, unknown> => {
   const entity = entityOr(host, request.tableId);
   const view = host.viewOf(entity.id);
@@ -463,10 +535,31 @@ export const rowsJson = (host: AgentHost, request: RowsRequest): Record<string, 
   for (let offset = 0; offset < limit; offset += 1) {
     const row = request.from + offset;
     if (view?.rowCount !== null && view !== null && row >= view.rowCount) break;
-    const cells: Record<string, AgentCell | undefined> = {};
+    const cells: Record<string, unknown> = {};
     let arrived = false;
     for (const [index, column] of entity.columns.entries()) {
       if (!column.visible) continue;
+      const json = column.json;
+      /**
+       * A property, read from the several columns it is spread across.
+       *
+       * Also the reason a document table's columns each name the index they
+       * read: with the properties drawn, a column's position in the table is no
+       * longer its position in the result set, and `index` here would be the
+       * wrong cell.
+       *
+       * The distinction the whole thing exists for needs no invention in this
+       * answer, because JSON already has it: a property that was **missing** is
+       * an absent key, and one that was explicitly **null** is `null`. Which is
+       * exactly what the document said.
+       */
+      if (json !== undefined) {
+        const cell = presentCell(json, (at) => host.cellAt(entity.id, row, at));
+        if (cell.state !== 'pending') arrived = true;
+        const said = agentCell(cell);
+        if (said !== MISSING) cells[column.sourceColumn.name] = said;
+        continue;
+      }
       const value = host.cellAt(entity.id, row, index);
       if (value !== undefined) arrived = true;
       cells[column.sourceColumn.name] = value;

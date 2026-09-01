@@ -49,7 +49,7 @@ export const jsonColumnSpecs = (
       (property) =>
         [firstIndex(property), propertySpec(property, schema.table, family, context)] as const,
     ),
-    ...structuralSpecs(family).map(([index, spec]) => [index, spec] as const),
+    ...structuralSpecs(family, schema).map(([index, spec]) => [index, spec] as const),
   ]
     .sort((left, right) => left[0] - right[0])
     .map(([, spec]) => spec);
@@ -81,16 +81,33 @@ const firstIndex = (property: JsonProperty): number =>
  */
 const structuralSpecs = (
   family: JsonFamilyTable,
+  schema: TableSchema,
 ): readonly (readonly [number, TableColumnSpec])[] =>
   family.structural.map((column) => [
     column.index,
-    { name: column.name, type: typeAt(family, column.index), visible: column.name === '_pos' },
+    {
+      name: column.name,
+      // Its own type, read from the schema. Nothing else knows it: a structural
+      // column belongs to no property, so there is no branch to take it from.
+      type: schema.columns[column.index]?.type ?? UNKNOWN,
+      visible: column.name === '_pos',
+      /*
+       * A reading instruction even here, where there is nothing to collapse.
+       *
+       * Because the alternative is worse: with the properties drawn, a column's
+       * position in the table is no longer its position in the result set — nine
+       * columns over thirteen — and anything that assumed the two were the same
+       * reads the wrong cell. Giving *every* column of a document table the index
+       * it reads makes the table self-describing, so nothing downstream has to
+       * know whether this one was collapsed. One branch and no masks, so it is an
+       * ordinary column everywhere it matters.
+       */
+      json: {
+        kind: 'scalar' as const,
+        branches: [{ index: column.index, type: schema.columns[column.index]?.type ?? UNKNOWN }],
+      },
+    },
   ]);
-
-const typeAt = (family: JsonFamilyTable, index: number) =>
-  family.properties
-    .flatMap((property) => property.branches)
-    .find((branch) => branch.index === index)?.type ?? UNKNOWN;
 
 const UNKNOWN = dataType('unknown', '');
 

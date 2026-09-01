@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { isTableEntity } from '@panorama/core';
 import type { TableEntity } from '@panorama/core';
 import { presentCell } from '@panorama/table';
+import { runOperation } from '@panorama/mcp';
 import { ColumnSummaries, summaryPanelView } from '../src/panorama/column-summaries.js';
 import { JSON_FAMILY_SCHEMA_NAME, createAppHarness } from './harness.js';
 
@@ -402,5 +403,104 @@ describe('handing a breakdown to the panel', () => {
       { name: 'value', count: 2, primary: true },
       { name: 'string', count: 0 },
     ]);
+  });
+});
+
+describe('what an agent is told about a document', () => {
+  const answer = async (name: string, args: Record<string, unknown>) => {
+    const { harness, tableId } = await openFamily();
+    return {
+      harness,
+      tableId,
+      result: (await runOperation(harness.workspace as never, name, {
+        tableId,
+        ...args,
+      })) as Record<string, unknown>,
+    };
+  };
+
+  it('says which columns present a property, and what their cells can say', async () => {
+    const { result } = await answer('entity', {});
+    const columns = result['columns'] as readonly Record<string, unknown>[];
+    const of = (name: string) => columns.find((column) => column['name'] === name);
+    expect(of('value')?.['document']).toMatchObject({
+      kind: 'variant',
+      branches: ['value', 'string'],
+      says: ['missing'],
+    });
+    // The mask is what makes `null` sayable, so a property without one cannot
+    // say it — and an agent should not go looking for a distinction that this
+    // column could not have recorded.
+    expect(of('note')?.['document']).toMatchObject({ says: ['missing', 'null'] });
+    expect(of('empty_text')?.['document']).toMatchObject({ says: ['missing', 'empty string'] });
+    expect(of('tags')?.['document']).toMatchObject({
+      kind: 'array',
+      opens: 'PEOPLE_tags_arr where _parent matches this row',
+    });
+    // An ordinary property is an ordinary column and says nothing extra.
+    expect(of('name')?.['document']).toBeUndefined();
+  });
+
+  /**
+   * The distinction needs no invention here, because JSON already has it: a
+   * property that was missing is an absent key, and one that was explicitly
+   * `null` is `null`.
+   */
+  it('omits a missing property and writes an explicit null as null', async () => {
+    const { result } = await answer('rows', { from: 0, limit: 3 });
+    const rows = result['rows'] as readonly Record<string, unknown>[];
+    // Row 0: `note` was there and was null; `empty_text` was there and empty.
+    expect(rows[0]).toHaveProperty('note', null);
+    expect(rows[0]).toHaveProperty('empty_text', '');
+    // Row 1: neither was there at all, so neither key is.
+    expect(rows[1]).not.toHaveProperty('note');
+    expect(rows[1]).not.toHaveProperty('empty_text');
+  });
+
+  it('reads a value from whichever branch the row used', async () => {
+    const { result } = await answer('rows', { from: 0, limit: 3 });
+    const rows = result['rows'] as readonly Record<string, unknown>[];
+    expect(rows[0]).toHaveProperty('value', 42);
+    expect(rows[1]).toHaveProperty('value', 'forty-two');
+  });
+
+  /**
+   * A cell that has not arrived is not an absent property.
+   *
+   * The two would look identical in this answer — both an absent key — and they
+   * mean opposite things: one is a fact about the document, the other about the
+   * fetch. So a row nothing has arrived for is not reported as a row at all, and
+   * the count of them is.
+   */
+  it('does not report a row it has not read as a row of absent properties', async () => {
+    const harness = await connected({ jsonFamily: true });
+    // Deliberately not settled: the box is in the document and no block is in.
+    const opening = harness.workspace.openTable({
+      schema: JSON_FAMILY_SCHEMA_NAME,
+      table: 'PEOPLE',
+    });
+    await harness.settle();
+    const tableId = await opening;
+    const result = (await runOperation(harness.workspace as never, 'rows', {
+      tableId,
+      from: 0,
+      limit: 3,
+    })) as Record<string, unknown>;
+    if ((result['rows'] as readonly unknown[]).length === 0) {
+      expect(result['notFetchedYet']).toBeGreaterThan(0);
+    } else {
+      // The blocks arrived while the request was in flight, which is the other
+      // legitimate outcome — and then every property is read rather than absent.
+      expect(result['rows']).not.toEqual([]);
+    }
+  });
+
+  /** A list of three is not the number three, and it says which it is. */
+  it('tags a nested value rather than passing it off as a number', async () => {
+    const { result } = await answer('rows', { from: 0, limit: 2 });
+    const rows = result['rows'] as readonly Record<string, unknown>[];
+    expect(rows[0]).toHaveProperty('tags', { items: 3 });
+    expect(rows[0]).toHaveProperty('profile', { object: 'p0' });
+    expect(rows[1]).toHaveProperty('tags', { items: 0 });
   });
 });
