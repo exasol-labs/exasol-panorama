@@ -1004,6 +1004,129 @@ describe('following a foreign key', () => {
     });
   });
 
+  /**
+   * The same gesture, for a property whose value is a nested document.
+   *
+   * Two shapes and they run in opposite directions: an object cell holds the
+   * child row's own key, and a list's cell holds a *length* — so what the filter
+   * matches on comes from the row's key, a different column of the same row.
+   * Getting that backwards would open the child table filtered on `3`.
+   */
+  describe('into a nested document', () => {
+    const documentTable = (): { harness: Harness; follows: ForeignKeyFollow[] } => {
+      const follows: ForeignKeyFollow[] = [];
+      const harness = setup({
+        onFollowForeignKey: (follow) => follows.push(follow),
+        // Column 0 is the row's key; column 1 is the list's length.
+        cells: (_row, columnIndex) => (columnIndex === 0 ? 'r0' : 3),
+      });
+      const table = harness.core.world.entities.get(harness.table.id) as TableEntity;
+      harness.core.dispatch({ type: 'RemoveEntities', ids: [table.id] });
+      harness.core.dispatch({
+        type: 'CreateTableEntity',
+        entity: {
+          ...table,
+          columns: table.columns.map((column, index) =>
+            index === 1
+              ? {
+                  ...column,
+                  sourceColumn: { ...column.sourceColumn, name: 'tags' },
+                  json: {
+                    kind: 'array' as const,
+                    branches: [],
+                    arrayCount: 1,
+                    follow: { table: 'PEOPLE_tags_arr', column: '_parent', valueFrom: 0 },
+                  },
+                }
+              : column,
+          ),
+        },
+      });
+      return { harness, follows };
+    };
+
+    it('follows a list to its elements, matching on the row rather than the cell', () => {
+      const { harness, follows } = documentTable();
+      const point = cellPoint(harness, 2);
+      harness.controller.onPointerDown(point);
+      harness.controller.onPointerUp(point);
+      expect(follows).toHaveLength(1);
+      expect(follows[0]).toMatchObject({
+        sourceColumn: 'tags',
+        reference: { table: 'PEOPLE_tags_arr', column: '_parent' },
+        // The parent's key, not the three the cell is showing.
+        value: 'r0',
+        valueFrom: 0,
+      });
+    });
+
+    it('reads as a link, so the click that opens it looks like it will', () => {
+      const { harness } = documentTable();
+      harness.controller.onPointerMove(cellPoint(harness, 2));
+      expect(harness.controller.cursor).toBe('pointer');
+    });
+
+    /** An empty list opens an empty table, so it is not offered. */
+    it('does not offer an empty list, or one that is not there', () => {
+      for (const length of [0, null]) {
+        const follows: ForeignKeyFollow[] = [];
+        const harness = setup({
+          onFollowForeignKey: (follow) => follows.push(follow),
+          cells: (_row, columnIndex) => (columnIndex === 0 ? 'r0' : length),
+        });
+        const table = harness.core.world.entities.get(harness.table.id) as TableEntity;
+        harness.core.dispatch({ type: 'RemoveEntities', ids: [table.id] });
+        harness.core.dispatch({
+          type: 'CreateTableEntity',
+          entity: {
+            ...table,
+            columns: table.columns.map((column, index) =>
+              index === 1
+                ? {
+                    ...column,
+                    json: {
+                      kind: 'array' as const,
+                      branches: [],
+                      arrayCount: 1,
+                      follow: { table: 'PEOPLE_tags_arr', column: '_parent', valueFrom: 0 },
+                    },
+                  }
+                : column,
+            ),
+          },
+        });
+        const point = cellPoint(harness, 2);
+        harness.controller.onPointerDown(point);
+        harness.controller.onPointerUp(point);
+        expect(follows, `length ${String(length)}`).toHaveLength(0);
+      }
+    });
+
+    /** A presented column with nowhere to go is an ordinary cell. */
+    it('does not offer a property that leads nowhere', () => {
+      const follows: ForeignKeyFollow[] = [];
+      const harness = setup({
+        onFollowForeignKey: (follow) => follows.push(follow),
+        cells: () => 'text',
+      });
+      const table = harness.core.world.entities.get(harness.table.id) as TableEntity;
+      harness.core.dispatch({ type: 'RemoveEntities', ids: [table.id] });
+      harness.core.dispatch({
+        type: 'CreateTableEntity',
+        entity: {
+          ...table,
+          columns: table.columns.map((column, index) =>
+            index === 1 ? { ...column, json: { kind: 'scalar' as const, branches: [] } } : column,
+          ),
+        },
+      });
+      const point = cellPoint(harness, 2);
+      harness.controller.onPointerDown(point);
+      harness.controller.onPointerUp(point);
+      expect(follows).toHaveLength(0);
+    });
+  });
+
   it('still selects the table it was clicked in', () => {
     const { harness } = linked();
     const point = cellPoint(harness, 1);

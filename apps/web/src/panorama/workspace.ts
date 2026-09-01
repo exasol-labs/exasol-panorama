@@ -821,6 +821,17 @@ export class Workspace implements TableViewProvider, InteractionHost {
     this.#scopedBy.delete(tableId);
   }
 
+  /** The type the filter compares with: the value's own, wherever it came from. */
+  #typeOfValue(
+    source: TableEntity,
+    follow: ForeignKeyFollow,
+    clicked: TableColumnView,
+  ): ColumnDataType {
+    if (follow.valueFrom === undefined) return clicked.sourceColumn.type;
+    const view = this.#views.get(source.id)?.schema;
+    return view?.columns[follow.valueFrom]?.type ?? clicked.sourceColumn.type;
+  }
+
   /**
    * Follows a foreign key: opens the referenced table showing only the matching
    * rows, and binds it to the table the click came from.
@@ -840,10 +851,15 @@ export class Workspace implements TableViewProvider, InteractionHost {
     const { reference } = follow;
     // One value, which is the ordinary case for a key: a filter is a membership
     // predicate so that a chart's selection can be one too.
+    //
+    // The type is the *value's*, which for a document property is not always the
+    // clicked column's: a list's cell holds a length and its elements are found
+    // by the parent row's key, so comparing a text key as a number is exactly
+    // the mistake available here.
     const filter: RowFilter = {
       column: reference.column,
       values: [follow.value],
-      type: column.sourceColumn.type,
+      type: this.#typeOfValue(source, follow, column),
     };
 
     // Beside the source, so the line between them is short and obviously a

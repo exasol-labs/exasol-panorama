@@ -188,3 +188,66 @@ describe('switching between the document and its storage', () => {
     );
   });
 });
+
+describe('clicking through into a nested document', () => {
+  /**
+   * End to end: the child table opens beside the parent, on a line, showing only
+   * the rows belonging to the row that was clicked. Nothing about this is new
+   * machinery — it is the foreign-key follow the canvas already had, handed a
+   * reference read from the naming contract instead of from the catalogue, which
+   * is what makes it work for a virtual schema that cannot declare one.
+   */
+  const followFrom = async (property: string, row: number) => {
+    const { harness, tableId, entity } = await openFamily();
+    const column = entity.columns.find((one) => one.sourceColumn.name === property);
+    const follow = column?.json?.follow;
+    if (column === undefined || follow === undefined) throw new Error(`${property} leads nowhere`);
+    const opened = harness.workspace.followForeignKey({
+      tableId,
+      columnId: column.id,
+      row,
+      sourceColumn: property,
+      reference: {
+        schema: JSON_FAMILY_SCHEMA_NAME,
+        table: follow.table,
+        column: follow.column,
+        constraint: 'document',
+      },
+      value: harness.workspace.cellAt(tableId, row, follow.valueFrom) as never,
+      valueFrom: follow.valueFrom,
+    });
+    await harness.settle();
+    const result = await opened;
+    await harness.settle();
+    return { harness, tableId, result };
+  };
+
+  it("opens a list's elements, filtered to the row they belong to", async () => {
+    const { harness, result } = await followFrom('tags', 0);
+    const child = harness.workspace.core.world.entities.get(result.tableId) as TableEntity;
+    expect(child.source).toMatchObject({ table: 'PEOPLE_tags_arr' });
+    // Three tags belong to row 0, and the filter is what says so.
+    const request = harness.sourceRequests.at(-1);
+    expect(request?.table).toBe('PEOPLE_tags_arr');
+    expect(request?.filter).toMatchObject({ column: '_parent', values: ['r0'] });
+    // Read as a document too, so `_pos` is the list's order and `value` is the tag.
+    expect(child.columns.filter((one) => one.visible).map((one) => one.sourceColumn.name)).toEqual([
+      '_pos',
+      'value',
+    ]);
+  });
+
+  it('opens an embedded object by its own key', async () => {
+    const { harness } = await followFrom('profile', 0);
+    const request = harness.sourceRequests.at(-1);
+    expect(request?.table).toBe('PEOPLE_profile');
+    expect(request?.filter).toMatchObject({ column: '_id', values: ['p0'] });
+  });
+
+  it('draws the line, so the pair stays connected as either is moved', async () => {
+    const { harness, tableId, result } = await followFrom('tags', 0);
+    const binding = harness.workspace.core.world.bindings.get(result.bindingId);
+    expect(binding).toMatchObject({ kind: 'connector', fromId: tableId, toId: result.tableId });
+    expect(binding?.label).toContain('tags');
+  });
+});

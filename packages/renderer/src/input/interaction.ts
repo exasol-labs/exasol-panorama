@@ -4,10 +4,12 @@ import type {
   EntityActionId,
   EntityId,
   ForeignKeyReference,
+  JsonColumnView,
   PanoramaCore,
   TableEntity,
 } from '@panorama/core';
 import type { CellValue } from '@panorama/table';
+import { isFollowable, presentCell } from '@panorama/table';
 import {
   ROW_NUMBER_GUTTER_WIDTH,
   clamp,
@@ -63,6 +65,14 @@ export interface ForeignKeyFollow {
   readonly sourceColumn: string;
   readonly reference: ForeignKeyReference;
   readonly value: CellValue;
+  /**
+   * The column the value was read from, where it was not the one clicked.
+   *
+   * A list's cell holds a length and its elements are found by the parent row's
+   * key, so the two differ — and the filter needs the *value's* type, not the
+   * clicked column's, or a text key would be compared as a number.
+   */
+  readonly valueFrom?: number;
 }
 
 export interface InteractionHost {
@@ -547,6 +557,8 @@ export class InteractionController {
     } | null,
   ): ForeignKeyFollow | null {
     if (column === null || row < 0) return null;
+    const json = column.column.json;
+    if (json !== undefined) return this.#followableProperty(entity, row, column, json);
     const reference = column.column.sourceColumn.foreignKey;
     if (reference === undefined) return null;
     const value = this.#host.cellAt(entity.id, row, column.sourceIndex);
@@ -559,6 +571,49 @@ export class InteractionController {
       sourceColumn: column.column.sourceColumn.name,
       reference,
       value,
+    };
+  }
+
+  /**
+   * The same gesture, for a property whose value is a nested document.
+   *
+   * A parent row and its children are two tables, so opening the children is
+   * following a key — and it is expressed as one rather than as a mechanism of
+   * its own, which is what makes the line, the filter and the placement come out
+   * identical to every other followed key on the canvas.
+   *
+   * The value comes from `valueFrom` rather than from the cell that was clicked,
+   * because for a list the two are not the same column: the cell holds a length,
+   * and what identifies its elements is the parent row's own key.
+   */
+  #followableProperty(
+    entity: TableEntity,
+    row: number,
+    column: { readonly id: EntityId; readonly column: TableEntity['columns'][number] },
+    json: JsonColumnView,
+  ): ForeignKeyFollow | null {
+    const follow = json.follow;
+    if (follow === undefined) return null;
+    const cell = presentCell(json, (index) => this.#host.cellAt(entity.id, row, index));
+    if (!isFollowable(json, cell)) return null;
+    const value = this.#host.cellAt(entity.id, row, follow.valueFrom);
+    if (value === undefined || value === null) return null;
+    return {
+      tableId: entity.id,
+      columnId: column.id,
+      row,
+      sourceColumn: column.column.sourceColumn.name,
+      reference: {
+        schema: entity.source.kind === 'relation' ? entity.source.schema : '',
+        table: follow.table,
+        column: follow.column,
+        // Not a database constraint: the two loaders disagree about whether
+        // there is one, and the link is read from the naming contract either
+        // way. Named for what it is, since it ends up on the connector.
+        constraint: 'document',
+      },
+      value,
+      valueFrom: follow.valueFrom,
     };
   }
 
