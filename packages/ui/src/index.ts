@@ -6,4 +6,5 @@ export * from './SchemaExplorer.js';
 export * from './SettingsPanel.js';
 export * from './UpdateNotice.js';
 export * from './format.js';
+export * from './json-families.js';
 export * from './types.js';

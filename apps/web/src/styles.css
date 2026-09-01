@@ -538,6 +538,21 @@ button:disabled {
 }
 
 /*
+ * `{}` or `[]` on a nested row, saying what kind of thing the property is.
+ *
+ * The same weight as the kind caption beside a view, and for the same reason:
+ * it qualifies the name rather than competing with it. Two characters, because
+ * anybody who has read JSON already knows which is which and the words would be
+ * three times the width for no more meaning.
+ */
+.pn-tree__nesting {
+  margin-left: 5px;
+  font-family: var(--pn-mono);
+  font-size: 10px;
+  color: var(--pn-muted);
+}
+
+/*
  * A schema's name takes the width of the word and no more, so that the mark on a
  * virtual one sits against the name rather than out at the far edge of the panel.
  * A relation's name keeps the `flex: 1` above, because it has a kind and a row

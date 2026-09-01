@@ -1,5 +1,7 @@
 import { useCallback, useId, useState } from 'react';
 import type { SchemaListing, TableListing } from './types.js';
+import type { RelationNode } from './json-families.js';
+import { documentPathOf, nestRelations } from './json-families.js';
 import { LinkedText } from './LinkedText.js';
 import { formatCompactCount, formatCount } from './format.js';
 
@@ -204,8 +206,20 @@ const iconFor = (table: TableListing): React.JSX.Element => {
  * `2.83B` is not a number anyone can act on — so the exact figure is here,
  * where it costs no room.
  */
-const describeRelation = (table: TableListing): string | undefined => {
+const describeRelation = (
+  table: TableListing,
+  siblings: readonly TableListing[] = [],
+): string | undefined => {
   const parts: string[] = [];
+  /**
+   * Where in the document this table is, and what it is really called.
+   *
+   * A nested row is shown by its property name — the path is drawn by where the
+   * row sits — so the table's own name is only here, which is where somebody
+   * about to write SQL against it will look.
+   */
+  const path = documentPathOf(table, siblings);
+  if (path !== undefined) parts.push(`${table.name} · ${path}`);
   /**
    * First, and spelled out: it explains the absent row count rather than leaving
    * it looking like a table nobody has gathered statistics for, and it is the one
@@ -216,6 +230,10 @@ const describeRelation = (table: TableListing): string | undefined => {
   if (table.comment !== undefined && table.comment !== '') parts.push(table.comment);
   return parts.length === 0 ? undefined : parts.join(' · ');
 };
+
+/** How far in a nested row sits, in the same rhythm as the tree's own indents. */
+const NEST_STEP_PX = 14;
+const nestedBy = (node: RelationNode): string => `${node.depth * NEST_STEP_PX}px`;
 
 const rank = (kind: string): number => {
   const upper = kind.toUpperCase();
@@ -352,22 +370,48 @@ export const SchemaExplorer = ({
                   ) : null}
                   {held?.status === 'ready' && (held.tables?.length ?? 0) > 0 ? (
                     <ul className="pn-tree__children" aria-label={`Relations in ${schema.name}`}>
-                      {groupRelations(held.tables ?? []).map((table) => (
-                        <li key={`${table.kind}.${table.name}`}>
+                      {nestRelations(groupRelations(held.tables ?? [])).map((node) => (
+                        <li key={`${node.table.kind}.${node.table.name}`}>
                           <button
                             type="button"
                             className="pn-tree__row"
-                            title={describeRelation(table)}
-                            onClick={() => onOpenTable(table)}
+                            title={describeRelation(node.table, held.tables ?? [])}
+                            /*
+                              Indented by how deep in the document it sits. A
+                              style rather than a class because the depth is a
+                              number and there is no sensible number of classes
+                              for "however deep this document goes".
+                            */
+                            style={node.depth === 0 ? undefined : { paddingLeft: nestedBy(node) }}
+                            onClick={() => onOpenTable(node.table)}
                           >
-                            {iconFor(table)}
-                            <span className="pn-tree__name">{table.name}</span>
-                            {rank(table.kind) === 2 ? (
-                              <span className="pn-tree__kind">{table.kind}</span>
+                            {iconFor(node.table)}
+                            {/*
+                              The mark goes *inside* the name, against the word.
+                              Beside it, in the row's own flex gap, it drifts to
+                              the right edge and pairs up with the row count —
+                              `[] 3` reads as one number nobody can parse. Inside
+                              rather than merely after, unlike the virtual mark on
+                              a schema row, because this row has a count on the
+                              right that still has to be pushed there.
+                            */}
+                            <span className="pn-tree__name">
+                              {node.label}
+                              {node.nesting === undefined ? null : (
+                                <span
+                                  className="pn-tree__nesting"
+                                  aria-label={node.nesting === 'array' ? ' (list)' : ' (object)'}
+                                >
+                                  {node.nesting === 'array' ? '[]' : '{}'}
+                                </span>
+                              )}
+                            </span>
+                            {rank(node.table.kind) === 2 ? (
+                              <span className="pn-tree__kind">{node.table.kind}</span>
                             ) : null}
-                            {table.rowCount === undefined ? null : (
+                            {node.table.rowCount === undefined ? null : (
                               <span className="pn-tree__count">
-                                {formatCompactCount(table.rowCount)}
+                                {formatCompactCount(node.table.rowCount)}
                               </span>
                             )}
                           </button>
