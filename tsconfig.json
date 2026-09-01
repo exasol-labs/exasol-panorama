@@ -5,6 +5,8 @@
     "paths": {
       "@panorama/core": ["./packages/core/src/index.ts"],
       "@panorama/core/*": ["./packages/core/src/*"],
+      "@panorama/json-tables": ["./packages/json-tables/src/index.ts"],
+      "@panorama/json-tables/*": ["./packages/json-tables/src/*"],
       "@panorama/table": ["./packages/table/src/index.ts"],
       "@panorama/table/*": ["./packages/table/src/*"],
       "@panorama/exasol": ["./packages/exasol/src/index.ts"],

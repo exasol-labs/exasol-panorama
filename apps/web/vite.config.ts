@@ -159,6 +159,7 @@ export default defineConfig(({ command }) => ({
   resolve: {
     alias: {
       '@panorama/core': workspacePackage('core'),
+      '@panorama/json-tables': workspacePackage('json-tables'),
       '@panorama/table': workspacePackage('table'),
       '@panorama/exasol': workspacePackage('exasol'),
       '@panorama/export': workspacePackage('export'),

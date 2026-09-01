@@ -6,6 +6,7 @@ const resolvePath = (relative: string): string => fileURLToPath(new URL(relative
 /** Workspace package name -> source entry point. Shared by Vitest and the web app. */
 export const panoramaAliases: Record<string, string> = {
   '@panorama/core': resolvePath('./packages/core/src/index.ts'),
+  '@panorama/json-tables': resolvePath('./packages/json-tables/src/index.ts'),
   '@panorama/table': resolvePath('./packages/table/src/index.ts'),
   '@panorama/chart': resolvePath('./packages/chart/src/index.ts'),
   '@panorama/chart-echarts': resolvePath('./packages/chart-echarts/src/index.ts'),
@@ -20,6 +21,7 @@ export const panoramaAliases: Record<string, string> = {
 
 const logicPackages = [
   'core',
+  'json-tables',
   'table',
   'chart',
   'chart-echarts',
