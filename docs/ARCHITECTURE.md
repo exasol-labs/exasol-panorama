@@ -294,6 +294,22 @@ queries failed outright. A silently wrong count is the worst failure mode
 available here. Over compiled SQL the same three queries answer 3, `3/3/3`, and
 the right bars.
 
+The chart editor is where the layer stops being decoration. It offers the model's
+metrics as measures and its dimensions as categories, by display name; it opens on
+the aggregation the metric declares rather than on `sum`; and it refuses two
+things in the model's own words. A metric that declares no aggregation — a
+`RATIO`, a `DERIVED` figure — cannot be measured at all, because a chart groups
+more coarsely than the rows it is drawn from and summing a margin percentage is
+precisely the arithmetic the layer exists to prevent. And a metric × dimension
+pairing the model has ruled out is greyed out both ways round, since a pairing is
+refused by a _pair_: the measures grey against the chosen category, the categories
+against the chosen measures.
+
+Only the refusals are read from `METRIC_DIMENSION_MATRIX`. The matrix is
+exhaustive per model, so a pair missing from it is a pair nothing is known about —
+two fields of different objects, say — and that is deliberately not the same as a
+pair known to be safe.
+
 Two rules fell out of getting this wrong twice, and both are about **who may
 build a data source**. The worker decides two things no one else can — which
 wrapper preprocessor a statement needs, and whether it has to be compiled — and
@@ -312,6 +328,27 @@ must not be — the guard lets it through, which is what opens the box, while th
 compiler rejects it (`LIMIT must be a positive integer`). And a compiled result
 set carries the model author's lower-case aliases where the stub view has
 upper-case columns, which is why `withSemantics` matches on both spellings.
+
+Both of those projects have since shipped a **compiler**, and Panorama now prefers
+one wherever it finds one. `exasol-json-tables` installs `COMPILE_SQL` the same
+way the semantic layer does — text in, physical SQL out — and the worker takes
+that route in preference to the session preprocessor. Three things follow. There
+is no session state to set or unset. The preprocessor no longer has to be found by
+grepping somebody else's generated Lua, because a compiler is found by a generated
+identifier that also states which packages it serves. And a statement may reach
+**two** packages at once, which one preprocessor per session cannot express and
+which this integration had written off — verified live, a dotted path from one
+package beside an array selector from another.
+
+The preprocessor is the fallback, not a legacy path: a database with no compiler
+installed still needs it, and it is what every such connection uses.
+
+The loader also stamps a `contractVersion` on each family now, and Panorama checks
+it. Absent is readable — every family written before the stamp existed was written
+with the contract this build reads — but a version _newer_ than this build's is
+refused, and the box then shows the storage as it really is. Refusing matters
+because parsing an unfamiliar contract would not fail: it would succeed, and draw
+a confident, wrong document over somebody's data.
 
 `apps/desktop` deserves a paragraph, because a second deployable usually means a
 second place for behaviour to hide and this one must not become that. It is a Tauri
@@ -950,6 +987,33 @@ allocation is not what limits anything.
 **A test harness that mirrors production is not a test of it.** The factory that
 builds a data source is injected, so the deterministic mocks and the real driver
 are reached by the same code path rather than by a parallel one.
+
+**The driver is Panorama's own, and the official one is still worth reading.**
+`packages/exasol` speaks the WebSocket protocol directly rather than depending on
+`@exasol/exasol-driver-ts`. It has to: the driver's unit of work is a query and a
+result, and Panorama's is a _window_ over a result set that may outlive several
+windows — positional `fetch` against a handle it keeps open, a byte budget per
+fetch, and one connection shared by every box on the canvas. A driver built around
+`query()` returning rows is the wrong shape for that, and the parts Panorama does
+need — RSA login, result-set lifecycle — are small.
+
+Reading version 0.6.0 of it turned up two things worth having anyway. The first is
+now fixed: its `Attributes` type documents that Exasol renders some values _as
+text_ under session NLS settings, and a live check confirmed a system-level
+`NLS_NUMERIC_CHARACTERS = ',.'` was enough to deliver a high-precision `DECIMAL`
+as `"12345678901234567,89"`. Nothing here would have failed on that — the numeric
+test in `filterLiteral` would have quoted a followed key as a string, a chart's
+`Number()` would have produced `NaN`, the `month` hint would have gone quiet —
+each of them quietly doing something else. `PINNED_FORMATS` is sent once at
+connect, and a server that refuses it is browsed anyway.
+
+The second is not: the protocol has an `abortQuery` command, sent **outside** the
+request queue because it returns nothing. Panorama has no cancellation, and its
+client is strict FIFO — so a slow statement blocks every other box's query behind
+it. `abortQuery` fits that design precisely _because_ it has no response to
+correlate. It is the gap worth closing next; a `queryTimeout` attribute exists too
+and is deliberately not set, because a data browser capping how long somebody's
+query may run is a product decision rather than a default.
 
 ### 9.9 Distribution: installed, not wrapped
 

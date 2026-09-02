@@ -1,7 +1,12 @@
 import type { JsonColumnView, TableColumnSpec } from '@panorama/core';
 import { dataType } from '@panorama/core';
 import type { JsonFamilyTable, JsonProperty } from '@panorama/json-tables';
-import { childTableName, isLoadedFamily, readFamilyTable } from '@panorama/json-tables';
+import {
+  childTableName,
+  isLoadedFamily,
+  readFamilyTable,
+  readableContract,
+} from '@panorama/json-tables';
 import type { TableSchema } from './schema.js';
 
 /**
@@ -37,6 +42,10 @@ export const jsonColumnSpecs = (
   schema: TableSchema,
   context: JsonViewContext = { siblings: [] },
 ): readonly TableColumnSpec[] | null => {
+  // A contract this build does not know is one to leave alone. Parsing it would
+  // not fail — it would succeed and draw the wrong document — so the answer is
+  // the same `null` a relational table gets, and the caller shows the storage.
+  if (!readableContract(context.comment)) return null;
   const family = readFamilyTable(schema.columns, { known: isLoadedFamily(context.comment) });
   if (family === null) return null;
   // In the order the columns physically arrive, which is the order the loader

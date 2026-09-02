@@ -957,6 +957,26 @@ button:disabled {
   color: #1f252b;
 }
 
+/*
+ * A measure the model refuses.
+ *
+ * Greyed and still there, with the reason beside it. A control that vanishes
+ * reads as a control that never existed; one that is visibly unavailable and
+ * says why is the model explaining itself, which is the whole point of reading a
+ * semantic layer rather than guessing from column types. The list wraps, so the
+ * reason takes the whole row rather than pushing the next measure off it.
+ */
+.pn-chart-value.pn-chart-refused {
+  color: #8b949e;
+  flex-basis: 100%;
+}
+
+.pn-chart-refusal {
+  color: #8b949e;
+  font-size: 0.86em;
+  font-style: italic;
+}
+
 .pn-chart-hint {
   margin: 0 0 0.3em;
   color: #6b7480;

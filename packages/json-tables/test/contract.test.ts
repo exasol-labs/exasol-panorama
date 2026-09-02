@@ -2,11 +2,14 @@ import { describe, expect, it } from 'vitest';
 import { dataType } from '@panorama/core';
 import {
   BRANCH_NAMES,
+  KNOWN_CONTRACT_VERSION,
+  contractVersionOf,
   isLoadedFamily,
   isStructuralColumn,
   parseColumnName,
   presentedType,
   provenanceOf,
+  readableContract,
   readFamilyTable,
 } from '@panorama/json-tables';
 import {
@@ -262,5 +265,63 @@ describe('the comment the loader leaves', () => {
     expect(isLoadedFamily(undefined)).toBe(false);
     expect(isLoadedFamily('a hand-written comment')).toBe(false);
     expect(isLoadedFamily('COPY provenance {"tool":"something-else"}')).toBe(false);
+  });
+});
+
+/**
+ * Which version of the contract wrote a family.
+ *
+ * The loader stamps it now — 29 of the 44 stamped families on the instance this
+ * was written against carry one — and the project's own documentation says what
+ * a consumer should do with it: "check it and refuse a version it does not know
+ * rather than misread the encoding". Refusing matters because parsing an
+ * unfamiliar contract would not *fail*; it would succeed, and draw a confident,
+ * wrong document over somebody's data.
+ */
+describe('the contract version a family declares', () => {
+  const stamped = (version: string): string =>
+    `COPY provenance {"tool":"exasol-json-tables","tablePath":"root"${version}}`;
+
+  it('reads everything the comment carries beside it', () => {
+    // The loader stamps all of these now — 44 tables on the instance this was
+    // written against, up from 15 before the project addressed it.
+    expect(
+      provenanceOf(
+        'COPY provenance {"source":"orders.json","sourceConnection":"local-file",' +
+          '"importedAt":"2026-09-01T10:00:00Z","sourceModifiedAt":"2026-09-01T09:40:00Z",' +
+          '"tablePath":"root","tool":"exasol-json-tables","contractVersion":1}',
+      ),
+    ).toEqual({
+      source: 'orders.json',
+      sourceConnection: 'local-file',
+      importedAt: '2026-09-01T10:00:00Z',
+      sourceModifiedAt: '2026-09-01T09:40:00Z',
+      tablePath: 'root',
+      tool: 'exasol-json-tables',
+      contractVersion: 1,
+    });
+  });
+
+  it('reads the version out of the comment', () => {
+    expect(contractVersionOf(stamped(',"contractVersion":1'))).toBe(1);
+    expect(contractVersionOf(stamped(''))).toBeUndefined();
+    // Not a number is not a version.
+    expect(contractVersionOf(stamped(',"contractVersion":"1"'))).toBeUndefined();
+  });
+
+  it('reads the contract it knows, and every family written before there was one', () => {
+    expect(readableContract(stamped(`,"contractVersion":${KNOWN_CONTRACT_VERSION}`))).toBe(true);
+    // Absent is readable and has to be: every family stamped before the loader
+    // wrote a version was written with the contract this build reads, and
+    // refusing them would break every document box that works today.
+    expect(readableContract(stamped(''))).toBe(true);
+    expect(readableContract(undefined)).toBe(true);
+    expect(readableContract('an ordinary table comment')).toBe(true);
+  });
+
+  it('refuses a contract newer than the one it can read', () => {
+    expect(readableContract(stamped(`,"contractVersion":${KNOWN_CONTRACT_VERSION + 1}`))).toBe(
+      false,
+    );
   });
 });

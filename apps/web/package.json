@@ -10,7 +10,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@babylonjs/core": "^9.22.1",
+    "@babylonjs/core": "^9.23.0",
+    "@panorama/chart": "*",
+    "@panorama/chart-echarts": "*",
     "@panorama/core": "*",
     "@panorama/exasol": "*",
     "@panorama/export": "*",
@@ -20,13 +22,11 @@
     "@panorama/ui": "*",
     "@panorama/worker": "*",
     "react": "^19.2.0",
-    "react-dom": "^19.2.0",
-    "@panorama/chart": "*",
-    "@panorama/chart-echarts": "*"
+    "react-dom": "^19.2.0"
   },
   "devDependencies": {
     "@types/react": "^19.2.18",
-    "@types/react-dom": "^19.2.0",
-    "@vitejs/plugin-react": "^6.1.0"
+    "@types/react-dom": "^19.2.5",
+    "@vitejs/plugin-react": "^6.1.1"
   }
 }

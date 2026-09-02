@@ -216,9 +216,17 @@ export const preprocessorForSchema = (
  *
  * Where a statement names *two* wrapper schemas, the first by name wins and the
  * other is unreachable: Exasol allows one preprocessor per session, so joining
- * two wrapper surfaces in one statement is a thing the database cannot do rather
+ * two wrapper surfaces in one statement is a thing this route cannot do rather
  * than a thing this chooses badly. It reports that itself, as a scope error
  * naming the schema it would not rewrite.
+ *
+ * That limit belongs to the *preprocessor*, not to the database, and it is no
+ * longer the whole story: where `exasol-json-tables` has installed `COMPILE_SQL`
+ * for every package, one statement may reach two of them and the worker takes
+ * that route in preference to this one — verified live, with a dotted path from
+ * one package and an array selector from another in a single statement. See
+ * `wrapper-compile.ts`. This is the fallback, and remains the only route where
+ * no compiler is installed.
  */
 export const preprocessorForStatement = (
   surface: WrapperSurface | null,

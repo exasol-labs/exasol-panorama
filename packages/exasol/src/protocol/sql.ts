@@ -244,9 +244,71 @@ export const semanticModelsQuery = (): string =>
  */
 export const semanticFieldsQuery = (): string =>
   'SELECT MODEL_ID, SQL_OBJECT_NAME, SQL_COLUMN_NAME, FIELD_KIND, DISPLAY_NAME' +
-  ', DESCRIPTION, FORMAT_HINT, UNIT_HINT, IS_CERTIFIED, SENSITIVITY_LABEL' +
+  ', DESCRIPTION, FORMAT_HINT, UNIT_HINT, IS_CERTIFIED, SENSITIVITY_LABEL, FIELD_ID' +
   ` FROM ${quoteIdentifier(SEMANTIC_AGENT_SCHEMA)}."FIELDS_FOR_AGENT"` +
   ' ORDER BY MODEL_ID, SQL_OBJECT_NAME, ORDINAL_POSITION';
+
+/**
+ * What each metric is and how it combines.
+ *
+ * `FIELDS_FOR_AGENT` says a field is a metric; it does not say whether the metric
+ * is a sum, an average, or something that cannot be aggregated at all. That is
+ * here, and it is the difference between a chart editor that offers `sum` on a
+ * margin percentage and one that knows better.
+ */
+export const semanticMetricsQuery = (): string =>
+  'SELECT MODEL_ID, METRIC_ID, METRIC_KIND, AGGREGATION_FUNCTION' +
+  ` FROM ${quoteIdentifier(SEMANTIC_CATALOG_SCHEMA)}."METRICS"`;
+
+/**
+ * The metric × dimension pairs the model says are **not** safe.
+ *
+ * Only the invalid ones. The matrix is exhaustive per model, so a pair missing
+ * from it is a pair the model has nothing to say about — a metric and a dimension
+ * from two different objects, say — and reading the valid rows as well would be
+ * to carry a row per pair to learn nothing. What a chart editor needs is exactly
+ * the list of pairings to refuse, with the model's reason for refusing.
+ *
+ * This is the correctness half of the semantic layer rather than the decoration:
+ * `total_freight` by `product_category` is freight charged on an order header
+ * attributed across that order's lines, which multiplies it. Panorama would draw
+ * that today, and it would look entirely plausible.
+ */
+export const semanticInvalidPairsQuery = (): string =>
+  'SELECT MODEL_ID, METRIC_ID, DIMENSION_ID, REASON_CODE, RELATIONSHIP_PATH' +
+  ` FROM ${quoteIdentifier(SEMANTIC_CATALOG_SCHEMA)}."METRIC_DIMENSION_MATRIX"` +
+  ' WHERE IS_VALID = FALSE';
+
+/**
+ * The marker that says a script is a JSON-tables compiler, and what it serves.
+ *
+ * `exasol-json-tables` now installs `COMPILE_SQL` — text in, physical SQL out,
+ * no session state — which is the same answer `exasol-semantic-views` gives, and
+ * the one that removes Exasol's single-preprocessor slot from the picture
+ * entirely. Installed with no `--wrapper-schema` it serves *every* package on the
+ * database, so one statement may span two of them: a thing one session
+ * preprocessor cannot express and which this integration had written off.
+ *
+ * Found by a marker in the script body rather than by name, because the name is
+ * a free parameter of the installer **and** because `SEMANTIC_ADMIN.COMPILE_SQL`
+ * is a different compiler for a different language that happens to share it.
+ * `ALLOWED_SCHEMAS_JSON` is a generated identifier rather than prose, so it does
+ * not move when somebody rewrites a comment — and the same line carries the list
+ * of wrapper schemas the script was built for, which is what decides whether it
+ * can compile a given statement at all.
+ */
+export const WRAPPER_COMPILER_MARKER = 'ALLOWED_SCHEMAS_JSON';
+
+export const wrapperCompilerQuery = (): string =>
+  'SELECT SCRIPT_SCHEMA, SCRIPT_NAME' +
+  `, REGEXP_SUBSTR(SCRIPT_TEXT, ${quoteLiteral(`${WRAPPER_COMPILER_MARKER} = [^`)} || CHR(10) || ']*')` +
+  ' FROM SYS.EXA_ALL_SCRIPTS' +
+  ` WHERE SCRIPT_TEXT LIKE ${quoteLiteral(`%${WRAPPER_COMPILER_MARKER}%`)}` +
+  ' ORDER BY SCRIPT_SCHEMA, SCRIPT_NAME';
+
+/** Compiles one JSON-tables statement into physical SQL. */
+export const compileWrapperQuery = (schema: string, script: string, statement: string): string =>
+  `EXECUTE SCRIPT ${qualifiedName(schema, script)}(${quoteLiteral(statement)})`;
 
 /**
  * Points the session's SQL preprocessor at one script, or at none.

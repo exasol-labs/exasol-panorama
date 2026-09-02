@@ -743,6 +743,7 @@ describe('the preprocessor a statement runs under', () => {
       // No semantic layer on this connection, which is the ordinary case and the
       // one that must leave the wrapper path exactly as it was.
       semanticSurface: async () => null,
+      wrapperCompilers: async () => [],
       wrapperSurface: async () =>
         new Map([
           [
@@ -806,7 +807,11 @@ describe('compiling a semantic statement', () => {
   const SURFACE = {
     version: '0.1',
     models: [{ id: 1, name: 'sales', publishedSchema: 'SEMANTIC_SALES', published: true }],
-    fields: [{ modelId: 1, object: 'SALES', column: 'TOTAL_REVENUE', kind: 'metric' as const }],
+    fields: [
+      { modelId: 1, fieldId: 1, object: 'SALES', column: 'TOTAL_REVENUE', kind: 'metric' as const },
+    ],
+    metrics: [],
+    invalidPairs: [],
   };
   const PHYSICAL = 'SELECT SUM(x) AS "total_revenue" FROM "MART"."ORDER_LINES"';
 
@@ -816,6 +821,7 @@ describe('compiling a semantic statement', () => {
       open: async (): Promise<void> => undefined,
       close: async (): Promise<void> => undefined,
       semanticSurface: async () => SURFACE,
+      wrapperCompilers: async () => [],
       wrapperSurface: async () => new Map(),
       // The real reader over fabricated columns, so the nine-column contract is
       // exercised here rather than mocked past.
@@ -967,6 +973,7 @@ describe('the statement a live source is opened with', () => {
           open: async (): Promise<void> => undefined,
           close: async (): Promise<void> => undefined,
           semanticSurface: async () => null,
+          wrapperCompilers: async () => [],
           wrapperSurface: async () => new Map(),
           openResultSet: async (sqlText: string) => {
             statements.push(sqlText);
@@ -1026,5 +1033,211 @@ describe('the statement a live source is opened with', () => {
     await expect(openedBy({ schema: 'SALES', table: 'ORDERS' }, () => undefined)).resolves.toBe(
       'SELECT * FROM "SALES"."ORDERS"',
     );
+  });
+});
+
+/**
+ * Compiling a JSON-tables statement rather than setting its preprocessor.
+ *
+ * Where `exasol-json-tables` has installed `COMPILE_SQL`, the compiler is the
+ * better path: no session state, and — installed for every package — a statement
+ * may span two of them, which one session preprocessor cannot express. Where it
+ * is *not* installed the per-statement preprocessor still does the work, and
+ * that path must not be disturbed to reach the tidier one.
+ */
+describe('compiling a JSON tables statement', () => {
+  const COMPILER = {
+    schema: 'JVS_COMPILE',
+    script: 'COMPILE_SQL',
+    serves: ['JSON_VIEW', 'EJT_ORDERS_VIEW'],
+  };
+  const PHYSICAL = 'SELECT "a|n" FROM "JSON_VIEW_INTERNAL"."T"';
+
+  const started = async (
+    compilers: readonly (typeof COMPILER)[],
+    compiled: (statement: string) => { status: 'ok' | 'error'; sql?: string; message?: string },
+  ) => {
+    const { DataWorker, DataWorkerClient, createInProcessEndpointPair } =
+      await import('@panorama/worker');
+    const opened: string[] = [];
+    const pair = createInProcessEndpointPair();
+    new DataWorker({
+      endpoint: pair.worker,
+      createConnection: () =>
+        ({
+          id: 'connection:1',
+          open: async (): Promise<void> => undefined,
+          close: async (): Promise<void> => undefined,
+          semanticSurface: async () => null,
+          wrapperCompilers: async () => compilers,
+          wrapperSurface: async () =>
+            new Map([
+              [
+                'SRC.t',
+                {
+                  sourceSchema: 'SRC',
+                  rootTable: 't',
+                  schema: 'JSON_VIEW',
+                  view: 't',
+                  helperSchema: 'H',
+                  preprocessor: '"PP"."P"',
+                },
+              ],
+            ]),
+          compileWrapper: async (_compiler: unknown, statement: string) => {
+            opened.push(`compile | ${statement}`);
+            return { packages: ['JSON_VIEW'], rewritten: true, ...compiled(statement) };
+          },
+          openResultSet: async (sqlText: string, preprocessor?: string | null) => {
+            opened.push(`${preprocessor ?? 'none'} | ${sqlText}`);
+            return {
+              handle: null,
+              columns: [{ name: 'A', dataType: { type: 'DECIMAL', precision: 18, scale: 0 } }],
+              numRows: 0,
+              numRowsInMessage: 0,
+              inlineData: [[]],
+            };
+          },
+        }) as never,
+    });
+    const client = new DataWorkerClient(pair.main);
+    await client.connect('wss://x', { kind: 'token', token: 't' });
+    return { client, opened };
+  };
+
+  it('compiles instead of setting a preprocessor', async () => {
+    const { client, opened } = await started([COMPILER], () => ({
+      status: 'ok',
+      sql: PHYSICAL,
+    }));
+    const result = await client.openTable({
+      tableId: TABLE_ID,
+      schema: 'Q',
+      table: 'q',
+      sql: 'SELECT "a.b" FROM "JSON_VIEW"."T"',
+    });
+    expect(opened[0]).toBe('compile | SELECT "a.b" FROM "JSON_VIEW"."T"');
+    // No preprocessor: the compiled SQL is already physical, and pointing a
+    // rewriter at a rewriter's output is asking for trouble it need not have.
+    expect(opened[1]).toBe(`none | ${PHYSICAL}`);
+    expect(result.compiled?.provenance).toContain('exasol-json-tables');
+  });
+
+  /** No compiler installed is the ordinary case, and it must be untouched. */
+  it('falls back to the preprocessor where nothing serves the statement', async () => {
+    const { client, opened } = await started([], () => ({ status: 'ok', sql: PHYSICAL }));
+    await client.openTable({
+      tableId: TABLE_ID,
+      schema: 'Q',
+      table: 'q',
+      sql: 'SELECT "a.b" FROM "JSON_VIEW"."T"',
+    });
+    expect(opened).toEqual(['"PP"."P" | SELECT "a.b" FROM "JSON_VIEW"."T"']);
+  });
+
+  it('leaves a statement no compiler serves to the preprocessor', async () => {
+    const { client, opened } = await started([{ ...COMPILER, serves: ['SOMETHING_ELSE'] }], () => ({
+      status: 'ok',
+      sql: PHYSICAL,
+    }));
+    await client.openTable({
+      tableId: TABLE_ID,
+      schema: 'Q',
+      table: 'q',
+      sql: 'SELECT "a.b" FROM "JSON_VIEW"."T"',
+    });
+    expect(opened).toEqual(['"PP"."P" | SELECT "a.b" FROM "JSON_VIEW"."T"']);
+  });
+
+  /**
+   * A statement with no sugar in it compiles to itself. It is still reported as
+   * compiled, because the consequence is the one that matters: a compiler has
+   * looked at it, and there is nothing for a session preprocessor to do.
+   */
+  it('runs the original where there was nothing to rewrite', async () => {
+    const { DataWorker, DataWorkerClient, createInProcessEndpointPair } =
+      await import('@panorama/worker');
+    const opened: string[] = [];
+    const pair = createInProcessEndpointPair();
+    new DataWorker({
+      endpoint: pair.worker,
+      createConnection: () =>
+        ({
+          id: 'connection:1',
+          open: async (): Promise<void> => undefined,
+          close: async (): Promise<void> => undefined,
+          semanticSurface: async () => null,
+          wrapperCompilers: async () => [COMPILER],
+          wrapperSurface: async () => new Map(),
+          compileWrapper: async () => ({
+            status: 'ok',
+            sql: 'ignored',
+            rewritten: false,
+            packages: [],
+          }),
+          openResultSet: async (sqlText: string, preprocessor?: string | null) => {
+            opened.push(`${preprocessor ?? 'none'} | ${sqlText}`);
+            return {
+              handle: null,
+              columns: [{ name: 'A', dataType: { type: 'DECIMAL', precision: 18, scale: 0 } }],
+              numRows: 0,
+              numRowsInMessage: 0,
+              inlineData: [[]],
+            };
+          },
+        }) as never,
+    });
+    const client = new DataWorkerClient(pair.main);
+    await client.connect('wss://x', { kind: 'token', token: 't' });
+    const result = await client.openTable({
+      tableId: TABLE_ID,
+      schema: 'Q',
+      table: 'q',
+      sql: 'SELECT "plain" FROM "JSON_VIEW"."T"',
+    });
+    expect(opened).toEqual(['none | SELECT "plain" FROM "JSON_VIEW"."T"']);
+    // Nothing was rewritten, so there is no package to name.
+    expect(result.compiled).toEqual({ sql: 'SELECT "plain" FROM "JSON_VIEW"."T"' });
+  });
+
+  it('shows what the compiler said when it would not compile', async () => {
+    const { client } = await started([COMPILER], () => ({
+      status: 'error',
+      message: '"no.such.path": Field "no" is not visible on the current row source.',
+    }));
+
+    await expect(
+      client.openTable({
+        tableId: TABLE_ID,
+        schema: 'Q',
+        table: 'q',
+        sql: 'SELECT "no.such.path" FROM "JSON_VIEW"."T"',
+      }),
+    ).rejects.toThrow('no.such.path');
+  });
+
+  it('says something even when the compiler said nothing', async () => {
+    const { client } = await started([COMPILER], () => ({ status: 'error' }));
+    await expect(
+      client.openTable({
+        tableId: TABLE_ID,
+        schema: 'Q',
+        table: 'q',
+        sql: 'SELECT "a.b" FROM "JSON_VIEW"."T"',
+      }),
+    ).rejects.toThrow('would not compile');
+  });
+
+  /** An `OK` with no SQL behind it is not something to run on a guess. */
+  it('refuses an OK that carried no statement', async () => {
+    const { client } = await started([COMPILER], () => ({ status: 'ok' }));
+    await expect(
+      client.openTable({
+        tableId: TABLE_ID,
+        schema: 'Q',
+        table: 'q',
+        sql: 'SELECT "a.b" FROM "JSON_VIEW"."T"',
+      }),
+    ).rejects.toThrow('would not compile');
   });
 });

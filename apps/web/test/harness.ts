@@ -98,11 +98,36 @@ export interface HarnessOptions {
    * about — which is the only case any of this changes.
    */
   readonly semanticLayer?: boolean;
+  /**
+   * Makes the rows arrive under different column names than `describeTable` gave.
+   *
+   * What a compiled semantic statement does: the published view a box is
+   * described from is a stub whose columns are `REVENUE`, and the SQL that
+   * actually fetches the rows aliases them the model author's way, `revenue`.
+   */
+  readonly renamesColumns?: boolean;
 }
 
 /** What the layer says about the harness's own table, as its views report it. */
 const SEMANTIC_SURFACE: SemanticSurface = {
   version: '0.1+dev',
+  metrics: [
+    { modelId: 1, metricId: 10, kind: 'SIMPLE', aggregation: 'SUM' },
+    // A ratio declares no aggregation, which is the point: it has to be
+    // recomputed per group rather than summed.
+    { modelId: 1, metricId: 12, kind: 'RATIO' },
+  ],
+  // Freight is charged on the order header; attributing it across that order's
+  // lines multiplies it. The model says so, and this is where Panorama learns it.
+  invalidPairs: [
+    {
+      modelId: 1,
+      metricId: 10,
+      dimensionId: 11,
+      code: 'ONE_TO_MANY_ATTRIBUTION_UNSUPPORTED',
+      path: 'order_line_to_order (rejected)',
+    },
+  ],
   models: [
     { id: 1, name: 'sales', publishedSchema: 'PANORAMA_TEST', published: true },
     // A draft naming the same schema, which is the shape a live instance had:
@@ -112,6 +137,7 @@ const SEMANTIC_SURFACE: SemanticSurface = {
   fields: [
     {
       modelId: 1,
+      fieldId: 10,
       object: 'SALES',
       column: 'REVENUE',
       kind: 'metric',
@@ -121,7 +147,25 @@ const SEMANTIC_SURFACE: SemanticSurface = {
       certified: true,
     },
     {
+      modelId: 1,
+      fieldId: 11,
+      object: 'SALES',
+      column: 'COUNTRY',
+      kind: 'dimension',
+      displayName: 'Country',
+    },
+    {
+      modelId: 1,
+      fieldId: 12,
+      object: 'SALES',
+      column: 'ORDER_ID',
+      kind: 'metric',
+      displayName: 'Margin %',
+      format: 'percentage',
+    },
+    {
       modelId: 2,
+      fieldId: 20,
       object: 'SALES',
       column: 'REVENUE',
       kind: 'metric',
@@ -234,8 +278,18 @@ export const createAppHarness = (options: HarnessOptions = {}): AppHarness => {
           : (jsonFamily().find((member) => member.table === request.table) ??
             factRelation(options.rowCount ?? 100_000));
       if (relation === undefined) throw new Error(`No demo relation ${request.table}`);
+      const renamed =
+        options.renamesColumns === true
+          ? {
+              ...relation,
+              columns: relation.columns.map((column) => ({
+                ...column,
+                name: column.name.toLowerCase(),
+              })),
+            }
+          : relation;
       return new MockTableDataSource({
-        relation,
+        relation: renamed,
         scheduler: scheduler.schedule,
         ...(options.latencyMs === undefined ? {} : { latency: options.latencyMs }),
         ...(options.failOpen === true ||

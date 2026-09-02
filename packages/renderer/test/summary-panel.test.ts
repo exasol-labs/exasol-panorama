@@ -518,6 +518,8 @@ describe('the meaning of a column', () => {
   const revenue = {
     kind: 'metric',
     model: 'sales',
+    modelId: 1,
+    fieldId: 1,
     displayName: 'Total Revenue',
     description: 'Net recognized revenue excluding tax',
     certified: true,
@@ -546,7 +548,10 @@ describe('the meaning of a column', () => {
 
   it('says only what there is to say about a column with no description', () => {
     const bare = request({
-      column: column({ name: 'REGION', semantic: { kind: 'dimension', model: 'sales' } }),
+      column: column({
+        name: 'REGION',
+        semantic: { kind: 'dimension', model: 'sales', modelId: 1, fieldId: 2 },
+      }),
     });
     const { labels } = draw([bare]);
     expect(labels).toContain('dimension');

@@ -1,3 +1,5 @@
+import type { ChartAggregate } from './chart-spec.js';
+
 /**
  * What a column *means*, where something has said so.
  *
@@ -28,8 +30,29 @@
  */
 export type SemanticFieldKind = 'metric' | 'dimension';
 
+/**
+ * How a metric combines down a column, in the layer's own vocabulary.
+ *
+ * `SIMPLE` and `FILTERED` sum, average or count as their aggregation says.
+ * `RATIO` and `DERIVED` do neither: a margin percentage has to be recomputed per
+ * group, and summing one is arithmetic nobody asked for. That is why the
+ * aggregation function is absent for them rather than defaulted — the metric
+ * already says how it combines, and for these two the answer is "not like that".
+ */
+export type SemanticMetricKind = 'SIMPLE' | 'FILTERED' | 'RATIO' | 'DERIVED' | 'CUMULATIVE';
+
 export interface SemanticColumnView {
   readonly kind: SemanticFieldKind;
+  /**
+   * How the layer refers to this field, and to the model it belongs to.
+   *
+   * Ids rather than names because that is how the model's own tables join, and
+   * because a metric and a dimension may share a name. They are what makes a
+   * *pairing* answerable: whether this metric may be broken down by that
+   * dimension is a question about two fields of one model.
+   */
+  readonly modelId: number;
+  readonly fieldId: number;
   /**
    * The model that says all this, by name.
    *
@@ -69,7 +92,63 @@ export interface SemanticColumnView {
   readonly certified?: boolean;
   /** How sensitive the model says this is; shown, and not yet enforced. */
   readonly sensitivity?: string;
+  /** For a metric: what kind of thing it is, and so whether it aggregates. */
+  readonly metricKind?: SemanticMetricKind;
+  /**
+   * The function the metric declares — `SUM`, `AVG`, `COUNT` and so on.
+   *
+   * Absent where the metric declares none, which for a `RATIO` or a `DERIVED`
+   * metric is the point rather than an omission.
+   */
+  readonly aggregation?: string;
 }
+
+/**
+ * One pairing the model refuses, and why.
+ *
+ * The refusals are the interesting half: a pair the model says nothing about is
+ * a pair nothing is known about — two fields of different objects, say — and
+ * that is not the same as one it has ruled out.
+ */
+export interface SemanticPairing {
+  readonly code: string;
+  /** The path it tried and rejected, where the model recorded one. */
+  readonly path?: string;
+}
+
+/**
+ * The aggregate a chart should offer for a column, in Panorama's vocabulary.
+ *
+ * Three answers, and the third is the one worth having. A column the layer says
+ * nothing about gets `undefined` — decide as before. A metric that declares a
+ * function gets that function, so the editor opens on the model's own answer
+ * rather than on `sum`. And a metric that declares none gets `null`: it must not
+ * be aggregated at all, and offering `sum · average · count · min · max` on a
+ * margin percentage invites exactly the arithmetic the model exists to prevent.
+ */
+export const semanticAggregate = (
+  semantic: SemanticColumnView | undefined,
+): ChartAggregate | null | undefined => {
+  if (semantic === undefined || semantic.kind !== 'metric') return undefined;
+  switch (semantic.aggregation?.toUpperCase()) {
+    case 'SUM':
+      return 'sum';
+    case 'AVG':
+    case 'AVERAGE':
+      return 'average';
+    case 'COUNT':
+    case 'COUNT_DISTINCT':
+      return 'count';
+    case 'MIN':
+      return 'min';
+    case 'MAX':
+      return 'max';
+    default:
+      // Declared nothing, or something Panorama has no equivalent for. Either
+      // way the honest answer is not to pick one on the metric's behalf.
+      return null;
+  }
+};
 
 /**
  * What to write at the top of the column.

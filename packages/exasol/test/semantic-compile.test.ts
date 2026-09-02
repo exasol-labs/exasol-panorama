@@ -213,11 +213,14 @@ describe('the provenance line', () => {
 });
 
 describe('deciding whether a statement needs compiling', () => {
-  const index = new Map([
-    ['SEMANTIC_SALES.SALES', new Map()],
-    ['SEMANTIC_SALES.ORDER_HEADER', new Map()],
-    ['SEMANTIC_SALES_DBX.SALES_DBX', new Map()],
-  ]);
+  const index = {
+    objects: new Map([
+      ['SEMANTIC_SALES.SALES', new Map()],
+      ['SEMANTIC_SALES.ORDER_HEADER', new Map()],
+      ['SEMANTIC_SALES_DBX.SALES_DBX', new Map()],
+    ]),
+    refusals: new Map(),
+  };
 
   it('knows the published schemas it describes, once each', () => {
     expect(semanticSchemas(index)).toEqual(['SEMANTIC_SALES', 'SEMANTIC_SALES_DBX']);
@@ -229,7 +232,12 @@ describe('deciding whether a statement needs compiling', () => {
       true,
     );
     expect(compilesSemantically(index, 'SELECT * FROM MART.ORDER_LINES')).toBe(false);
-    expect(compilesSemantically(new Map(), 'SELECT * FROM SEMANTIC_SALES.SALES')).toBe(false);
+    expect(
+      compilesSemantically(
+        { objects: new Map(), refusals: new Map() },
+        'SELECT * FROM SEMANTIC_SALES.SALES',
+      ),
+    ).toBe(false);
   });
 
   /**

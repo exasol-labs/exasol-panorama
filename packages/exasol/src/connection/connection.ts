@@ -10,7 +10,7 @@ import type {
   LoginChallenge,
   SessionInfo,
 } from '../protocol/messages.js';
-import { DEFAULT_PROTOCOL_VERSION, isResultSet } from '../protocol/messages.js';
+import { DEFAULT_PROTOCOL_VERSION, PINNED_FORMATS, isResultSet } from '../protocol/messages.js';
 import { toColumnDataType } from '../protocol/data-types.js';
 import type { RsaPublicKey } from '../protocol/rsa.js';
 import { encryptPassword, publicKeyFromHex, publicKeyFromPem } from '../protocol/rsa.js';
@@ -22,6 +22,8 @@ import {
 } from '../protocol/sql.js';
 import type { WrapperSurface } from './json-wrapper.js';
 import { readWrapperSurface } from './json-wrapper.js';
+import type { WrapperCompilation, WrapperCompiler } from './wrapper-compile.js';
+import { compileWrapperSql, readWrapperCompilers } from './wrapper-compile.js';
 import type { SemanticCompilation } from './semantic-compile.js';
 import { compileSemanticSql } from './semantic-compile.js';
 import type { SemanticSurface } from './semantic-surface.js';
@@ -151,6 +153,13 @@ export class ExasolConnection {
    */
   #semanticSurface: SemanticSurface | null = null;
   #semanticRead = false;
+  /**
+   * The JSON-tables compilers installed here, once asked for.
+   *
+   * An empty list is a real answer — most databases have none — so it is
+   * remembered as firmly as a populated one.
+   */
+  #wrapperCompilers: readonly WrapperCompiler[] | null = null;
 
   constructor(options: ExasolConnectionOptions) {
     this.#options = options;
@@ -193,6 +202,7 @@ export class ExasolConnection {
     try {
       await this.#client.connect();
       this.#session = await this.#login();
+      await this.#pinFormats();
       this.#setStatus('connected');
     } catch (error) {
       const failure =
@@ -202,6 +212,20 @@ export class ExasolConnection {
       this.#setStatus('failed', failure);
       throw failure;
     }
+  }
+
+  /**
+   * Pins the formats Exasol renders values as text in; see `PINNED_FORMATS`.
+   *
+   * Not fatal if refused. An older server that has never heard of one of these
+   * attributes, or one that has made it read-only, is a server Panorama should
+   * still browse — the assumptions are then merely unpinned rather than wrong,
+   * which is exactly where they were before this existed.
+   */
+  async #pinFormats(): Promise<void> {
+    await this.#client
+      .request({ command: 'setAttributes', attributes: PINNED_FORMATS })
+      .catch(() => undefined);
   }
 
   async #login(): Promise<SessionInfo> {
@@ -266,6 +290,7 @@ export class ExasolConnection {
     this.#wrapperSurface = null;
     this.#semanticSurface = null;
     this.#semanticRead = false;
+    this.#wrapperCompilers = null;
     this.#setStatus('disconnected');
   }
 
@@ -324,6 +349,23 @@ export class ExasolConnection {
       numRowsInMessage: resultSet.numRowsInMessage,
       inlineData: resultSet.data ?? [],
     };
+  }
+
+  /** The JSON-tables compilers installed here; see `readWrapperCompilers`. */
+  async wrapperCompilers(): Promise<readonly WrapperCompiler[]> {
+    this.#wrapperCompilers ??= await readWrapperCompilers(
+      async (sqlText) => (await this.queryAll(sqlText)).columns,
+    );
+    return this.#wrapperCompilers;
+  }
+
+  /** Turns JSON-tables SQL into SQL this database will run. */
+  async compileWrapper(compiler: WrapperCompiler, statement: string): Promise<WrapperCompilation> {
+    return compileWrapperSql(
+      async (sqlText) => (await this.queryAll(sqlText)).columns,
+      compiler,
+      statement,
+    );
   }
 
   /** Turns semantic SQL into SQL this database will run; see `compileSemanticSql`. */

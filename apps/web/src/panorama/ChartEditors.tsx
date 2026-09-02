@@ -194,6 +194,15 @@ interface ChoiceProps<TValue extends string> {
   readonly value: TValue;
   readonly options: readonly TValue[];
   readonly labels: Readonly<Record<TValue, string>>;
+  /**
+   * Options the model refuses, against the reason it gave.
+   *
+   * Shown and disabled rather than left out. A dimension that vanishes from the
+   * list looks like a dimension that does not exist; one that is there, greyed,
+   * and says why is the model explaining itself — which is the whole reason to
+   * read a semantic layer rather than guess from column types.
+   */
+  readonly refused?: Readonly<Record<string, string>>;
   readonly onChange: (value: TValue) => void;
 }
 
@@ -202,16 +211,25 @@ const Choice = <TValue extends string>({
   value,
   options,
   labels,
+  refused,
   onChange,
 }: ChoiceProps<TValue>): React.JSX.Element => (
   <label className="pn-chart-field">
     <span>{label}</span>
     <select value={value} onChange={(event) => onChange(event.target.value as TValue)}>
-      {options.map((option) => (
-        <option key={option} value={option}>
-          {labels[option]}
-        </option>
-      ))}
+      {options.map((option) => {
+        const reason = refused?.[option];
+        return (
+          <option
+            key={option}
+            value={option}
+            disabled={reason !== undefined}
+            title={reason ?? undefined}
+          >
+            {reason === undefined ? labels[option] : `${labels[option]} — ${reason}`}
+          </option>
+        );
+      })}
     </select>
   </label>
 );
@@ -277,7 +295,19 @@ const ChartEditor = ({
   onShow,
 }: ChartEditorProps): React.JSX.Element => {
   const [spec, setSpec] = useState<ChartSpec>(initialSpec);
-  const [columns] = useState<readonly ChartColumnChoice[]>(() => workspace.chartColumns(tableId));
+  /**
+   * Recomputed as the category changes, because a refusal is about a *pair*: a
+   * metric is a perfectly good measure until somebody asks for it by a dimension
+   * the model cannot attribute it to.
+   */
+  const columns = useMemo(
+    () => workspace.chartColumns(tableId, spec.category),
+    [workspace, tableId, spec.category],
+  );
+  const refusedCategories = useMemo(
+    () => workspace.chartCategoryRefusals(tableId, spec.values),
+    [workspace, tableId, spec.values],
+  );
   const extraError = useMemo(() => parseChartExtra(spec.extra).error, [spec]);
 
   const register = useCallback(
@@ -319,25 +349,49 @@ const ChartEditor = ({
     [workspace, tableId],
   );
 
-  const toggleValue = useCallback(
-    (name: string) => {
-      setSpec((current) => {
-        const values = current.values.includes(name)
-          ? current.values.filter((value) => value !== name)
-          : [...current.values, name];
-        const next = { ...current, values };
-        workspace.setChartDraft(tableId, next);
-        return next;
-      });
+  /**
+   * Why a measure cannot be chosen, where it cannot.
+   *
+   * Two different refusals, and both are the model's rather than Panorama's. A
+   * pairing it will not attribute, and a metric that must not be aggregated at
+   * all — a margin percentage has to be recomputed per group, and a chart groups
+   * more coarsely than the rows it is drawn from, so summing or averaging one is
+   * the arithmetic the layer exists to prevent.
+   */
+  const refusalFor = useCallback(
+    (column: ChartColumnChoice): string | undefined =>
+      column.refusedBy ??
+      (column.aggregate === 'none'
+        ? `${column.label} is computed by the model per group; it cannot be summed or averaged`
+        : undefined),
+    [],
+  );
+
+  /**
+   * Choosing a measure takes the model's own aggregation with it.
+   *
+   * The metric already says how it combines, so opening on `sum` and leaving a
+   * reader to notice would be offering a decision that has already been made.
+   */
+  const chooseValues = useCallback(
+    (names: readonly string[]) => {
+      const declared = names
+        .map((name) => columns.find((column) => column.name === name)?.aggregate)
+        .find((aggregate) => aggregate !== undefined && aggregate !== 'none');
+      change({ values: [...names], ...(declared === undefined ? {} : { aggregate: declared }) });
     },
-    [workspace, tableId],
+    [change, columns],
   );
 
   const counting = spec.aggregate === 'count';
   // A pie shows one measure, and so does a cross-tabulation: two measures split
   // two ways is a cube.
   const singleValue = spec.type === 'pie' || isBrokenDown(spec);
-  const measurable = columns.filter((column) => column.numeric);
+  const measurable = columns.filter((column) =>
+    // Where a model has spoken, the measures are its metrics — not every column
+    // that happens to hold a number.
+    columns.some((entry) => entry.role !== undefined) ? column.role === 'metric' : column.numeric,
+  );
   /**
    * A written option needs no controls for how it looks: it says so itself.
    *
@@ -365,7 +419,8 @@ const ChartEditor = ({
             label="By"
             value={spec.category}
             options={columns.map((column) => column.name)}
-            labels={Object.fromEntries(columns.map((column) => [column.name, column.name]))}
+            labels={Object.fromEntries(columns.map((column) => [column.name, column.label]))}
+            refused={refusedCategories}
             onChange={(category) => change({ category })}
           />
           <Choice
@@ -389,8 +444,9 @@ const ChartEditor = ({
             ]}
             labels={{
               '': 'Nothing',
-              ...Object.fromEntries(columns.map((column) => [column.name, column.name])),
+              ...Object.fromEntries(columns.map((column) => [column.name, column.label])),
             }}
+            refused={refusedCategories}
             onChange={(breakdown) => {
               if (breakdown === '') unset('breakdown');
               else change({ breakdown, values: spec.values.slice(0, 1) });
@@ -404,19 +460,38 @@ const ChartEditor = ({
             <fieldset className="pn-chart-values">
               <legend>Of</legend>
               <div className="pn-chart-value-list" role="group" aria-label="Measured columns">
-                {measurable.map((column) => (
-                  <label key={column.name} className="pn-chart-value">
-                    <input
-                      type={singleValue ? 'radio' : 'checkbox'}
-                      name={singleValue ? `chart-value-${tableId}` : undefined}
-                      checked={spec.values.includes(column.name)}
-                      onChange={() =>
-                        singleValue ? change({ values: [column.name] }) : toggleValue(column.name)
+                {measurable.map((column) => {
+                  const refusal = refusalFor(column);
+                  return (
+                    <label
+                      key={column.name}
+                      className={
+                        refusal === undefined ? 'pn-chart-value' : 'pn-chart-value pn-chart-refused'
                       }
-                    />
-                    <span>{column.name}</span>
-                  </label>
-                ))}
+                      title={refusal}
+                    >
+                      <input
+                        type={singleValue ? 'radio' : 'checkbox'}
+                        name={singleValue ? `chart-value-${tableId}` : undefined}
+                        checked={spec.values.includes(column.name)}
+                        disabled={refusal !== undefined}
+                        onChange={() =>
+                          singleValue
+                            ? chooseValues([column.name])
+                            : chooseValues(
+                                spec.values.includes(column.name)
+                                  ? spec.values.filter((value) => value !== column.name)
+                                  : [...spec.values, column.name],
+                              )
+                        }
+                      />
+                      <span>{column.label}</span>
+                      {refusal === undefined ? null : (
+                        <small className="pn-chart-refusal">{refusal}</small>
+                      )}
+                    </label>
+                  );
+                })}
               </div>
             </fieldset>
           )}

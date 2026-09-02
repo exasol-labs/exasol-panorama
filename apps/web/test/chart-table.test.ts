@@ -5,6 +5,7 @@ import { isChartTable, isTableEntity } from '@panorama/core';
 import { EMPTY_CHART_DRAW_LIST } from '@panorama/chart';
 import { EChartsSurface } from '@panorama/chart-echarts';
 import { createAppHarness, firstTableId } from './harness.js';
+import { refusalReason } from '../src/panorama/workspace.js';
 import { DEMO_SCHEMA } from '../src/panorama/demo.js';
 
 const metrics: ChartMetrics = {
@@ -90,11 +91,18 @@ describe('opening a chart', () => {
   it('offers the base table columns to choose between', async () => {
     const { harness, baseId } = await openTable();
     const { tableId } = await harness.workspace.openChart(baseId);
+    // No semantic layer here, so every label is the column's own name.
     expect(harness.workspace.chartColumns(tableId)).toEqual([
-      { name: 'ORDER_ID', type: 'DECIMAL(18,0)', numeric: true },
-      { name: 'COUNTRY', type: 'VARCHAR(64)', numeric: false },
-      { name: 'ORDER_DATE', type: 'DATE', numeric: false },
-      { name: 'REVENUE', type: 'DECIMAL(18,2)', numeric: true, measure: true },
+      { name: 'ORDER_ID', type: 'DECIMAL(18,0)', numeric: true, label: 'ORDER_ID' },
+      { name: 'COUNTRY', type: 'VARCHAR(64)', numeric: false, label: 'COUNTRY' },
+      { name: 'ORDER_DATE', type: 'DATE', numeric: false, label: 'ORDER_DATE' },
+      {
+        name: 'REVENUE',
+        type: 'DECIMAL(18,2)',
+        numeric: true,
+        measure: true,
+        label: 'REVENUE',
+      },
     ]);
   });
 
@@ -1152,5 +1160,23 @@ describe('the rows behind a chart selection', () => {
     const { tableId: chartId } = await harness.workspace.openChart(queryId);
     await harness.settle();
     await expect(harness.workspace.openChartRows(chartId)).rejects.toThrow(/stored table/);
+  });
+});
+
+/**
+ * The reason a refusal is shown in words rather than as a code.
+ *
+ * The codes are the model's and machine-readable; a person reading a greyed-out
+ * control wants the *why*. The two a live model actually produced are spelled
+ * out, and anything else falls back to the code — a plausible sentence invented
+ * for a code nobody has seen would be worse than the code itself.
+ */
+describe('putting a refusal into words', () => {
+  it.each([
+    ['ONE_TO_MANY_ATTRIBUTION_UNSUPPORTED', 'which would multiply it'],
+    ['NO_SAFE_JOIN_PATH', 'no join path the model can prove'],
+    ['SOMETHING_NEW', 'SOMETHING_NEW'],
+  ])('says %s as %s', (code, expected) => {
+    expect(refusalReason({ code })).toContain(expected);
   });
 });

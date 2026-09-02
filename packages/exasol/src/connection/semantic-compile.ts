@@ -208,4 +208,4 @@ export const compilesSemantically = (index: SemanticIndex, statement: string): b
 
 /** The published schemas the index describes, deduplicated and ordered. */
 export const semanticSchemas = (index: SemanticIndex): readonly string[] =>
-  [...new Set([...index.keys()].map((key) => key.slice(0, key.lastIndexOf('.'))))].sort();
+  [...new Set([...index.objects.keys()].map((key) => key.slice(0, key.lastIndexOf('.'))))].sort();

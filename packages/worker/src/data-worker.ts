@@ -23,11 +23,13 @@ import type {
 import {
   EMPTY_SEMANTIC_INDEX,
   ExasolTableDataSource,
+  compilerForStatement,
   compilesSemantically,
   indexSemanticFields,
   preprocessorForStatement,
   semanticProvenance,
   sourceStatement,
+  wrapperProvenance,
 } from '@panorama/exasol';
 import type { ExportFormat, ExportResult } from '@panorama/export';
 import { ExportError, bufferedSink, isExportError, runExport } from '@panorama/export';
@@ -623,6 +625,10 @@ export class DataWorker {
     const connection = this.#requireConnection();
     const statement = sourceStatement(request);
     const compiled = known ?? (await this.#compiled(connection, statement));
+    // A compiled statement is already physical SQL over the helper tables, so
+    // there is nothing left for a preprocessor to rewrite — and pointing one at
+    // it would be asking a rewriter to rewrite its own output.
+    const preprocessed = compiled === undefined;
     /**
      * The preprocessor this statement needs, chosen from the statement itself.
      *
@@ -641,10 +647,9 @@ export class DataWorker {
      * is behind a JSON wrapper is a different question from what the semantic
      * statement named.
      */
-    const preprocessor = preprocessorForStatement(
-      await connection.wrapperSurface(),
-      compiled?.sql ?? statement,
-    );
+    const preprocessor = preprocessed
+      ? preprocessorForStatement(await connection.wrapperSurface(), statement)
+      : undefined;
     return {
       source: new ExasolTableDataSource({
         connection,
@@ -673,6 +678,49 @@ export class DataWorker {
    * else's model, so they are what the box shows.
    */
   async #compiled(
+    connection: ExasolConnection,
+    statement: string,
+  ): Promise<CompiledStatement | undefined> {
+    return (
+      (await this.#semanticallyCompiled(connection, statement)) ??
+      (await this.#wrapperCompiled(connection, statement))
+    );
+  }
+
+  /**
+   * The same, for a statement reading a JSON-tables wrapper surface.
+   *
+   * Tried after the semantic layer and only where a compiler is installed *and*
+   * serves the package the statement names. Where it is not, the per-statement
+   * preprocessor does the work exactly as before — which is the path every
+   * database without a compiler still takes, and the one this must not break to
+   * reach a tidier one.
+   */
+  async #wrapperCompiled(
+    connection: ExasolConnection,
+    statement: string,
+  ): Promise<CompiledStatement | undefined> {
+    const compiler = compilerForStatement(await connection.wrapperCompilers(), statement);
+    if (compiler === undefined) return undefined;
+    const result = await connection.compileWrapper(compiler, statement);
+    if (result.status !== 'ok' || result.sql === undefined) {
+      throw new TableDataError(
+        'statement-refused',
+        result.message ?? 'The JSON tables compiler would not compile this statement',
+      );
+    }
+    const provenance = wrapperProvenance(result);
+    // A statement with no sugar in it compiles to itself. Reported as compiled
+    // all the same, because the useful consequence is the same one: a compiler
+    // has looked at this statement and there is nothing for a session
+    // preprocessor to do, so none is set.
+    return {
+      sql: result.rewritten === false ? statement : result.sql,
+      ...(provenance === undefined ? {} : { provenance }),
+    };
+  }
+
+  async #semanticallyCompiled(
     connection: ExasolConnection,
     statement: string,
   ): Promise<CompiledStatement | undefined> {

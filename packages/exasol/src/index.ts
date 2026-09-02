@@ -5,6 +5,7 @@ export * from './connection/json-wrapper.js';
 export * from './connection/semantic-compile.js';
 export * from './connection/semantic-surface.js';
 export * from './connection/socket.js';
+export * from './connection/wrapper-compile.js';
 export * from './protocol/data-types.js';
 export * from './protocol/messages.js';
 export * from './protocol/rsa.js';

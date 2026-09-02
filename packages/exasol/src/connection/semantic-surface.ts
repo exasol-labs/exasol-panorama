@@ -1,6 +1,17 @@
-import type { SemanticColumnView, SemanticFieldKind } from '@panorama/core';
+import type {
+  SemanticColumnView,
+  SemanticFieldKind,
+  SemanticMetricKind,
+  SemanticPairing,
+} from '@panorama/core';
 import type { ExasolValue } from '../protocol/messages.js';
-import { semanticFieldsQuery, semanticModelsQuery, semanticVersionQuery } from '../protocol/sql.js';
+import {
+  semanticFieldsQuery,
+  semanticInvalidPairsQuery,
+  semanticMetricsQuery,
+  semanticModelsQuery,
+  semanticVersionQuery,
+} from '../protocol/sql.js';
 // The same shape of caller as the wrapper surface has, and deliberately the same
 // type: both are "run a metadata query", and two names for it would suggest a
 // difference that is not there.
@@ -52,11 +63,25 @@ export interface SemanticModel {
  * `indexSemanticFields` does once it has both halves.
  */
 export interface SemanticField extends Omit<SemanticColumnView, 'model'> {
-  readonly modelId: number;
   /** The published view's name, upper-cased as the publish step creates it. */
   readonly object: string;
   /** The published view's column name, likewise. */
   readonly column: string;
+}
+
+/** How one metric combines, which `FIELDS_FOR_AGENT` does not say. */
+export interface SemanticMetric {
+  readonly modelId: number;
+  readonly metricId: number;
+  readonly kind?: SemanticMetricKind;
+  readonly aggregation?: string;
+}
+
+/** One metric × dimension pairing the model refuses. */
+export interface SemanticInvalidPair extends SemanticPairing {
+  readonly modelId: number;
+  readonly metricId: number;
+  readonly dimensionId: number;
 }
 
 /** Everything the layer says, read once per connection. */
@@ -65,6 +90,9 @@ export interface SemanticSurface {
   readonly version: string;
   readonly models: readonly SemanticModel[];
   readonly fields: readonly SemanticField[];
+  readonly metrics: readonly SemanticMetric[];
+  /** Only the refusals; see `semanticInvalidPairsQuery`. */
+  readonly invalidPairs: readonly SemanticInvalidPair[];
 }
 
 const text = (value: ExasolValue | undefined): string | null =>
@@ -93,7 +121,62 @@ export const readSemanticSurface = async (query: QueryRows): Promise<SemanticSur
 
   const models = await query(semanticModelsQuery()).catch(() => []);
   const fields = await query(semanticFieldsQuery()).catch(() => []);
-  return { version, models: readModels(models), fields: readFields(fields) };
+  const metrics = await query(semanticMetricsQuery()).catch(() => []);
+  const pairs = await query(semanticInvalidPairsQuery()).catch(() => []);
+  return {
+    version,
+    models: readModels(models),
+    fields: readFields(fields),
+    metrics: readMetrics(metrics),
+    invalidPairs: readInvalidPairs(pairs),
+  };
+};
+
+const METRIC_KINDS: readonly SemanticMetricKind[] = [
+  'SIMPLE',
+  'FILTERED',
+  'RATIO',
+  'DERIVED',
+  'CUMULATIVE',
+];
+
+const readMetrics = (rows: ReadonlyArray<readonly ExasolValue[]>): readonly SemanticMetric[] => {
+  const found: SemanticMetric[] = [];
+  for (let row = 0; row < (rows[0]?.length ?? 0); row += 1) {
+    const modelId = Number(rows[0]?.[row]);
+    const metricId = Number(rows[1]?.[row]);
+    if (!Number.isFinite(modelId) || !Number.isFinite(metricId)) continue;
+    const kind = METRIC_KINDS.find((known) => known === text(rows[2]?.[row]));
+    const aggregation = text(rows[3]?.[row]);
+    found.push({
+      modelId,
+      metricId,
+      ...(kind === undefined ? {} : { kind }),
+      ...(aggregation === null ? {} : { aggregation }),
+    });
+  }
+  return found;
+};
+
+const readInvalidPairs = (
+  rows: ReadonlyArray<readonly ExasolValue[]>,
+): readonly SemanticInvalidPair[] => {
+  const found: SemanticInvalidPair[] = [];
+  for (let row = 0; row < (rows[0]?.length ?? 0); row += 1) {
+    const modelId = Number(rows[0]?.[row]);
+    const metricId = Number(rows[1]?.[row]);
+    const dimensionId = Number(rows[2]?.[row]);
+    const code = text(rows[3]?.[row]);
+    if (!Number.isFinite(modelId) || !Number.isFinite(metricId) || !Number.isFinite(dimensionId)) {
+      continue;
+    }
+    // A refusal with no reason is still a refusal, but it is not one a person
+    // can be shown, so it is not one this reports.
+    if (code === null) continue;
+    const path = text(rows[4]?.[row]);
+    found.push({ modelId, metricId, dimensionId, code, ...(path === null ? {} : { path }) });
+  }
+  return found;
 };
 
 const readModels = (rows: ReadonlyArray<readonly ExasolValue[]>): readonly SemanticModel[] => {
@@ -124,12 +207,19 @@ const readFields = (rows: ReadonlyArray<readonly ExasolValue[]>): readonly Seman
   const found: SemanticField[] = [];
   for (let row = 0; row < (rows[0]?.length ?? 0); row += 1) {
     const modelId = Number(rows[0]?.[row]);
+    const fieldId = Number(rows[10]?.[row]);
     const object = text(rows[1]?.[row]);
     const column = text(rows[2]?.[row]);
     // A field kind the layer grows later is a field this cannot present, and
     // silently calling it a dimension would put it on a chart's category axis.
     const kind = FIELD_KINDS[String(rows[3]?.[row])];
-    if (!Number.isFinite(modelId) || object === null || column === null || kind === undefined) {
+    if (
+      !Number.isFinite(modelId) ||
+      !Number.isFinite(fieldId) ||
+      object === null ||
+      column === null ||
+      kind === undefined
+    ) {
       continue;
     }
     const displayName = text(rows[4]?.[row]);
@@ -139,6 +229,7 @@ const readFields = (rows: ReadonlyArray<readonly ExasolValue[]>): readonly Seman
     const sensitivity = text(rows[9]?.[row]);
     found.push({
       modelId,
+      fieldId,
       object,
       column,
       kind,
@@ -159,11 +250,42 @@ export const semanticObjectKey = (schema: string, object: string): string => `${
 /** The meanings of one published object's columns, by column name. */
 export type SemanticColumns = ReadonlyMap<string, SemanticColumnView>;
 
-/** Every published object's columns, by `SCHEMA.OBJECT`. */
-export type SemanticIndex = ReadonlyMap<string, SemanticColumns>;
+/**
+ * Everything a box or a chart editor has to ask, in two lookups.
+ *
+ * `objects` answers "what do this relation's columns mean". `refusals` answers
+ * "may this metric be broken down by that dimension" — a question about two
+ * fields of one model, which is why it is keyed by their ids rather than by the
+ * object either of them is published in.
+ */
+export interface SemanticIndex {
+  readonly objects: ReadonlyMap<string, SemanticColumns>;
+  readonly refusals: ReadonlyMap<string, SemanticPairing>;
+}
 
 /** An index over nothing, which is what a connection without the layer has. */
-export const EMPTY_SEMANTIC_INDEX: SemanticIndex = new Map();
+export const EMPTY_SEMANTIC_INDEX: SemanticIndex = { objects: new Map(), refusals: new Map() };
+
+const pairingKey = (modelId: number, metricId: number, dimensionId: number): string =>
+  `${modelId}:${metricId}:${dimensionId}`;
+
+/**
+ * Why the model refuses to break this metric down by this dimension, if it does.
+ *
+ * `undefined` is "nothing said", and that is not the same as "safe": a metric and
+ * a dimension published in two different objects never appear in the matrix at
+ * all. What it does mean is that there is nothing to warn anybody about, which is
+ * the only thing a chart editor can act on.
+ */
+export const semanticRefusal = (
+  index: SemanticIndex,
+  metric: SemanticColumnView | undefined,
+  dimension: SemanticColumnView | undefined,
+): SemanticPairing | undefined => {
+  if (metric?.kind !== 'metric' || dimension?.kind !== 'dimension') return undefined;
+  if (metric.modelId !== dimension.modelId) return undefined;
+  return index.refusals.get(pairingKey(metric.modelId, metric.fieldId, dimension.fieldId));
+};
 
 /**
  * The surface as something a table box can be looked up in.
@@ -186,12 +308,21 @@ export const EMPTY_SEMANTIC_INDEX: SemanticIndex = new Map();
  */
 export const indexSemanticFields = (surface: SemanticSurface | null): SemanticIndex => {
   if (surface === null) return EMPTY_SEMANTIC_INDEX;
+  const metrics = new Map(
+    surface.metrics.map((metric) => [`${metric.modelId}:${metric.metricId}`, metric]),
+  );
   const byModel = new Map<number, SemanticField[]>();
   for (const field of surface.fields) {
     const fields = byModel.get(field.modelId) ?? [];
     fields.push(field);
     byModel.set(field.modelId, fields);
   }
+  const refusals = new Map<string, SemanticPairing>(
+    surface.invalidPairs.map((pair) => [
+      pairingKey(pair.modelId, pair.metricId, pair.dimensionId),
+      { code: pair.code, ...(pair.path === undefined ? {} : { path: pair.path }) },
+    ]),
+  );
   const index = new Map<string, Map<string, SemanticColumnView>>();
   for (const model of surface.models) {
     if (!model.published) continue;
@@ -206,11 +337,17 @@ export const indexSemanticFields = (surface: SemanticSurface | null): SemanticIn
         claimed.set(key, columns);
         index.set(key, columns);
       }
-      const { modelId: _modelId, object: _object, column, ...view } = field;
-      columns.set(column, { ...view, model: model.name });
+      const { object: _object, column, ...view } = field;
+      const declared = metrics.get(`${field.modelId}:${field.fieldId}`);
+      columns.set(column, {
+        ...view,
+        model: model.name,
+        ...(declared?.kind === undefined ? {} : { metricKind: declared.kind }),
+        ...(declared?.aggregation === undefined ? {} : { aggregation: declared.aggregation }),
+      });
     }
   }
-  return index;
+  return { objects: index, refusals };
 };
 
 /** What a relation's columns mean, where it is a published semantic object. */
@@ -218,4 +355,4 @@ export const semanticColumnsFor = (
   index: SemanticIndex,
   schema: string,
   table: string,
-): SemanticColumns | undefined => index.get(semanticObjectKey(schema, table));
+): SemanticColumns | undefined => index.objects.get(semanticObjectKey(schema, table));

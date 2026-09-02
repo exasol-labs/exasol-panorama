@@ -557,3 +557,104 @@ describe('splitting a chart by a second column', () => {
     expect('breakdown' in (harness.workspace.chartDraft(chartId) ?? {})).toBe(false);
   });
 });
+
+/**
+ * A chart over columns a model describes.
+ *
+ * This is where the semantic layer stops being decoration. The harness's model
+ * says `REVENUE` is a metric that sums, `ORDER_ID` is a metric that must not be
+ * aggregated at all, `COUNTRY` is a dimension — and that revenue may not be
+ * attributed to country, which is the shape of the fan-out error a chart would
+ * otherwise draw perfectly plausibly.
+ */
+describe('a chart the model has an opinion about', () => {
+  const described = () => mount({ semanticLayer: true });
+
+  it('offers the model’s names rather than the column names', async () => {
+    await described();
+    const options = [...select('By').querySelectorAll('option')].map((node) => node.textContent);
+    // The model's name for the column, with its reason where it has one.
+    expect(options.some((text) => text?.startsWith('Country') === true)).toBe(true);
+    const measures = [...screen.getByLabelText('Measured columns').querySelectorAll('span')].map(
+      (node) => node.textContent,
+    );
+    expect(measures).toContain('Total Revenue');
+    expect(measures).not.toContain('REVENUE');
+  });
+
+  it('offers the model’s metrics as the measures, not every number', async () => {
+    await described();
+    const measures = [...screen.getByLabelText('Measured columns').querySelectorAll('span')].map(
+      (node) => node.textContent,
+    );
+    // `ORDER_DATE` is not a number and `COUNTRY` is a dimension; both are out.
+    // What is in is what the model calls a metric.
+    // In the columns' own order: `ORDER_ID` is the ratio, `REVENUE` the sum.
+    expect(measures).toEqual(['Margin %', 'Total Revenue']);
+  });
+
+  it('opens on the aggregation the metric declares', async () => {
+    await described();
+    expect(select('Measure').value).toBe('sum');
+  });
+
+  /**
+   * The guess is made from the columns alone and cannot know about pairings, so
+   * it can land on one the model refuses. A category that is selected *and*
+   * greyed out reads as a bug rather than as a model being careful, so the first
+   * allowed one is taken instead.
+   */
+  it('does not open on a pairing the model refuses', async () => {
+    await described();
+    expect(select('By').value).not.toBe('COUNTRY');
+    const chosen = [...select('By').querySelectorAll('option')].find(
+      (node) => node.value === select('By').value,
+    );
+    expect(chosen?.disabled).toBe(false);
+  });
+
+  /**
+   * A ratio is recomputed per group by the model. A chart groups more coarsely
+   * than the rows it is drawn from, so summing or averaging one is precisely the
+   * arithmetic the layer exists to prevent — and the control says so rather than
+   * quietly allowing it.
+   */
+  it('refuses to measure a metric that must not be aggregated', async () => {
+    await described();
+    const margin = [...screen.getByLabelText('Measured columns').querySelectorAll('label')].find(
+      (node) => node.textContent?.startsWith('Margin %'),
+    );
+    expect(margin?.querySelector('input')?.disabled).toBe(true);
+    expect(margin?.textContent).toContain('cannot be summed or averaged');
+  });
+
+  /**
+   * The refusal that is the whole correctness argument: a metric charged on one
+   * side of a one-to-many join, asked for by a dimension on the other side, is
+   * counted once per row and multiplied. Shown and disabled, with the reason.
+   */
+  it('greys out a category the model will not attribute the measure to', async () => {
+    await described();
+    const country = [...select('By').querySelectorAll('option')].find(
+      (node) => node.value === 'COUNTRY',
+    );
+    expect(country?.disabled).toBe(true);
+    expect(country?.textContent).toContain('which would multiply it');
+    // And the same pairing seen from the other side: with that category chosen,
+    // the measure is the one refused.
+    fireEvent.change(select('By'), { target: { value: 'ORDER_DATE' } });
+    expect(
+      [...select('By').querySelectorAll('option')].find((node) => node.value === 'COUNTRY')
+        ?.disabled,
+    ).toBe(true);
+  });
+
+  it('leaves a chart over an undescribed table exactly as it was', async () => {
+    await mount();
+    const measures = [...screen.getByLabelText('Measured columns').querySelectorAll('span')].map(
+      (node) => node.textContent,
+    );
+    expect(measures).toEqual(['ORDER_ID', 'REVENUE']);
+    expect([...select('By').querySelectorAll('option')].every((node) => !node.disabled)).toBe(true);
+  });
+});

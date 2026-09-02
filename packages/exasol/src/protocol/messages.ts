@@ -89,6 +89,36 @@ export interface LoginChallenge {
   readonly publicKeyExponent: string;
 }
 
+/**
+ * The value formats Panorama pins on every connection.
+ *
+ * Exasol renders some values *as text* before they reach the protocol, and which
+ * text depends on the session's NLS settings — which a database or a user can
+ * default however they like. Against a live instance, one `ALTER SESSION` was
+ * enough to change what arrived:
+ *
+ *     default                        "12345678901234567.89"   "2026-09-02"
+ *     NLS_NUMERIC_CHARACTERS ',.'    "12345678901234567,89"
+ *     NLS_DATE_FORMAT 'DD/MM/YYYY'                            "02/09/2026"
+ *
+ * A high-precision `DECIMAL` arrives as a string precisely so its digits survive
+ * JSON, and every piece of Panorama that reads one assumes a dot: the numeric
+ * test in `filterLiteral` that decides whether a followed key is compared as a
+ * number or quoted as a string, the `Number()` behind a chart's measure, the
+ * date test behind the `month` format hint. None of them would fail loudly on a
+ * comma — they would quietly do something else.
+ *
+ * So the formats are pinned rather than hoped for, and pinning is one round trip
+ * at connect. A person who sets their own `ALTER SESSION` afterwards overrides
+ * this, which is right: they asked.
+ */
+export const PINNED_FORMATS: Readonly<Record<string, string>> = Object.freeze({
+  /** Decimal separator first, group separator second. */
+  numericCharacters: '.,',
+  dateFormat: 'YYYY-MM-DD',
+  datetimeFormat: 'YYYY-MM-DD HH24:MI:SS.FF6',
+});
+
 export interface SessionInfo {
   readonly sessionId: number;
   readonly protocolVersion: number;

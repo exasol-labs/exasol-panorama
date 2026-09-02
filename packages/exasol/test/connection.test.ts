@@ -679,6 +679,7 @@ describe('the semantic layer on a connection', () => {
         { name: 'UNIT_HINT', dataType: { type: 'VARCHAR', size: 32 } },
         { name: 'IS_CERTIFIED', dataType: { type: 'BOOLEAN' } },
         { name: 'SENSITIVITY_LABEL', dataType: { type: 'VARCHAR', size: 32 } },
+        { name: 'FIELD_ID', dataType: { type: 'DECIMAL', precision: 18, scale: 0 } },
       ],
       rowCount: 1,
       data: [
@@ -692,7 +693,29 @@ describe('the semantic layer on a connection', () => {
         [null],
         [true],
         [null],
+        [7],
       ],
+    },
+    '"METRICS"': {
+      columns: [
+        { name: 'MODEL_ID', dataType: { type: 'DECIMAL', precision: 18, scale: 0 } },
+        { name: 'METRIC_ID', dataType: { type: 'DECIMAL', precision: 18, scale: 0 } },
+        { name: 'METRIC_KIND', dataType: { type: 'VARCHAR', size: 32 } },
+        { name: 'AGGREGATION_FUNCTION', dataType: { type: 'VARCHAR', size: 32 } },
+      ],
+      rowCount: 1,
+      data: [[1], [7], ['SIMPLE'], ['SUM']],
+    },
+    METRIC_DIMENSION_MATRIX: {
+      columns: [
+        { name: 'MODEL_ID', dataType: { type: 'DECIMAL', precision: 18, scale: 0 } },
+        { name: 'METRIC_ID', dataType: { type: 'DECIMAL', precision: 18, scale: 0 } },
+        { name: 'DIMENSION_ID', dataType: { type: 'DECIMAL', precision: 18, scale: 0 } },
+        { name: 'REASON_CODE', dataType: { type: 'VARCHAR', size: 64 } },
+        { name: 'RELATIONSHIP_PATH', dataType: { type: 'VARCHAR', size: 2000 } },
+      ],
+      rowCount: 0,
+      data: [[], [], [], [], []],
     },
   } as const;
 
@@ -718,6 +741,55 @@ describe('the semantic layer on a connection', () => {
     const asked = server.executed.length;
     expect(await connection.semanticSurface()).toBeNull();
     expect(server.executed).toHaveLength(asked);
+  });
+
+  /**
+   * The other compiler on a connection, and a different project's: where
+   * `exasol-json-tables` has installed one, a wrapper statement is compiled
+   * rather than run under a session preprocessor.
+   */
+  it('finds the JSON tables compiler and compiles through it', async () => {
+    const { connection } = await connect({
+      queries: {
+        'ALLOWED_SCHEMAS_JSON%': {
+          columns: [
+            { name: 'SCRIPT_SCHEMA', dataType: { type: 'VARCHAR', size: 128 } },
+            { name: 'SCRIPT_NAME', dataType: { type: 'VARCHAR', size: 128 } },
+            { name: 'ALLOWED', dataType: { type: 'VARCHAR', size: 2000 } },
+          ],
+          rowCount: 1,
+          data: [
+            ['JVS_COMPILE'],
+            ['COMPILE_SQL'],
+            [`    local ALLOWED_SCHEMAS_JSON = '["JSON_VIEW"]'`],
+          ],
+        },
+        'EXECUTE SCRIPT': {
+          columns: [
+            { name: 'STATUS', dataType: { type: 'VARCHAR', size: 32 } },
+            { name: 'ERROR_CODE', dataType: { type: 'VARCHAR', size: 64 } },
+            { name: 'ERROR_MESSAGE', dataType: { type: 'VARCHAR', size: 2000 } },
+            { name: 'ORIGINAL_SQL', dataType: { type: 'VARCHAR', size: 2000 } },
+            { name: 'GENERATED_SQL', dataType: { type: 'VARCHAR', size: 2000 } },
+            { name: 'PLAN_JSON', dataType: { type: 'VARCHAR', size: 2000 } },
+            { name: 'CLARIFICATION_JSON', dataType: { type: 'VARCHAR', size: 2000 } },
+          ],
+          rowCount: 1,
+          data: [['OK'], [null], [null], ['x'], ['SELECT "a|n" FROM "H"."T"'], [null], [null]],
+        },
+      },
+    });
+    const compilers = await connection.wrapperCompilers();
+    expect(compilers).toEqual([
+      { schema: 'JVS_COMPILE', script: 'COMPILE_SQL', serves: ['JSON_VIEW'] },
+    ]);
+    // Read once and remembered, like every other catalogue answer here.
+    expect(await connection.wrapperCompilers()).toBe(compilers);
+    const compiled = await connection.compileWrapper(
+      compilers[0] as (typeof compilers)[number],
+      'SELECT "a.b" FROM "JSON_VIEW"."T"',
+    );
+    expect(compiled).toEqual({ status: 'ok', sql: 'SELECT "a|n" FROM "H"."T"', packages: [] });
   });
 
   it('compiles a statement through the layer’s own script', async () => {
@@ -769,5 +841,47 @@ describe('the semantic layer on a connection', () => {
     expect(await connection.semanticSurface()).not.toBeNull();
     await connection.close();
     expect(await connection.semanticSurface()).toBeNull();
+  });
+});
+
+/**
+ * The value formats a connection pins on itself.
+ *
+ * Exasol renders some values *as text* before they reach the protocol, and which
+ * text depends on the session's NLS settings — which a database or a user may
+ * default however they like. Verified against a live instance: one
+ * `ALTER SESSION SET NLS_NUMERIC_CHARACTERS = ',.'` turned
+ * `"12345678901234567.89"` into `"12345678901234567,89"`, and a date format
+ * turned `"2026-09-02"` into `"02/09/2026"`.
+ *
+ * Nothing in Panorama would have *failed* on that. `filterLiteral`'s numeric test
+ * would have stopped matching, so a followed key on a high-precision decimal
+ * would have been quoted as a string and compared as one; a chart's `Number()`
+ * would have produced `NaN`; the `month` hint would have gone quiet. Each of
+ * them would have done something else, silently.
+ */
+describe('the formats a connection pins', () => {
+  it('pins the separators and the date formats it parses', async () => {
+    const { server } = await connect();
+    expect(server.attributesSet).toEqual([
+      {
+        numericCharacters: '.,',
+        dateFormat: 'YYYY-MM-DD',
+        datetimeFormat: 'YYYY-MM-DD HH24:MI:SS.FF6',
+      },
+    ]);
+  });
+
+  /**
+   * An older server, or one that has made an attribute read-only, is a server to
+   * carry on browsing. The assumptions are then unpinned rather than wrong —
+   * which is exactly where they were before this existed.
+   */
+  it('connects anyway where the server will not have them', async () => {
+    const { connection, server } = await connect({ refuseAttributes: true });
+    expect(connection.status).toBe('connected');
+    expect(server.attributesSet).toHaveLength(1);
+    // And still works: the refusal costs the pin and nothing else.
+    expect(await connection.listSchemas()).toBeDefined();
   });
 });

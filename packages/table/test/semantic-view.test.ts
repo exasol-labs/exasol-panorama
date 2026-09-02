@@ -14,6 +14,8 @@ import { withSemantics } from '@panorama/table';
 const revenue: SemanticColumnView = {
   kind: 'metric',
   model: 'sales',
+  modelId: 1,
+  fieldId: 1,
   displayName: 'Total Revenue',
   format: 'currency',
 };

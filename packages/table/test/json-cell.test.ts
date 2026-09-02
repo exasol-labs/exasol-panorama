@@ -179,6 +179,20 @@ describe('the columns a family is drawn with', () => {
     ).toBeNull();
   });
 
+  /**
+   * The loader stamps which version of the `|` grammar wrote a family, and a
+   * version this build does not know is one to leave alone. Refusing it draws
+   * the storage — `note` beside `note|n` — which is worse to look at and true,
+   * rather than a document read through markers that may have changed meaning.
+   */
+  it('is nothing at all for a contract it does not know how to read', () => {
+    const family = relationSchema(root);
+    const readable = `COPY provenance {"tool":"exasol-json-tables","contractVersion":1}`;
+    const ahead = `COPY provenance {"tool":"exasol-json-tables","contractVersion":99}`;
+    expect(jsonColumnSpecs(family, { siblings: [], comment: readable })).not.toBeNull();
+    expect(jsonColumnSpecs(family, { siblings: [], comment: ahead })).toBeNull();
+  });
+
   it('draws one column per property, in the document order', () => {
     expect(specs?.filter((spec) => spec.visible !== false).map((spec) => spec.name)).toEqual([
       'mongo_id',

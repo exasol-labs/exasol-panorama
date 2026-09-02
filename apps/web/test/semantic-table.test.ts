@@ -13,7 +13,11 @@ import { createAppHarness } from './harness.js';
  */
 
 const opened = async (
-  options: { semanticLayer?: boolean; failStatement?: (sql: string) => boolean } = {},
+  options: {
+    semanticLayer?: boolean;
+    failStatement?: (sql: string) => boolean;
+    renamesColumns?: boolean;
+  } = {},
 ): Promise<TableEntity> => {
   const harness = createAppHarness(options);
   await harness.workspace.connect({ url: 'wss://x', credentials: { kind: 'token', token: 't' } });
@@ -35,6 +39,10 @@ describe('a table a model describes', () => {
     expect(column(entity, 'REVENUE')?.semantic).toEqual({
       kind: 'metric',
       model: 'sales',
+      modelId: 1,
+      fieldId: 10,
+      metricKind: 'SIMPLE',
+      aggregation: 'SUM',
       displayName: 'Total Revenue',
       description: 'Net recognized revenue excluding tax',
       format: 'currency',
@@ -45,7 +53,7 @@ describe('a table a model describes', () => {
     // something the database will recognise.
     expect(column(entity, 'REVENUE')?.sourceColumn.name).toBe('REVENUE');
     // And the columns the model says nothing about are exactly as they were.
-    expect(column(entity, 'COUNTRY')).not.toHaveProperty('semantic');
+    expect(column(entity, 'ORDER_DATE')).not.toHaveProperty('semantic');
     expect(entity.columns.map((view) => view.sourceColumn.name)).toEqual([
       'ORDER_ID',
       'COUNTRY',
@@ -84,5 +92,51 @@ describe('a table a model describes', () => {
   it('leaves every column alone where there is no semantic layer', async () => {
     const entity = await opened();
     for (const view of entity.columns) expect(view).not.toHaveProperty('semantic');
+  });
+});
+
+/**
+ * A box has to describe the rows it actually got.
+ *
+ * The columns are built from `describeTable` before a row is asked for, which is
+ * what lets the box appear immediately — and for a compiled semantic statement
+ * that description is of the *stub view*, `CUSTOMER_REGION`, while the SQL that
+ * fetches the rows aliases them `customer_region`.
+ *
+ * Reading a cell by position works either way, which is why the table looked
+ * perfectly right. Everything that resolves a column by *name* silently found
+ * nothing: a chart looked its category up with `indexOf('CUSTOMER_REGION')`, got
+ * `-1`, and drew every bar against `(null)`.
+ */
+describe('a box whose statement renamed its columns', () => {
+  it('takes the names the rows arrived under', async () => {
+    const entity = await opened({ semanticLayer: true, renamesColumns: true });
+    expect(entity.columns.map((view) => view.sourceColumn.name)).toEqual([
+      'order_id',
+      'country',
+      'order_date',
+      'revenue',
+    ]);
+  });
+
+  /**
+   * And keeps the meaning through the rename, because the layer's names are the
+   * published ones and a compiled alias is the same field spelled differently.
+   */
+  it('keeps what the columns mean through the rename', async () => {
+    const entity = await opened({ semanticLayer: true, renamesColumns: true });
+    const revenue = entity.columns.find((view) => view.sourceColumn.name === 'revenue');
+    expect(revenue?.semantic?.displayName).toBe('Total Revenue');
+    expect(revenue?.semantic?.aggregation).toBe('SUM');
+  });
+
+  it('leaves a box whose names already agreed exactly as it was', async () => {
+    const entity = await opened({ semanticLayer: true });
+    expect(entity.columns.map((view) => view.sourceColumn.name)).toEqual([
+      'ORDER_ID',
+      'COUNTRY',
+      'ORDER_DATE',
+      'REVENUE',
+    ]);
   });
 });

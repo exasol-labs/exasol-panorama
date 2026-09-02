@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { SemanticColumnView } from '@panorama/core';
 import type { ExasolValue, SemanticSurface } from '@panorama/exasol';
 import {
   EMPTY_SEMANTIC_INDEX,
@@ -8,6 +9,7 @@ import {
   semanticFieldsQuery,
   semanticModelsQuery,
   semanticObjectKey,
+  semanticRefusal,
   semanticVersionQuery,
 } from '@panorama/exasol';
 
@@ -51,6 +53,7 @@ const models = (
 /** One `FIELDS_FOR_AGENT` row, with the awkward parts defaulted away. */
 interface FieldRow {
   readonly model: number;
+  readonly field?: number;
   readonly object: string;
   readonly column: string;
   readonly kind?: string;
@@ -73,11 +76,34 @@ const fields = (rows: readonly FieldRow[]): readonly (readonly ExasolValue[])[] 
   rows.map((row) => row.unit ?? null),
   rows.map((row) => row.certified ?? null),
   rows.map((row) => row.sensitivity ?? null),
+  rows.map((row, index) => row.field ?? index + 1),
+];
+
+/** `METRICS`, in the four columns the query asks for. */
+const metrics = (
+  rows: readonly (readonly [number, number, string | null, string | null])[],
+): readonly (readonly ExasolValue[])[] => [
+  rows.map((row) => row[0]),
+  rows.map((row) => row[1]),
+  rows.map((row) => row[2]),
+  rows.map((row) => row[3]),
+];
+
+/** The refused pairings, in the five columns the query asks for. */
+const refusals = (
+  rows: readonly (readonly [number, number, number, string | null, string | null])[],
+): readonly (readonly ExasolValue[])[] => [
+  rows.map((row) => row[0]),
+  rows.map((row) => row[1]),
+  rows.map((row) => row[2]),
+  rows.map((row) => row[3]),
+  rows.map((row) => row[4]),
 ];
 
 const SALES_FIELDS: readonly FieldRow[] = [
   {
     model: 1,
+    field: 1,
     object: 'SALES',
     column: 'TOTAL_REVENUE',
     kind: 'METRIC',
@@ -86,17 +112,29 @@ const SALES_FIELDS: readonly FieldRow[] = [
     format: 'currency',
     certified: true,
   },
-  { model: 1, object: 'SALES', column: 'CUSTOMER_REGION', displayName: 'Customer Region' },
+  {
+    model: 1,
+    field: 2,
+    object: 'SALES',
+    column: 'CUSTOMER_REGION',
+    displayName: 'Customer Region',
+  },
 ];
 
 const surfaceFrom = async (
   modelRows: readonly (readonly ExasolValue[])[],
   fieldRows: readonly (readonly ExasolValue[])[],
+  extra: {
+    metricRows?: readonly (readonly ExasolValue[])[];
+    refusalRows?: readonly (readonly ExasolValue[])[];
+  } = {},
 ): Promise<SemanticSurface> => {
   const { query } = answering([
     ['PRODUCT_VERSION', [['0.1+dev']]],
     ['"MODELS"', modelRows],
     ['FIELDS_FOR_AGENT', fieldRows],
+    ['"METRICS"', extra.metricRows ?? metrics([])],
+    ['METRIC_DIMENSION_MATRIX', extra.refusalRows ?? refusals([])],
   ]);
   const surface = await readSemanticSurface(query);
   if (surface === null) throw new Error('expected a surface');
@@ -161,6 +199,7 @@ describe('reading the surface', () => {
     ]);
     expect(surface.fields[0]).toEqual({
       modelId: 1,
+      fieldId: 1,
       object: 'SALES',
       column: 'TOTAL_REVENUE',
       kind: 'metric',
@@ -213,7 +252,13 @@ describe('reading the surface', () => {
    */
   it('survives a catalogue it is not allowed to read', async () => {
     const { query } = answering([['PRODUCT_VERSION', [['0.1']]]]);
-    expect(await readSemanticSurface(query)).toEqual({ version: '0.1', models: [], fields: [] });
+    expect(await readSemanticSurface(query)).toEqual({
+      version: '0.1',
+      models: [],
+      fields: [],
+      metrics: [],
+      invalidPairs: [],
+    });
   });
 
   it('skips rows the catalogue could not fill in', async () => {
@@ -238,6 +283,74 @@ describe('reading the surface', () => {
   });
 });
 
+describe('how a metric combines, and what it may not be paired with', () => {
+  it('takes the aggregation from the metric, not from the field', async () => {
+    const index = indexSemanticFields(
+      await surfaceFrom(
+        models([[1, 'sales', 'SEMANTIC_SALES', null, 'PUBLISHED']]),
+        fields(SALES_FIELDS),
+        {
+          metricRows: metrics([
+            [1, 1, 'SIMPLE', 'SUM'],
+            // A ratio declares none, which is the fact worth carrying.
+            [1, 9, 'RATIO', null],
+            [1, Number.NaN, 'SIMPLE', 'SUM'],
+          ]),
+        },
+      ),
+    );
+    const columns = semanticColumnsFor(index, 'SEMANTIC_SALES', 'SALES');
+    expect(columns?.get('TOTAL_REVENUE')).toMatchObject({
+      metricKind: 'SIMPLE',
+      aggregation: 'SUM',
+    });
+    // Nothing was said about this one, so nothing is claimed about it.
+    expect(columns?.get('CUSTOMER_REGION')).not.toHaveProperty('aggregation');
+  });
+
+  it('reads the refusals, and only the refusals it can explain', async () => {
+    const surface = await surfaceFrom(
+      models([[1, 'sales', 'SEMANTIC_SALES', null, 'PUBLISHED']]),
+      fields(SALES_FIELDS),
+      {
+        refusalRows: refusals([
+          [1, 1, 2, 'ONE_TO_MANY_ATTRIBUTION_UNSUPPORTED', 'order_line_to_order (rejected)'],
+          [1, 1, 3, 'NO_SAFE_JOIN_PATH', null],
+          // A refusal with no reason cannot be shown to anybody, so it is not
+          // carried; and a row the catalogue could not fill in is skipped.
+          [1, 1, 4, null, null],
+          [Number.NaN, 1, 5, 'X', null],
+        ]),
+      },
+    );
+    expect(surface.invalidPairs).toEqual([
+      {
+        modelId: 1,
+        metricId: 1,
+        dimensionId: 2,
+        code: 'ONE_TO_MANY_ATTRIBUTION_UNSUPPORTED',
+        path: 'order_line_to_order (rejected)',
+      },
+      { modelId: 1, metricId: 1, dimensionId: 3, code: 'NO_SAFE_JOIN_PATH' },
+    ]);
+
+    const index = indexSemanticFields(surface);
+    const columns = semanticColumnsFor(index, 'SEMANTIC_SALES', 'SALES');
+    const revenue = columns?.get('TOTAL_REVENUE');
+    const region = columns?.get('CUSTOMER_REGION');
+    expect(semanticRefusal(index, revenue, region)).toEqual({
+      code: 'ONE_TO_MANY_ATTRIBUTION_UNSUPPORTED',
+      path: 'order_line_to_order (rejected)',
+    });
+    // The pairing only means anything one way round, and only within a model.
+    expect(semanticRefusal(index, region, revenue)).toBeUndefined();
+    expect(semanticRefusal(index, revenue, undefined)).toBeUndefined();
+    expect(
+      semanticRefusal(index, { ...(revenue as SemanticColumnView), modelId: 99 }, region),
+    ).toBeUndefined();
+  });
+});
+
 describe('deciding which model describes a view', () => {
   it('has nothing to say about a connection with no layer', () => {
     expect(indexSemanticFields(null)).toBe(EMPTY_SEMANTIC_INDEX);
@@ -255,6 +368,8 @@ describe('deciding which model describes a view', () => {
     expect(columns?.get('TOTAL_REVENUE')).toEqual({
       kind: 'metric',
       model: 'sales',
+      modelId: 1,
+      fieldId: 1,
       displayName: 'Total Revenue',
       description: 'Net recognized revenue excluding tax',
       format: 'currency',

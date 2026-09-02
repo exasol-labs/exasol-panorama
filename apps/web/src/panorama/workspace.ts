@@ -6,7 +6,15 @@ import type {
   TableEntity,
 } from '@panorama/core';
 import type { Binding, BindingId } from '@panorama/core';
-import type { ChartColumnHint, ChartSource, ChartSpec, ColumnDataType } from '@panorama/core';
+import type {
+  ChartAggregate,
+  ChartColumnHint,
+  ChartSource,
+  ChartSpec,
+  ColumnDataType,
+  SemanticFieldKind,
+  SemanticPairing,
+} from '@panorama/core';
 import {
   AUTO_ANCHOR,
   DERIVED_TABLE,
@@ -24,6 +32,8 @@ import {
   isQueryTable,
   isSelectionTable,
   isTableEntity,
+  semanticAggregate,
+  semanticHeader,
   tableContentWidth,
   tableDisplayName,
 } from '@panorama/core';
@@ -67,10 +77,12 @@ import type {
   WrapperView,
 } from '@panorama/exasol';
 import {
+  EMPTY_SEMANTIC_INDEX,
   filterPredicate,
   indexSemanticFields,
   qualifiedName,
   semanticColumnsFor,
+  semanticRefusal,
   wrapperFor,
   wrapperKey,
 } from '@panorama/exasol';
@@ -193,7 +205,44 @@ const filterKey = (filter: RowFilter): string =>
 /** One column a chart may be set up against. */
 export interface ChartColumnChoice extends ChartColumnHint {
   readonly type: string;
+  /** What to call it in the form: the model's name for it, or the column's own. */
+  readonly label: string;
+  /** What the semantic layer says it is, where it says anything. */
+  readonly role?: SemanticFieldKind;
+  /**
+   * The aggregate the metric declares, or `none` where it declares that it must
+   * not be aggregated. Absent for a column the layer says nothing about.
+   */
+  readonly aggregate?: ChartAggregate | 'none';
+  /**
+   * Why the model refuses to break this metric down by the chosen category.
+   *
+   * Filled in against the *current* category, so it changes as the category does
+   * — which is the point: a measure is not invalid in itself, it is invalid
+   * against a particular thing to group by.
+   */
+  readonly refusedBy?: string;
 }
+
+/**
+ * A refusal in a sentence, from the model's reason code.
+ *
+ * The code is machine-readable and shouty; a person reading a greyed-out control
+ * wants to know *why* in words. The two codes a live model actually produced are
+ * spelled out and everything else falls back to the code itself, because a
+ * plausible-sounding sentence invented for a code nobody has seen would be worse
+ * than the code.
+ */
+export const refusalReason = (pairing: SemanticPairing): string => {
+  switch (pairing.code) {
+    case 'ONE_TO_MANY_ATTRIBUTION_UNSUPPORTED':
+      return 'counted once per row on the other side of the join, which would multiply it';
+    case 'NO_SAFE_JOIN_PATH':
+      return 'no join path the model can prove';
+    default:
+      return pairing.code;
+  }
+};
 
 /**
  * What a column offers a chart: whether it can be measured, and whether it looks
@@ -202,12 +251,19 @@ export interface ChartColumnChoice extends ChartColumnHint {
 const chartColumnHint = (column: TableColumnView): ChartColumnHint => {
   const type = column.sourceColumn.type;
   const numeric = isNumericType(type);
+  const aggregate = semanticAggregate(column.semantic);
   return {
     name: column.sourceColumn.name,
     numeric,
     // Decimal places, or a floating-point type: either says quantity rather
-    // than key.
-    ...(numeric && (type.kind === 'double' || (type.scale ?? 0) > 0) ? { measure: true } : {}),
+    // than key. Where a semantic layer has spoken, it decides instead: a metric
+    // is a measure because the model says so, whatever its scale.
+    ...(column.semantic?.kind === 'metric' ||
+    (column.semantic === undefined && numeric && (type.kind === 'double' || (type.scale ?? 0) > 0))
+      ? { measure: true }
+      : {}),
+    ...(column.semantic === undefined ? {} : { role: column.semantic.kind }),
+    ...(aggregate === undefined ? {} : { aggregate: aggregate ?? ('none' as const) }),
   };
 };
 
@@ -673,6 +729,42 @@ export class Workspace implements TableViewProvider, InteractionHost {
   }
 
   /**
+   * Makes the box's columns describe the rows it actually got.
+   *
+   * A relation's columns are built from `describeTable` before a single row is
+   * asked for, which is what lets the box appear immediately. Almost always the
+   * result set then agrees with it exactly and there is nothing to do.
+   *
+   * It does not agree when the statement was **compiled**. `describeTable` reads
+   * the published semantic view — a stub whose columns are `CUSTOMER_REGION` —
+   * while the compiled SQL that fetches the rows aliases them the model author's
+   * way, `customer_region`. Everything that reads a cell by *position* is fine
+   * either way, which is why the table itself looked right; everything that
+   * resolves a column by *name* silently found nothing. A chart looked up its
+   * category with `columns.indexOf('CUSTOMER_REGION')`, got `-1`, and drew every
+   * bar against `(null)`.
+   *
+   * So the result set wins: it is what the rows are. The semantics are reattached
+   * on the way through, and they survive the rename because `withSemantics`
+   * matches a compiled alias against the published name.
+   */
+  async #reconcileColumns(
+    tableId: EntityId,
+    described: TableSchema,
+    opened: TableSchema,
+  ): Promise<void> {
+    const before = described.columns.map((column) => column.name);
+    const after = opened.columns.map((column) => column.name);
+    if (before.length === after.length && before.every((name, index) => name === after[index])) {
+      return;
+    }
+    const columns = buildTableColumns(this.core.ids, await this.#columnsFor(opened));
+    const applied = this.core.dispatch({ type: 'SetTableColumns', tableId, columns });
+    if (!applied.ok) throw new Error(applied.error.message);
+    this.#resizeToColumns(tableId, columns);
+  }
+
+  /**
    * The same columns, with what the semantic layer says they mean.
    *
    * Applied to whichever view was built rather than instead of one of them: the
@@ -753,11 +845,12 @@ export class Workspace implements TableViewProvider, InteractionHost {
     const created = this.core.dispatch({ type: 'CreateTableEntity', entity });
     if (!created.ok) throw new Error(created.error.message);
 
-    await this.#attachView(entity.id, schema.columns.length, {
+    const opened = await this.#attachView(entity.id, schema.columns.length, {
       schema: request.schema,
       table: request.table,
       ...(request.filter === undefined ? {} : { filter: request.filter }),
     });
+    await this.#reconcileColumns(entity.id, schema, opened.schema);
     this.core.dispatchSession({ type: 'SetSelection', ids: [entity.id] });
     return entity.id;
   }
@@ -1303,7 +1396,10 @@ export class Workspace implements TableViewProvider, InteractionHost {
       throw new Error(`No table with id ${baseTableId}`);
     }
     if (isChartTable(base)) throw new Error('A chart cannot be charted');
-    const spec = defaultChartSpec(base.columns.map((column) => chartColumnHint(column)));
+    const spec = this.#allowedSpec(
+      base,
+      defaultChartSpec(base.columns.map((column) => chartColumnHint(column))),
+    );
     const entity = buildTableEntity(this.core.ids, {
       source: {
         kind: 'chart',
@@ -1574,15 +1670,81 @@ export class Workspace implements TableViewProvider, InteractionHost {
   }
 
   /** The columns a chart has to choose between: its base table's. */
-  chartColumns(tableId: EntityId): readonly ChartColumnChoice[] {
+  chartColumns(tableId: EntityId, category?: string): readonly ChartColumnChoice[] {
     const entity = this.core.world.entities.get(tableId);
     if (entity === undefined || !isTableEntity(entity) || !isChartTable(entity)) return [];
     const base = this.core.world.entities.get(entity.source.derivedFrom);
     if (base === undefined || !isTableEntity(base)) return [];
-    return base.columns.map((column) => ({
-      ...chartColumnHint(column),
-      type: column.sourceColumn.type.name,
-    }));
+    const grouping = base.columns.find((column) => column.sourceColumn.name === category)?.semantic;
+    return base.columns.map((column) => {
+      const semantic = column.semantic;
+      // Against the chosen category, not in the abstract: `total_freight` is a
+      // perfectly good measure until somebody asks for it by `product_category`.
+      const refusal = semanticRefusal(this.#semantics ?? EMPTY_SEMANTIC_INDEX, semantic, grouping);
+      return {
+        ...chartColumnHint(column),
+        type: column.sourceColumn.type.name,
+        label: semanticHeader(column.sourceColumn.name, semantic),
+        ...(refusal === undefined ? {} : { refusedBy: refusalReason(refusal) }),
+      };
+    });
+  }
+
+  /**
+   * The first guess, moved off a pairing the model refuses.
+   *
+   * The guess is made from the columns alone and cannot know about pairings, so
+   * it can land on one that is greyed out the moment the editor opens — a
+   * category selected and disabled, which reads as a bug rather than as a model
+   * being careful. Where that happens the first category the model does not
+   * refuse is taken instead; where every one is refused the guess stands, because
+   * a chart that cannot be drawn should say so through the same refusal a reader
+   * would have hit themselves.
+   */
+  #allowedSpec(base: TableEntity, spec: ChartSpec): ChartSpec {
+    const index = this.#semantics ?? EMPTY_SEMANTIC_INDEX;
+    const semanticOf = (name: string) =>
+      base.columns.find((column) => column.sourceColumn.name === name)?.semantic;
+    const measured = spec.values.map(semanticOf);
+    const refused = (name: string): boolean =>
+      measured.some((metric) => semanticRefusal(index, metric, semanticOf(name)) !== undefined);
+    if (!refused(spec.category)) return spec;
+    const allowed = base.columns
+      .map((column) => column.sourceColumn.name)
+      .find((name) => name !== spec.category && !refused(name));
+    return allowed === undefined ? spec : { ...spec, category: allowed };
+  }
+
+  /**
+   * The categories the model refuses, given what is being measured.
+   *
+   * The other direction of the same question, and the editor needs both: the
+   * measures are greyed against the chosen category, and the categories are
+   * greyed against the chosen measures. A pairing is refused by a *pair*, so
+   * whichever the reader picks first constrains the other.
+   */
+  chartCategoryRefusals(
+    tableId: EntityId,
+    values: readonly string[],
+  ): Readonly<Record<string, string>> {
+    const entity = this.core.world.entities.get(tableId);
+    if (entity === undefined || !isTableEntity(entity) || !isChartTable(entity)) return {};
+    const base = this.core.world.entities.get(entity.source.derivedFrom);
+    if (base === undefined || !isTableEntity(base)) return {};
+    const index = this.#semantics ?? EMPTY_SEMANTIC_INDEX;
+    const measured = values
+      .map((name) => base.columns.find((column) => column.sourceColumn.name === name)?.semantic)
+      .filter((semantic) => semantic !== undefined);
+    const refused: Record<string, string> = {};
+    for (const column of base.columns) {
+      for (const metric of measured) {
+        const refusal = semanticRefusal(index, metric, column.semantic);
+        if (refusal === undefined) continue;
+        refused[column.sourceColumn.name] = refusalReason(refusal);
+        break;
+      }
+    }
+    return refused;
   }
 
   /** How charts look here. The shell may override it; most will not. */

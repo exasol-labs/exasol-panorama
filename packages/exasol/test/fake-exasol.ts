@@ -74,6 +74,11 @@ export interface FakeRelation {
 export interface FakeServerOptions {
   /** Rows delivered inline with the `execute` response. */
   readonly inlineRows?: number;
+  /**
+   * Refuses `setAttributes`, the way an older server or a read-only attribute
+   * does. Browsing must survive it: the value formats are then merely unpinned.
+   */
+  readonly refuseAttributes?: boolean;
   /** Maximum rows a single `fetch` may return, simulating the byte budget. */
   readonly rowsPerFetch?: number;
   readonly relations?: Record<string, FakeRelation>;
@@ -144,6 +149,8 @@ export class FakeExasolServer {
   readonly sockets: FakeSocket[] = [];
   readonly resultSets = new Map<number, OpenResultSet>();
   readonly executed: string[] = [];
+  /** The attribute sets Panorama asked for, in order. */
+  readonly attributesSet: Array<Record<string, unknown>> = [];
   readonly fetches: Array<{ handle: number; startPosition: number; numBytes: number }> = [];
   #nextHandle = 1;
   #loggedIn = false;
@@ -228,6 +235,22 @@ export class FakeExasolServer {
       for (const handle of request['resultSetHandles'] as number[]) {
         const entry = this.resultSets.get(handle);
         if (entry !== undefined) entry.closed = true;
+      }
+      socket.deliver({ status: 'ok', responseData: {} });
+      return;
+    }
+    if (command === 'setAttributes') {
+      // Recorded rather than merely accepted: what Panorama pins is the point,
+      // and a silent acceptance would let it pin nothing and still pass.
+      this.attributesSet.push(
+        (request as { attributes?: Record<string, unknown> }).attributes ?? {},
+      );
+      if (this.#options.refuseAttributes === true) {
+        socket.deliver({
+          status: 'error',
+          exception: { text: 'Cannot set read-only protocol attribute', sqlCode: '00000' },
+        });
+        return;
       }
       socket.deliver({ status: 'ok', responseData: {} });
       return;

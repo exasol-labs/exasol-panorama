@@ -10,7 +10,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@babylonjs/core": "^9.22.1",
+    "@babylonjs/core": "^9.23.0",
     "@panorama/core": "*",
     "@panorama/table": "*"
   }

@@ -8,6 +8,7 @@ import {
   buildTableEntity,
   dataType,
   estimateColumnWidth,
+  semanticAggregate,
   semanticHeader,
   semanticRenames,
 } from '@panorama/core';
@@ -131,6 +132,8 @@ describe('semantic columns', () => {
   const revenue = {
     kind: 'metric',
     model: 'sales',
+    modelId: 1,
+    fieldId: 1,
     displayName: 'Total Revenue Recognised',
     format: 'currency',
   } as const;
@@ -162,8 +165,59 @@ describe('semantic columns', () => {
     expect(semanticRenames('TR', revenue)).toBe(true);
     // A display name that is just the column name has replaced nothing, so there
     // is nothing to say underneath it.
-    const same = { kind: 'dimension', model: 'sales', displayName: 'TR' } as const;
+    const same = {
+      kind: 'dimension',
+      model: 'sales',
+      modelId: 1,
+      fieldId: 2,
+      displayName: 'TR',
+    } as const;
     expect(semanticRenames('TR', same)).toBe(false);
-    expect(semanticRenames('TR', { kind: 'dimension', model: 'sales' })).toBe(false);
+    expect(
+      semanticRenames('TR', { kind: 'dimension', model: 'sales', modelId: 1, fieldId: 2 }),
+    ).toBe(false);
+  });
+
+  /**
+   * How a metric combines is the metric's own business, and the three answers
+   * matter separately: no opinion, a declared function, and a declared refusal.
+   */
+  describe('the aggregate a metric declares', () => {
+    const metric = (aggregation?: string) => ({
+      kind: 'metric' as const,
+      model: 'sales',
+      modelId: 1,
+      fieldId: 1,
+      ...(aggregation === undefined ? {} : { aggregation }),
+    });
+
+    it.each([
+      ['SUM', 'sum'],
+      ['AVG', 'average'],
+      ['AVERAGE', 'average'],
+      ['COUNT', 'count'],
+      ['COUNT_DISTINCT', 'count'],
+      ['MIN', 'min'],
+      ['MAX', 'max'],
+    ])('reads %s as %s', (declared, expected) => {
+      expect(semanticAggregate(metric(declared))).toBe(expected);
+    });
+
+    it('says nothing about a column the layer says nothing about', () => {
+      expect(semanticAggregate(undefined)).toBeUndefined();
+      expect(
+        semanticAggregate({ kind: 'dimension', model: 'sales', modelId: 1, fieldId: 2 }),
+      ).toBeUndefined();
+    });
+
+    /**
+     * A ratio declares no aggregation because it has none: a margin percentage
+     * is recomputed per group, never summed. `null` is that refusal, and it is
+     * deliberately different from "nothing said".
+     */
+    it('refuses to invent one for a metric that declares none', () => {
+      expect(semanticAggregate(metric())).toBeNull();
+      expect(semanticAggregate(metric('MEDIAN'))).toBeNull();
+    });
   });
 });

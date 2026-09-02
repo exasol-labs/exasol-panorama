@@ -19,6 +19,8 @@ import { makeTable, testIds } from './fixtures.js';
 const revenue = {
   kind: 'metric',
   model: 'sales',
+  modelId: 1,
+  fieldId: 1,
   displayName: 'Total Revenue',
   description: 'Net recognized revenue excluding tax',
   format: 'currency',
@@ -33,7 +35,7 @@ const describedTable = (
       {
         name: 'TOTAL_REVENUE',
         type: dataType('decimal', 'DECIMAL(18,2)', { precision: 18, scale: 2 }),
-        semantic: { model: 'sales', ...semantic },
+        semantic: { model: 'sales', modelId: 1, fieldId: 1, ...semantic },
       },
       { name: 'ORDER_ID', type: dataType('varchar', 'VARCHAR(32)', { size: 32 }) },
     ],

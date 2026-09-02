@@ -1,3 +1,5 @@
+import type { SemanticFieldKind } from './semantic-column.js';
+
 /**
  * What a chart is asked to draw.
  *
@@ -420,11 +422,40 @@ export interface ChartColumnHint {
    * the whole numbers are all that is on offer.
    */
   readonly measure?: boolean;
+  /**
+   * What a semantic layer says this column is, where one says anything.
+   *
+   * A metric is a measure because the model says so and a dimension is something
+   * to group by, which is a better answer than "it has decimal places" — and the
+   * one that stops a chart opening on a key summed against a timestamp.
+   */
+  readonly role?: SemanticFieldKind;
+  /**
+   * The aggregate the metric declares, or `none` where it declares that it must
+   * not be aggregated at all.
+   */
+  readonly aggregate?: ChartAggregate | 'none';
 }
 
+/**
+ * A first chart that is worth looking at, from the columns alone.
+ *
+ * Where a semantic layer has described the columns it is followed rather than
+ * guessed against: a dimension is what to group by, a metric is what to measure,
+ * and the metric's own aggregation is the one to open on. A metric that declares
+ * it must not be aggregated — a ratio, a derived figure — is not chosen, because
+ * the first thing a reader sees should not be a number the model would refuse to
+ * compute that way.
+ */
 export const defaultChartSpec = (columns: readonly ChartColumnHint[]): ChartSpec => {
-  const numeric = columns.filter((column) => column.numeric);
-  const category = columns.find((column) => !column.numeric) ?? columns[0];
+  const described = columns.some((column) => column.role !== undefined);
+  const numeric = columns.filter((column) =>
+    described ? column.role === 'metric' && column.aggregate !== 'none' : column.numeric,
+  );
+  const category =
+    (described ? columns.find((column) => column.role === 'dimension') : undefined) ??
+    columns.find((column) => !column.numeric) ??
+    columns[0];
   const usable = numeric.filter((column) => column.name !== category?.name);
   const value = usable.find((column) => column.measure === true) ?? usable[0] ?? numeric[0];
   return {
@@ -433,7 +464,12 @@ export const defaultChartSpec = (columns: readonly ChartColumnHint[]): ChartSpec
     // Counting rows needs no measure at all, which is the honest fallback for a
     // table that has no numbers in it.
     values: value === undefined ? [] : [value.name],
-    aggregate: value === undefined ? 'count' : 'sum',
+    aggregate:
+      value === undefined
+        ? 'count'
+        : value.aggregate !== undefined && value.aggregate !== 'none'
+          ? value.aggregate
+          : 'sum',
   };
 };
 
