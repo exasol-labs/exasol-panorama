@@ -10,7 +10,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@babylonjs/core": "^9.23.0",
+    "@babylonjs/core": "^9.32.0",
     "@panorama/chart": "*",
     "@panorama/chart-echarts": "*",
     "@panorama/core": "*",
@@ -21,12 +21,12 @@
     "@panorama/test-support": "*",
     "@panorama/ui": "*",
     "@panorama/worker": "*",
-    "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
   },
   "devDependencies": {
-    "@types/react": "^19.2.18",
-    "@types/react-dom": "^19.2.5",
-    "@vitejs/plugin-react": "^6.1.1"
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2"
   }
 }
