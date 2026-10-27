@@ -1,0 +1,20 @@
+# What `cargo audit` is told to let through, and why. Read by the advisories
+# workflow (.github/workflows/advisories.yml) and by `cargo audit` run here.
+#
+# Every entry is an advisory this crate cannot fix from where it stands, with the
+# reason it is tolerable until it can. One that stops matching — because the crate
+# carrying it moved on — is harmless, but delete it then: a list nobody prunes
+# ends up waving through the next advisory with the same name.
+
+[advisories]
+ignore = [
+    # zip 4.x, extraction that follows symlinks and keeps SUID/SGID bits out of
+    # an archive. It arrives through tauri-plugin-updater, on Windows only, where
+    # the updater unpacks a downloaded update; the newest 2.x of the plugin still
+    # pins zip 4, and the fix is zip 9. What it extracts has already passed the
+    # updater's signature check, so a hostile archive needs the release signing
+    # key first. Drop these when the updater moves past zip 4.
+    "RUSTSEC-2026-0367",
+    "RUSTSEC-2026-0368",
+    "RUSTSEC-2026-0369",
+]

@@ -1,0 +1,63 @@
+# Known vulnerabilities in what the application is built from.
+#
+# Its own workflow rather than a job in verify.yml, for two reasons. An advisory
+# is published against code that has not changed, so this also runs on a schedule:
+# a dependency that became vulnerable overnight should fail a run nobody started,
+# not wait for the next unrelated push. And a red run here means "something we
+# depend on", never "something we wrote", which is worth seeing without opening a
+# log.
+#
+# Two jobs, one per lockfile. Neither installs or builds anything: an audit reads
+# the lockfile, so a failure here is never a build failure in disguise.
+name: advisories
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: advisories-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  npm:
+    name: npm packages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Moderate and above, development dependencies included: the dev server and
+      # the test runner run on the machines that hold the signing keys. npm has no
+      # ignore list, so an advisory with no fix yet fails this until one ships or
+      # the dependency goes — deliberately the same pressure as any other.
+      - name: Audit
+        run: npm audit --audit-level=moderate
+
+  cargo:
+    name: Rust crates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      # Fails on a vulnerability; an unmaintained or unsound crate is reported
+      # and allowed. The advisories it lets through, each with its reason, are in
+      # apps/desktop/src-tauri/.cargo/audit.toml.
+      - name: Audit
+        working-directory: apps/desktop/src-tauri
+        run: cargo audit

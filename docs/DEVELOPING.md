@@ -56,6 +56,13 @@ await openSample(page, 'VERY_WIDE');
 [.github/workflows/verify.yml](../.github/workflows/verify.yml). Nothing in CI is a
 CI-only standard: if it passes there, it passes here.
 
+Known vulnerabilities in dependencies are checked by
+[.github/workflows/advisories.yml](../.github/workflows/advisories.yml): `npm audit`
+and `cargo audit`, on every push and pull request and once a day, since an advisory
+can appear without anything here changing. The Rust advisories it lets through are
+listed, each with its reason, in
+[apps/desktop/src-tauri/.cargo/audit.toml](../apps/desktop/src-tauri/.cargo/audit.toml).
+
 The browser probes — `smoke`, `resize-check`, `chart-check` and the rest — are in
 [TESTING.md §8](TESTING.md#8-browser-probes).
 
