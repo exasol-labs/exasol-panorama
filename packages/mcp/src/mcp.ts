@@ -32,7 +32,7 @@ export const SERVER_NAME = 'panorama';
  * manifest by hand — this package is compiled for a browser and cannot read one —
  * which is a duplicate worth removing the day anything else needs it.
  */
-export const SERVER_VERSION = '0.2.0';
+export const SERVER_VERSION = '0.2.1';
 
 /**
  * Protocol versions this server knows how to be.
