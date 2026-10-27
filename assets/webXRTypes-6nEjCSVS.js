@@ -1,0 +1,2 @@
+var e;(function(e){e[e.ENTERING_XR=0]=`ENTERING_XR`,e[e.EXITING_XR=1]=`EXITING_XR`,e[e.IN_XR=2]=`IN_XR`,e[e.NOT_IN_XR=3]=`NOT_IN_XR`})(e||={});var t;(function(e){e[e.NOT_TRACKING=0]=`NOT_TRACKING`,e[e.TRACKING_LOST=1]=`TRACKING_LOST`,e[e.TRACKING=2]=`TRACKING`})(t||={});export{e as WebXRState};
+//# sourceMappingURL=webXRTypes-6nEjCSVS.js.map
