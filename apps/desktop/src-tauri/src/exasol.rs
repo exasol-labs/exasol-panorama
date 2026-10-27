@@ -33,6 +33,11 @@
 //!    *minutes*, and a later run had every one of the six exceed an eight-second
 //!    deadline. A list that waits on it is a list that sometimes never arrives.
 //!
+//! All three are fixed in launcher 2.3.0: the list reports live status, `status`
+//! stops after five seconds, and a local deployment keeps a port of its own. The
+//! shape below stays, because a machine can have any launcher installed, and
+//! nothing in it is wrong against a launcher that has the fixes.
+//!
 //! So readiness is not taken from the tool. **Panorama asks the socket**, which is
 //! the question it actually needs answered — can a connection from here reach a
 //! database — and gets it in milliseconds on loopback. The tool is still asked for
@@ -174,7 +179,12 @@ pub fn local(detail: Detail) -> Local {
 const CALL_LIMIT: Duration = Duration::from_secs(8);
 
 /// How long to wait for a *status*, which is a nicety rather than the answer.
-const STATUS_LIMIT: Duration = Duration::from_secs(3);
+///
+/// Just over the five seconds launcher 2.3.0 gives `exasol status` itself, so a
+/// deployment that does not answer is described in the tool's words rather than
+/// ours. Three was enough against 2.2.0; against 2.3.0 a healthy local database
+/// was measured answering in 1.8 to 3.4 seconds, and more under parallel calls.
+const STATUS_LIMIT: Duration = Duration::from_secs(6);
 
 /// How long to wait for a database to accept a connection. Loopback answers
 /// instantly; a cloud host is a round trip away, and one that has not answered in
