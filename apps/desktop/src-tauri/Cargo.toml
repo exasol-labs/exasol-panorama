@@ -11,7 +11,7 @@ description = "Exasol Panorama"
 authors = ["Exasol"]
 license = "MIT"
 edition = "2021"
-rust-version = "1.82"
+rust-version = "1.90"
 publish = false
 
 # AppKit, for one thing only: telling macOS not to stretch the window's contents
