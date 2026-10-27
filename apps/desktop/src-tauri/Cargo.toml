@@ -42,14 +42,14 @@ uuid = { version = "1", features = ["v4"] }
 # is one WebSocket in, one WebSocket out, and a certificate decision in the
 # middle — the thing a browser will not let a page make for itself.
 tokio = { version = "1", features = ["net", "rt", "io-util", "sync", "macros"] }
-tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+tokio-tungstenite = { version = "0.30", features = ["native-tls"] }
 tokio-native-tls = "0.3"
 # The platform's own trust store, so a managed instance verifies with no ceremony:
 # Security.framework on macOS, schannel on Windows, OpenSSL on Linux.
 native-tls = "0.2"
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 # Certificate fingerprints, for the question a person is asked.
-sha2 = "0.10"
+sha2 = "0.11"
 # Asking that question in the application's own window rather than in the page.
 tauri-plugin-dialog = "2"
 # One application, not one per launch: a second start focuses the window that is
