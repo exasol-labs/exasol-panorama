@@ -193,11 +193,15 @@ pub fn agent_attach(state: State<'_, Arc<AgentState>>) {
 /// And going away — a reload, or a window closing.
 #[tauri::command]
 pub fn agent_detach(state: State<'_, Arc<AgentState>>) {
-    let _ = state
-        .attached
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |attached| {
-            Some(attached.saturating_sub(1))
-        });
+    let mut attached = state.attached.load(Ordering::Relaxed);
+    while let Err(current) = state.attached.compare_exchange_weak(
+        attached,
+        attached.saturating_sub(1),
+        Ordering::Relaxed,
+        Ordering::Relaxed,
+    ) {
+        attached = current;
+    }
 }
 
 /// An answer on its way back out.
